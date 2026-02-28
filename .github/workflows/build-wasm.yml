@@ -1,0 +1,46 @@
+name: Build vAmiga WASM
+
+on:
+  push:
+    paths:
+      - 'emulator/vAmigaWeb/**'
+      - '.github/workflows/build-wasm.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: emscripten/emsdk:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure (CMake + Emscripten)
+        working-directory: emulator/vAmigaWeb
+        run: |
+          mkdir -p build
+          cd build
+          emcmake cmake .. \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build WASM
+        working-directory: emulator/vAmigaWeb/build
+        run: emmake make -j$(nproc)
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist-wasm
+          # Emscripten erzeugt vAmiga.html (gebaut aus bassm-shell.html) + vAmiga.js + vAmiga.wasm
+          cp emulator/vAmigaWeb/build/vAmiga.wasm  dist-wasm/
+          cp emulator/vAmigaWeb/build/vAmiga.js    dist-wasm/
+          # Das generierte HTML enthält bereits alles — wir nutzen es als preview.html
+          cp emulator/vAmigaWeb/build/vAmiga.html  dist-wasm/preview.html
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vamiga-wasm
+          path: dist-wasm/
+          retention-days: 30

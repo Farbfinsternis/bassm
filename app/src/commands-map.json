@@ -1,0 +1,22 @@
+[
+    {
+        "name" : "Graphics",
+        "type" : "global",
+        "return" : "void",
+        "args" : [
+            {
+                "name" : "width",
+                "type" : "integer"
+            },
+            {
+                "name" : "height",
+                "type" : "integer"
+            },
+            {
+                "name" : "depth",
+                "type" : "integer"
+            }
+        ]
+    }
+
+]

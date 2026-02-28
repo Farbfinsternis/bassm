@@ -1,0 +1,1401 @@
+<!doctype html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+    <meta name="description" content="cycle exact Amiga emulator in html5 / javascript. This Amiga emulator is compatible to the progressive-web-app (PWA) standard.">
+    <title>vAmigaWeb Amiga emulator iPad iPhone</title>
+  
+  <link rel="icon" href="img/favicon.ico">
+  <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+  <link rel="manifest" href="manifest.json">
+  <!-- ios support -->
+  <link rel="apple-touch-icon" href="img/icon_borderless_x413.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar" content="black-translucent">
+  <meta name="theme-color" content="black">
+    
+  <script>
+    (async function () {
+        let registration = await navigator.serviceWorker
+            .register('sw.js')
+            .catch((e) => console.error('service worker failed to register:', e));
+        if (registration) {
+            console.log('service worker registered', registration.scope);
+    
+            registration.addEventListener('updatefound', () => {
+                console.log('Reloading page to make use of updated service worker.');
+                window.location.reload();
+            });    
+            // If the registration is active, but it's not controlling the page
+            if (registration.active && !navigator.serviceWorker.controller) {
+                console.log('Reloading page to make use of new service worker.');
+                window.location.reload();
+            }
+        }
+    })();
+  </script>
+
+  <link rel="stylesheet" href="css/bootstrap.min.css">
+  <link rel="stylesheet" href="css/vAmiga.css">
+  <script src="js/jquery-3.7.1.min.js"></script>
+  <script src="js/bootstrap.bundle.min.js"></script>
+  <script src="js/vAmiga_browser.js"></script>
+  <script src="js/ringbuffer.js"></script>
+  <script src="js/vAmiga_canvas.js"></script>
+  <script src="js/vAmiga_canvas_gl_fast.js"></script>
+  <script src="js/vAmiga_ui.js"></script>
+  <script src="js/vAmiga_storage.js"></script>
+  <script src="js/vAmiga_keyboard.js"></script>
+  <script src="js/vAmiga_action_script.js"></script>
+  <script src="js/virtualjoystick.js"></script>
+  <script src="js/jszip.min.js"></script>
+  <script defer src="https://cloud.umami.is/script.js" data-website-id="891b0b9b-425b-4db4-9c23-d8e9e8fd56fd"></script>
+  <style>
+      .emscripten { padding-right: 0; margin-left: auto; margin-right: auto; display: block; }
+      textarea.emscripten { font-family: monospace; width: 80%; }
+      div.emscripten { text-align: center; }
+      div.emscripten_border { border: 0px solid black; }
+      /* the canvas *must not* have any border or padding, or mouse coords will be wrong */
+      canvas.emscripten 
+      { border: 0px none; }
+      .spinner {
+        height: 50px;
+        width: 50px;
+        margin: 0px auto;
+        -webkit-animation: rotation .8s linear infinite;
+        -moz-animation: rotation .8s linear infinite;
+        -o-animation: rotation .8s linear infinite;
+        animation: rotation 0.8s linear infinite;
+        border-left: 10px solid rgb(0,150,240);
+        border-right: 10px solid rgb(0,150,240);
+        border-bottom: 10px solid rgb(0,150,240);
+        border-top: 10px solid rgb(100,0,200);
+        border-radius: 100%;
+        background-color: rgb(200,100,250);
+      }
+      @-webkit-keyframes rotation {
+        from {-webkit-transform: rotate(0deg);}
+        to {-webkit-transform: rotate(360deg);}
+      }
+      @-moz-keyframes rotation {
+        from {-moz-transform: rotate(0deg);}
+        to {-moz-transform: rotate(360deg);}
+      }
+      @-o-keyframes rotation {
+        from {-o-transform: rotate(0deg);}
+        to {-o-transform: rotate(360deg);}
+      }
+      @keyframes rotation {
+        from {transform: rotate(0deg);}
+        to {transform: rotate(360deg);}
+      }
+    </style>
+  </head>
+  <body data-theme="dark" oncontextmenu="event.preventDefault()" warpstate="0">
+    <figure style="overflow:visible;" id="spinner"><div class="spinner"></div><center style="margin-top:0.5em"><img src="img/icon_borderless_x413.png" style="width:38px;height:38px;margin-right:10px"/><strong>booting into vAmigaWeb ...</strong></center></figure>
+    <div class="emscripten" id="status">Downloading...</div>
+    <div class="emscripten">
+      <progress value="0" max="100" id="progress" hidden=1></progress>  
+    </div>    
+    <div id="div_canvas" class="emscripten_border" style="width:100vw;height:100vh">
+      <canvas class="emscripten" width="724" height="568" id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+    </div>
+    <div id="div_drive_select" ontouchstart="event.stopPropagation()"></div>
+    <!-- virtual keyboard-->
+    <!-- 
+      we pin the keyboard collapsable at the bottom and give it the full width 
+    -->
+    <div class="collapse" style="user-select: none;" id="virtual_keyboard">
+      <div class="justify-content-center" id="vbk_scroll_area"
+        style="display: flex;flex-wrap: nowrap;overflow-x: auto;overflow-y: hidden">
+        <div style="display:flex;padding-top:2px;position: relative;min-width: 0;max-width: 100%">
+          <div id="divKeyboardRows"></div>
+        </div>
+      </div>
+    </div>
+
+
+
+    <button id="button_show_menu"
+    type="button" class="btn btn-sm icon">
+      <svg class="bi bi-list" width="1.6em" height="auto" viewBox="0 -1 16 17" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+        <path fill-rule="evenodd" d="M2.5 11.5A.5.5 0 0 1 3 11h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4A.5.5 0 0 1 3 7h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5zm0-4A.5.5 0 0 1 3 3h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5z"/>
+      </svg>
+    </button>
+
+    <div class="collapse" id="navbar">
+<div id="navgrid">
+    <div class="left">
+      <span style="width: 40px;display: inline-block;"></span>
+        <button type="button" id="button_reset" class="btn btn-sm icon" data-toggle="tooltip" data-placement="top" title="reset">
+          <svg style="margin-top: 1px;" class="bi bi-skip-start-fill" width="1.6em" height="auto" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <path fill-rule="evenodd" d="M4.5 3.5A.5.5 0 0 0 4 4v8a.5.5 0 0 0 1 0V4a.5.5 0 0 0-.5-.5z"/>
+            <path d="M4.903 8.697l6.364 3.692c.54.313 1.232-.066 1.232-.697V4.308c0-.63-.692-1.01-1.232-.696L4.903 7.304a.802.802 0 0 0 0 1.393z"/>
+          </svg>
+        </button>
+        <span data-toggle="tooltip" data-placement="top" title="pause">
+        <button type="button" id="button_run" class="btn btn-sm icon">
+          <svg class="bi bi-pause-fill" width="1.6em" height="auto" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <path d="M5.5 3.5A1.5 1.5 0 0 1 7 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5zm5 0A1.5 1.5 0 0 1 12 5v6a1.5 1.5 0 0 1-3 0V5a1.5 1.5 0 0 1 1.5-1.5z"/>
+          </svg>
+        </button>
+        </span>  
+      <button type="button" id="button_ff" style="position:relative" class="btn btn-sm icon" data-toggle="tooltip" data-placement="top" title="warp">
+        <div id="warping">
+          <svg xmlns="http://www.w3.org/2000/svg"  width="1.6em" height="1.6em" fill="currentColor" class="bi bi-fast-forward-fill" viewBox="0 0 16 16">
+            <path d="M7.596 7.304a.802.802 0 0 1 0 1.392l-6.363 3.692C.713 12.69 0 12.345 0 11.692V4.308c0-.653.713-.998 1.233-.696z"/>
+            <path d="M15.596 7.304a.802.802 0 0 1 0 1.392l-6.363 3.692C8.713 12.69 8 12.345 8 11.692V4.308c0-.653.713-.998 1.233-.696z"/>
+          </svg>
+          <div style="position:absolute;bottom:-1px;font-size:x-small;
+          animation: blink 1s infinite">warp</div>
+        </div>  
+        <div id="no_warping">
+          <svg xmlns="http://www.w3.org/2000/svg" width="1.6em" height="1.6em" fill="currentColor" class="bi bi-fast-forward" viewBox="0 0 16 16">
+                    <path d="M6.804 8 1 4.633v6.734zm.792-.696a.802.802 0 0 1 0 1.392l-6.363 3.692C.713 12.69 0 12.345 0 11.692V4.308c0-.653.713-.998 1.233-.696z"/>
+                    <path d="M14.804 8 9 4.633v6.734zm.792-.696a.802.802 0 0 1 0 1.392l-6.363 3.692C8.713 12.69 8 12.345 8 11.692V4.308c0-.653.713-.998 1.233-.696z"/>
+          </svg>
+        </div>          
+      </button>
+      
+      <button type="button" style="position:relative" id="button_speed_toggle" class="btn btn-sm icon" data-toggle="tooltip" data-placement="top" title="toggle speed">
+        <svg xmlns="http://www.w3.org/2000/svg" width="1.6em" height="1.6em" fill="currentColor" class="bi bi-speedometer" viewBox="0 0 16 16">
+          <path d="M8 2a.5.5 0 0 1 .5.5V4a.5.5 0 0 1-1 0V2.5A.5.5 0 0 1 8 2M3.732 3.732a.5.5 0 0 1 .707 0l.915.914a.5.5 0 1 1-.708.708l-.914-.915a.5.5 0 0 1 0-.707M2 8a.5.5 0 0 1 .5-.5h1.586a.5.5 0 0 1 0 1H2.5A.5.5 0 0 1 2 8m9.5 0a.5.5 0 0 1 .5-.5h1.5a.5.5 0 0 1 0 1H12a.5.5 0 0 1-.5-.5m.754-4.246a.39.39 0 0 0-.527-.02L7.547 7.31A.91.91 0 1 0 8.85 8.569l3.434-4.297a.39.39 0 0 0-.029-.518z"/>
+          <path fill-rule="evenodd" d="M6.664 15.889A8 8 0 1 1 9.336.11a8 8 0 0 1-2.672 15.78zm-4.665-4.283A11.95 11.95 0 0 1 8 10c2.186 0 4.236.585 6.001 1.606a7 7 0 1 0-12.002 0"/>
+        </svg>  
+      </button>
+
+      <button type="button" id="button_take_snapshot" class="btn btn-sm icon" data-toggle="tooltip" data-placement="top" title="save snapshot, workspace or export disk">
+        <svg class="bi bi-box-arrow-in-down" width="1.6em" height="auto" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+          <path fill-rule="evenodd" d="M4.646 8.146a.5.5 0 0 1 .708 0L8 10.793l2.646-2.647a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 0 1 0-.708z"/>
+          <path fill-rule="evenodd" d="M8 1a.5.5 0 0 1 .5.5v9a.5.5 0 0 1-1 0v-9A.5.5 0 0 1 8 1z"/>
+          <path fill-rule="evenodd" d="M1.5 13.5A1.5 1.5 0 0 0 3 15h10a1.5 1.5 0 0 0 1.5-1.5v-8A1.5 1.5 0 0 0 13 4h-1.5a.5.5 0 0 0 0 1H13a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5v-8A.5.5 0 0 1 3 5h1.5a.5.5 0 0 0 0-1H3a1.5 1.5 0 0 0-1.5 1.5v8z"/>
+        </svg>
+      </button>
+      <span data-toggle="modal" data-target="#snapshotModal">
+        <button type="button" id="button_snapshots" class="btn btn-sm icon" data-toggle="tooltip" data-placement="top" title="snapshot / workspace browser">
+          <svg class="bi bi-collection-fill" width="1.6em" height="auto" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <rect width="16" height="10" rx="1.5" transform="matrix(1 0 0 -1 0 14.5)"/>
+            <path fill-rule="evenodd" d="M2 3a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 0-1h-11A.5.5 0 0 0 2 3zm2-2a.5.5 0 0 0 .5.5h7a.5.5 0 0 0 0-1h-7A.5.5 0 0 0 4 1z"/>
+          </svg>
+        </button>
+      </span>
+      <button id="button_keyboard" class="btn btn-sm icon mr-0" type="button" data-toggle="tooltip" data-placement="top" title="virtual keyboard">
+        <svg class="bi bi-type" width="2.2em" height="auto" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+          <path d="M14 5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h12zM2 4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H2z"/><path d="M13 10.25a.25.25 0 0 1 .25-.25h.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-.5a.25.25 0 0 1-.25-.25v-.5zm0-2a.25.25 0 0 1 .25-.25h.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-.5a.25.25 0 0 1-.25-.25v-.5zm-5 0A.25.25 0 0 1 8.25 8h.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-.5A.25.25 0 0 1 8 8.75v-.5zm2 0a.25.25 0 0 1 .25-.25h1.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-1.5a.25.25 0 0 1-.25-.25v-.5zm1 2a.25.25 0 0 1 .25-.25h.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-.5a.25.25 0 0 1-.25-.25v-.5zm-5-2A.25.25 0 0 1 6.25 8h.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-.5A.25.25 0 0 1 6 8.75v-.5zm-2 0A.25.25 0 0 1 4.25 8h.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-.5A.25.25 0 0 1 4 8.75v-.5zm-2 0A.25.25 0 0 1 2.25 8h.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-.5A.25.25 0 0 1 2 8.75v-.5zm11-2a.25.25 0 0 1 .25-.25h.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-.5a.25.25 0 0 1-.25-.25v-.5zm-2 0a.25.25 0 0 1 .25-.25h.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-.5a.25.25 0 0 1-.25-.25v-.5zm-2 0A.25.25 0 0 1 9.25 6h.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-.5A.25.25 0 0 1 9 6.75v-.5zm-2 0A.25.25 0 0 1 7.25 6h.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-.5A.25.25 0 0 1 7 6.75v-.5zm-2 0A.25.25 0 0 1 5.25 6h.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-.5A.25.25 0 0 1 5 6.75v-.5zm-3 0A.25.25 0 0 1 2.25 6h1.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-1.5A.25.25 0 0 1 2 6.75v-.5zm0 4a.25.25 0 0 1 .25-.25h.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-.5a.25.25 0 0 1-.25-.25v-.5zm2 0a.25.25 0 0 1 .25-.25h5.5a.25.25 0 0 1 .25.25v.5a.25.25 0 0 1-.25.25h-5.5a.25.25 0 0 1-.25-.25v-.5z"/>
+        </svg>
+      </button>
+      <button id="button_custom_key" class="btn btn-sm icon" type="button" data-toggle="tooltip" data-placement="top" title="action buttons">
+        <svg width="1.6em" height="auto" viewBox="0 0 16 16" class="bi bi-plus" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+          <path fill-rule="evenodd" d="M8 3.5a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-.5.5H4a.5.5 0 0 1 0-1h3.5V4a.5.5 0 0 1 .5-.5z"/>
+          <path fill-rule="evenodd" d="M7.5 8a.5.5 0 0 1 .5-.5h4a.5.5 0 0 1 0 1H8.5V12a.5.5 0 0 1-1 0V8z"/>
+        </svg>
+      </button>
+      <form id="theFileInput">
+        <div id="drop_zone" class="px-1" data-toggle="tooltip" data-placement="bottom" title="drop .adf, .dms, .exe, .hdf, .vAmiga, .st or .zip files into here, or just click into the drop zone">
+          file slot
+        </div>
+        <!-- iOS won't work with accept=".g64,.d64,.crt,.prg,.bin" on d64 files -->
+        <input id="filedialog" name="theFileDialog" type="file" style="display:none" >
+      </form>
+      <button id="button_fullscreen" class="btn btn-sm icon hidden" type="button">
+        <svg id="svg_fullscreen" class="bi bi-fs" width="1.6em" height="1.6em" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg" data-toggle="tooltip" data-placement="top" title="fullscreen">
+        </svg>
+      </button>
+      <button id="btn_activity_monitor" class="btn btn-sm icon hidden hide-on-small" type="button">
+        <svg xmlns="http://www.w3.org/2000/svg" data-toggle="tooltip" data-placement="top" title="activity monitor"
+        height="24px" viewBox="0 -960 960 960" width="24px" fill="currentColor"><path d="M160-160v-320h160v320H160Zm240 0v-640h160v640H400Zm240 0v-440h160v440H640Z"/></svg>
+      </button>
+
+      <button id="button_settings" class="btn btn-sm icon" type="button">
+        <svg class="bi bi-gear-fill" width="1.6em" height="auto" viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg" data-toggle="tooltip" data-placement="top" title="settings">
+          <path fill-rule="evenodd" d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 0 1-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 0 1-2.105-.872l-.1-.34zM8 10.93a2.929 2.929 0 1 0 0-5.86 2.929 2.929 0 0 0 0 5.858z"/>
+        </svg>
+      </button>       
+    </div>
+    <div class="right">
+      <div>
+      <select id="port1" class="custom-select" data-toggle="tooltip" data-placement="left" title="game port 1">
+        <option value="none">none</option>
+        <option value="keys">cursor key (move) space (fire)</option>
+        <option id="touch_joystick1" value="touch">touch joystick (move|fire)</option>
+        <option id="touch_mouse1" value="mouse touchpad">mouse touchpad (move|btn/btn)</option>
+        <option value="mouse">mouse </option>
+      </select>
+      </div>
+      <div>
+      <select id="port2" class="custom-select" data-toggle="tooltip" data-placement="left" title="game port 2">
+        <option value="none">none</option>
+        <option value="keys">cursor key (move) space (fire)</option>
+        <option id="touch_joystick2" value="touch">touch joystick (move|fire)</option>
+        <option id="touch_mouse2" value="mouse touchpad">mouse touchpad (move|btn/btn)</option>
+        <option value="mouse">mouse</option>
+      </select>
+      </div>
+      </div>
+    </div>
+  </div>      
+  
+    <div class="row mt-1" id="output_row">
+    <div class="col-12 px-1">
+      <!--textarea rows="20" id="output"></textarea-->
+      <div id="output" style="height:164px;width:100%;padding:1px;overflow-y:scroll;resize:vertical;display:flex;flex-direction:column-reverse;font-size: smaller;"></div>
+    </div>
+    </div>
+    </div> <!-- end of fluid container -->
+
+<div id="alert_reset" class="alert alert-darkest" role="alert" style="display:none">
+  <span class="ml-4">resetting machine, please wait ...</span>
+</div>
+<div id="alert_wait" class="alert alert-darkest" role="alert" style="display:none">
+  <span>loading please wait ...</span>
+  <div class="progress">
+    <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100" style="width: 100%"></div>
+  </div>
+</div>
+<div id="alert_import" class="alert alert-darkest" role="alert" style="display:none">
+  <span>converting to Amiga hard disk ...</span>
+  <div class="progress">
+    <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100" style="width: 100%"></div>
+  </div>
+</div>
+
+
+    <!-- Modal snapshot-->
+    <div class="modal fade" id="snapshotModal" tabindex="-1" role="dialog"  aria-hidden="true">
+      <div id="view_detail" style="display: none;" tabindex="-1" >
+        <button type="button" id="detail_back">
+<svg width="1.6em" height="1.6em" viewBox="0 0 16 16" class="bi bi-arrow-left" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+  <path fill-rule="evenodd" d="M15 8a.5.5 0 0 0-.5-.5H2.707l3.147-3.146a.5.5 0 1 0-.708-.708l-4 4a.5.5 0 0 0 0 .708l4 4a.5.5 0 0 0 .708-.708L2.707 8.5H14.5A.5.5 0 0 0 15 8z"/>
+</svg>
+        </button>
+        <div id="detail_content"></div>
+      </div>
+      <div class="modal-dialog modal-xl" role="document">
+        <div class="modal-content">
+          <div class="modal-header">           
+            <div class="row" style="width: 100%">
+              <div class="col-sm mt-2 btn-group btn-group-toggle" data-toggle="buttons">
+                <label class="btn btn-secondary">
+                  <input type="radio" name="options" id="sel_browser_workspace_db"> workspaces
+                </label>
+                <label class="btn btn-primary active">
+                  <input type="radio" name="options" id="sel_browser_snapshots" checked> snapshots
+                </label>
+              </div>
+              <div class="col-sm mt-2 input-group">
+                <div class="input-group-prepend">
+                  <span class="input-group-text" id="search_symbol"><svg width="1.2em" height="1.2em" viewBox="0 0 16 16" class="bi bi-search" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+                    <path fill-rule="evenodd" d="M10.442 10.442a1 1 0 0 1 1.415 0l3.85 3.85a1 1 0 0 1-1.414 1.415l-3.85-3.85a1 1 0 0 1 0-1.415z"/>
+                    <path fill-rule="evenodd" d="M6.5 12a5.5 5.5 0 1 0 0-11 5.5 5.5 0 0 0 0 11zM13 6.5a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0z"/>
+                  </svg></span>
+                </div>
+                <input id="search" type="text" class="form-control" placeholder="search snapshots (local browser storage)" aria-label="search">
+              </div>
+            </div>
+            <div id="div_like" class="mt-2 mr-1"></div>
+            <button type="button" class="close px-1 py-0" data-dismiss="modal" aria-label="Close">
+              <span aria-hidden="true">&times;</span>
+            </button>
+          </div>
+          <div class="modal-body">
+          <div id="container_snapshots" class="container scrollx-group">
+          </div><!-- container end-->
+          </div>
+          <div class="modal-footer" style="justify-content: space-between">
+            <button type="button" id="export_workspaces" style="visibility: hidden;" class="btn btn-primary" data-dismiss="modal">export workspaces</button>
+            <button type="button" class="btn btn-secondary" data-dismiss="modal">close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- end of Modal snapshot-->
+
+    <!-- modal roms-->
+    <div class="modal fade" id="modal_roms" tabindex="-1" role="dialog" aria-labelledby="snapshotModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="snapshotModalLabel"><img src="img/icon_borderless_x413.png" style="height: 38px;" />&nbsp;Amiga Operating System ROM</h5>
+            <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+              <span aria-hidden="true">&times;</span>
+            </button>
+          </div>
+          <div class="modal-body">
+            The emulator needs a kickstart system ROM file. Please drag the missing file into the empty chip socket. Or just touch or click the sockets.<br>
+            <br>
+            <div class="container mt-4">
+            <div class="row my-2">
+              <div class="col mx-2">
+<div class="container card mb-3" style="max-width: 540px;">
+  <div class="row no-gutters">
+    <div class="col-md-8">
+      <div class="card-body">
+        <h5 class="card-title">kickstart rom</h5>
+        <p class="card-text" id="kickstart_title"></p>
+      <button type="button" id="button_delete_kickstart" class="btn btn-sm icon">
+        <svg width="1.6em" height="1.6em" viewBox="0 0 16 16" class="bi bi-trash-fill" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+          <path fill-rule="evenodd" d="M2.5 1a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1H3v9a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V4h.5a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H10a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1H2.5zm3 4a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 .5-.5zM8 5a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7A.5.5 0 0 1 8 5zm3 .5a.5.5 0 0 0-1 0v7a.5.5 0 0 0 1 0v-7z"/>
+        </svg>
+      </button>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="mt-2">
+        <img id="rom_kickstart" src="img/rom_empty.png" class="card-img" alt="...">
+      </div>
+    </div>
+  </div>
+</div>
+              </div> 
+              <div class="col mx-2"> 
+<div class="container card mb-3" style="max-width: 540px;">
+  <div class="row no-gutters">
+    <div class="col-md-8">
+      <div class="card-body">
+        <h5 class="card-title">kickstart ext</h5>
+        <p class="card-text" id="kickstart_ext_title">(optional)</p>
+      <button type="button" id="button_delete_kickstart_ext" class="btn btn-sm icon">
+        <svg width="1.6em" height="1.6em" viewBox="0 0 16 16" class="bi bi-trash-fill" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+          <path fill-rule="evenodd" d="M2.5 1a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1H3v9a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V4h.5a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H10a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1H2.5zm3 4a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7a.5.5 0 0 1 .5-.5zM8 5a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-1 0v-7A.5.5 0 0 1 8 5zm3 .5a.5.5 0 0 0-1 0v7a.5.5 0 0 0 1 0v-7z"/>
+        </svg>
+      </button>
+      </div>
+    </div>
+    <div  class="col-md-4">
+      <div class="mt-2">
+        <img id="rom_kickstart_ext" src="img/rom_empty.png" class="card-img" alt="...">
+      </div>
+    </div>
+  </div>
+</div>
+            </div> 
+          </div>
+          <div class="row my-2">
+            <div class="col mx-2">
+              <select id="stored_roms" class="custom-select"></select> 
+
+            </div>
+            <div class="col mx-2">
+              <select id="stored_exts" class="custom-select"></select>             
+            </div>
+          </div>
+
+<br>
+            Once loaded vAmigaWeb will try to store these files to your browsers local storage. Then on subsequent starts it will take the rom files from your browsers local storage instead of asking you again for them.
+
+            </div>
+
+          </div>
+          <div class="modal-footer">
+            <div class="justify-start">
+              <button class="btn btn-primary dropdown-toggle text-right" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                install free replacements
+              </button>
+              
+<div id="button_fetch_open_roms" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+  <style>
+    .grid-container {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 25px;
+    }
+  
+    .grid-container img {
+      justify-self: start;
+    }
+  
+    .grid-container a {
+      justify-self: end;
+    }
+  </style>
+
+  <div class="dropdown-item">
+    <div class="grid-container">
+      <span style="padding-right: 1.5em">AROS <img style="width:2em" src="img/aros_half.png"/></span>
+      <a href="https://en.wikipedia.org/wiki/AROS_Research_Operating_System" target="_blank" onclick="event.stopPropagation()">learn more...</a>
+    </div>
+  </div>
+  <div class="dropdown-item">
+    <div class="grid-container">
+      <img style="width:6em" src="img/emutos_header_shadow.png"/>   
+      <a href="https://emutos.sourceforge.io/" target="_blank" onclick="event.stopPropagation()">learn more...</a>
+    </div>
+  </div>
+</div>
+
+
+
+               
+            </div>
+            <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- end of modal roms-->
+
+    <!-- modal settings-->
+    <div class="modal fade" id="modal_settings" tabindex="-1" role="dialog" aria-labelledby="settingsModalLabel" aria-hidden="true" ontouchstart="event.stopPropagation()">
+      <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="settingsModalLabel"><img src="img/icon_borderless_x413.png" style="height: 38px;" /><span style="margin-left: 0.4em">vAmigaWeb</span><span style="color: #909090;margin-left: 0.4em;font-size: medium;vertical-align: text-top;">powered by vAmiga</span><span style="margin-left: .1em;font-size: small;color: #d2691e;vertical-align: super">Core</span>
+              <a href="#" style="width:1.2rem;height:1.2rem;margin-left:0.75rem;" data-toggle="tooltip" data-placement="right" title="donate to the project" target="_blank" onclick="window.open('https://github.com/sponsors/vAmigaWeb','_blank')">
+                <svg style="color:var(--red);width:1.0em;height:1.0em"><use xlink:href="img/sprites.svg#like_filled"></use></svg>
+              </a>
+            </h5>
+            <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+              <span aria-hidden="true">&times;</span>
+            </button>
+          </div>
+          <div class="modal-body">
+            <p class="mb-2">most settings are permanent and will be saved to your local browser storage</p>    
+
+            <button id="button_rom_dialog" type="button" class="btn btn-primary mr-1 mb-3">kickstart roms ...</button>
+            <button id="button_eject_df0" type="button" style="text-align:start" class="btn btn-success mr-1 mb-3 px-1" data-toggle="tooltip" data-placement="top" title="eject disk in df0">
+                <svg style="width:1.2em;height:1.2em;margin-top:-2px"><use xlink:href="img/sprites.svg#eject"/></svg> df0</button>
+            <button id="button_eject_df1" type="button" style="text-align:start" class="btn btn-success mr-1 mb-3 px-1" data-toggle="tooltip" data-placement="top" title="eject disk in df1">
+                <svg style="width:1.2em;height:1.2em;margin-top:-2px"><use xlink:href="img/sprites.svg#eject"/></svg> df1</button>
+            <button id="button_eject_df2" type="button" style="text-align:start" class="btn btn-success mr-1 mb-3 px-1" data-toggle="tooltip" data-placement="top" title="eject disk in df2">
+                <svg style="width:1.2em;height:1.2em;margin-top:-2px"><use xlink:href="img/sprites.svg#eject"/></svg> df2</button>
+            <button id="button_eject_df3" type="button" style="text-align:start" class="btn btn-success mr-1 mb-3 px-1" data-toggle="tooltip" data-placement="top" title="eject disk in df3">
+                <svg style="width:1.2em;height:1.2em;margin-top:-2px"><use xlink:href="img/sprites.svg#eject"/></svg> df3</button>
+
+            <button id="button_eject_hd0" type="button" style="text-align:start" class="btn btn-success mr-1 mb-3 px-1" data-toggle="tooltip" data-placement="top" title="disconnect hard drive 0">
+                <svg style="width:1.2em;height:1.2em;margin-top:-2px"><use xlink:href="img/sprites.svg#eject"/></svg> dh0</button>
+            <button id="button_eject_hd1" type="button" style="text-align:start" class="btn btn-success mr-1 mb-3 px-1" data-toggle="tooltip" data-placement="top" title="disconnect hard drive 1">
+                <svg style="width:1.2em;height:1.2em;margin-top:-2px"><use xlink:href="img/sprites.svg#eject"/></svg> dh1</button>
+            <button id="button_eject_hd2" type="button" style="text-align:start" class="btn btn-success mr-1 mb-3 px-1" data-toggle="tooltip" data-placement="top" title="disconnect hard drive 2">
+                <svg style="width:1.2em;height:1.2em;margin-top:-2px"><use xlink:href="img/sprites.svg#eject"/></svg> dh2</button>
+            <button id="button_eject_hd3" type="button" style="text-align:start" class="btn btn-success mr-1 mb-3 px-1" data-toggle="tooltip" data-placement="top" title="disconnect hard drive 3">
+                <svg style="width:1.2em;height:1.2em;margin-top:-2px"><use xlink:href="img/sprites.svg#eject"/></svg> dh3</button>
+
+
+              <div id="mastervolume">
+                <label for="volume-slider" id="volumetext">Volume</label>
+                <input id="volume-slider" type="range" min="0" max="1" step="0.01" value="0.5">
+              </div>
+    
+
+            <div class="custom-control custom-switch mt-1">
+              <input type="checkbox" class="custom-control-input" id="activity_monitor_switch" />
+              <label class="custom-control-label" for="activity_monitor_switch">activity monitor</label>
+            </div>
+            <span id="activity_help" style="font-size: small">tap on individual workload charts to visualise bus activity (dma debug)</span>
+
+            <div class="custom-control custom-switch mt-3">
+              <input type="checkbox" class="custom-control-input" id="dark_switch" />
+              <label class="custom-control-label" for="dark_switch">dark mode</label>
+            </div>
+            <div class="custom-control custom-switch mt-1" >
+              <input type="checkbox" class="custom-control-input" id="pixel_art_switch"/>
+              <label class="custom-control-label" for="pixel_art_switch"  data-toggle="tooltip" data-placement="right">pixel art</label>
+            </div>
+            <div class="dropdown mr-1 mt-2">
+              <span style="font-size: small">use shader rendering for full resolution in interlace modes</span>
+              <br>
+              <button id="button_renderer" class="btn btn-primary dropdown-toggle text-right" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+              video renderer
+              </button>
+              <div id="choose_renderer" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+                  <a class="dropdown-item" href="#">software</a>
+                  <a class="dropdown-item" href="#">gpu shader</a>
+              </div> <span style="font-size: small">(a change will become effective on next start)</span>
+            </div>
+            <div class="dropdown mr-1 mt-2">
+              <button id="button_display" class="btn btn-primary dropdown-toggle text-right" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+              visible display area
+              </button>
+              <div id="choose_display" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+                  <a class="dropdown-item" href="#">viewport tracking</a>
+                  <a class="dropdown-item" href="#">borderless</a>
+                   <div class="dropdown-divider"></div>
+                  <a class="dropdown-item" href="#">narrow</a>
+                  <a class="dropdown-item" href="#">standard</a>
+                  <a class="dropdown-item" href="#">wider</a>
+                  <a class="dropdown-item" href="#">overscan</a>
+                  <a class="dropdown-item" href="#">extreme</a>
+
+                </div>
+              <span style="font-size: smaller">(tracking or borderless to auto set Amigas current viewport size)</span>
+            </div>
+            <div class="custom-control custom-switch mt-2">
+              <input type="checkbox" class="custom-control-input" id="ntsc_pixel_ratio_switch" />
+              <label class="custom-control-label" for="ntsc_pixel_ratio_switch">NTSC machine and pixel aspect ratio</label>
+            </div>
+
+            <div class="custom-control custom-switch mt-2">
+              <input type="checkbox" class="custom-control-input" id="wide_screen_switch" />
+              <label class="custom-control-label" for="wide_screen_switch">cinematic wide screen</label>
+            </div>
+
+            <div class="custom-control custom-switch mt-2">
+              <input type="checkbox" class="custom-control-input" id="wake_lock_switch" />
+              <label class="custom-control-label" for="wake_lock_switch">wake lock</label>
+              <span id="wake_lock_status" class="ml-1" style="font-size: smaller">(request to stay awake while running, prevent thereby system auto off or screen dimming)</span>
+            </div>
+
+            <div class="dropdown mr-1 mt-2">
+              <button id="button_color_palette" class="btn btn-primary dropdown-toggle text-right" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                color
+              </button>
+              <div id="choose_color_palette" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+                <a class="dropdown-item" href="#">color</a>
+                <a class="dropdown-item" href="#">black white</a>
+                <a class="dropdown-item" href="#">paper white</a>
+                <a class="dropdown-item" href="#">green</a>
+                <a class="dropdown-item" href="#">amber</a>
+                <a class="dropdown-item" href="#">sepia</a>
+              </div>
+            </div>
+            <div class="custom-control custom-switch mt-3">
+              <input type="checkbox" class="custom-control-input" id="warp_switch" />
+              <label class="custom-control-label" for="warp_switch">warp during disk load</label>
+            </div>
+            <div class="custom-control custom-switch mt-1">
+              <input type="checkbox" class="custom-control-input" id="auto_snapshot_switch" />
+              <label class="custom-control-label" for="auto_snapshot_switch" data-toggle="tooltip" data-placement="top" title="you find auto snapshots in the first row of the snapshot browser">save auto snapshots</label>
+            </div>
+            <div class="custom-control custom-switch mt-1">
+              <input type="checkbox" class="custom-control-input" id="movable_action_buttons_in_settings_switch" />
+              <label class="custom-control-label" for="movable_action_buttons_in_settings_switch" data-toggle="tooltip" data-placement="top">movable action buttons</label>
+            </div>
+            <div id="move_action_buttons_label_settings" class="help_text" style="font-size: small"></div>
+
+            <div class="custom-control custom-switch mt-2">
+              <input type="checkbox" class="custom-control-input" id="auto_selecting_app_title_switch" />
+              <label class="custom-control-label" for="auto_selecting_app_title_switch" data-toggle="tooltip" data-placement="top">'auto selecting' action button groups on media insert</label>
+            </div>
+            <div id="auto_select_on_help" class="help_text" style="font-size: small">currently&nbsp;<span>auto selecting</span>&nbsp;snapshot names and action button groups based on the filename of the mounted media. (recommended for single disk-based games)</div>
+            <div id="auto_select_off_help" class="help_text" style="font-size: small">currently&nbsp;<span>auto selecting=off</span>&nbsp;(recommended when all your apps are mainly on a single amiga hard drive.)</div>
+
+
+            <div class="container row justify-content-start mt-4">
+              <div class="dropdown mr-1 mt-1">
+                <button id="button_speed" class="btn btn-primary dropdown-toggle text-right" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                  speed = 100%
+                </button>
+                <div id="choose_speed" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+                  <a class="dropdown-item" href="#">every 2nd vsync</a>
+                  <a class="dropdown-item" href="#">vsync</a>
+                  <a class="dropdown-item" href="#">2 frames on vsync</a>
+                  <a class="dropdown-item" href="#">50%</a>
+                  <a class="dropdown-item" href="#">75%</a>
+                  <a class="dropdown-item" href="#">100%</a>
+                  <a class="dropdown-item" href="#">120%</a>
+                  <a class="dropdown-item" href="#">160%</a>
+                  <a class="dropdown-item" href="#">200%</a>
+                </div>
+              </div>
+              <div id="speed_text" class="ml-3 mt-1 setting_text"></div>              
+            </div>
+            <div class="container row justify-content-start mt-4">            
+              <div class="dropdown mr-1 mt-4">
+                <button id="button_run_ahead" class="btn btn-primary dropdown-toggle text-right" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                  run ahead frames = 0
+                </button>
+                <div id="choose_run_ahead" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+                  <a class="dropdown-item" href="#">0 frame</a>
+                  <a class="dropdown-item" href="#">1 frame</a>
+                  <a class="dropdown-item" href="#">2 frames</a>
+                  <a class="dropdown-item" href="#">3 frames</a>
+                  <a class="dropdown-item" href="#">4 frames</a>
+                  <a class="dropdown-item" href="#">5 frames</a>
+                  <a class="dropdown-item" href="#">6 frames</a>
+                </div>
+              </div>
+              <div id="run_ahead_text" class="ml-3 mt-1 setting_text">
+                <span>run ahead</span> reduces input lag by pre computing frames. The lag improvement is 20ms per number of frames ahead. Basically emulation itself introduces a slight lag of less than 20ms. Therefore, setting <span style="text-wrap: nowrap;">run ahead = 1 frame</span> already ensures the original responsive feeling. <span style="text-wrap: nowrap;">run ahead = 0 frame</span> saves battery life at the cost of a slight lag.
+              </div>              
+              <br>
+            </div>
+
+
+            <label class="mt-4">cut out sprite layers (stencil)</label>
+            <div style="display:flex;flex-direction:row;flex-wrap:wrap">
+              <div class="custom-control-lg custom-control custom-checkbox">
+                <input id="sprite0" class="custom-control-input layer" type="checkbox" value="">
+                <label for="sprite0" class="custom-control-label text-muted" style="width:20px">0</label>
+              </div>
+              <div class="custom-control-lg custom-control custom-checkbox">
+                <input id="sprite1" class="custom-control-input layer" type="checkbox" value="">
+                <label for="sprite1" class="custom-control-label text-muted" style="width:20px">1</label>
+              </div>
+              <div class="custom-control-lg custom-control custom-checkbox">
+                <input id="sprite2" class="custom-control-input layer" type="checkbox" value="">
+                <label for="sprite2" class="custom-control-label text-muted" style="width:20px">2</label>
+              </div>
+              <div class="custom-control-lg custom-control custom-checkbox">
+                <input id="sprite3" class="custom-control-input layer" type="checkbox" value="">
+                <label for="sprite3" class="custom-control-label text-muted" style="width:20px">3</label>
+              </div>
+              <div class="custom-control-lg custom-control custom-checkbox">
+                <input id="sprite4" class="custom-control-input layer" type="checkbox" value="">
+                <label for="sprite4" class="custom-control-label text-muted" style="width:20px">4</label>
+              </div>
+              <div class="custom-control-lg custom-control custom-checkbox">
+                <input id="sprite5" class="custom-control-input layer" type="checkbox" value="">
+                <label for="sprite5" class="custom-control-label text-muted" style="width:20px">5</label>
+              </div>
+              <div class="custom-control-lg custom-control custom-checkbox">
+                <input id="sprite6" class="custom-control-input layer" type="checkbox" value="">
+                <label for="sprite6" class="custom-control-label text-muted" style="width:20px">6</label>
+              </div>
+              <div class="custom-control-lg custom-control custom-checkbox">
+                <input id="sprite7" class="custom-control-input layer" type="checkbox" value="">
+                <label for="sprite7" class="custom-control-label text-muted" style="width:20px">7</label>
+              </div>
+            </div>
+
+            <label class="mt-1">cut out playfield layers (stencil)</label>
+            <div style="display:flex;flex-direction:row">
+             <div class="custom-control-lg custom-control custom-checkbox">
+                <input id="playfield1" class="custom-control-input layer" type="checkbox" value="">
+                <label for="playfield1" class="custom-control-label text-muted" style="width:20px">1</label>
+              </div>
+              <div class="custom-control-lg custom-control custom-checkbox">
+                <input id="playfield2" class="custom-control-input layer" type="checkbox" value="">
+                <label for="playfield2" class="custom-control-label text-muted" style="width:20px">2</label>
+              </div>
+            </div>
+ 
+            <div class="mt-4">
+              compatibility settings 
+            </div>
+            <div class="mt-2">
+              <div class="custom-control custom-switch mt-1">
+                <input type="checkbox" class="custom-control-input" id="OPT_CLX_SPR_SPR" />
+                <label class="custom-control-label" for="OPT_CLX_SPR_SPR" data-toggle="tooltip" data-placement="top" title="">sprite to sprite collision</label>
+              </div>
+              <div class="custom-control custom-switch mt-1">
+                <input type="checkbox" class="custom-control-input" id="OPT_CLX_SPR_PLF" />
+                <label class="custom-control-label" for="OPT_CLX_SPR_PLF" data-toggle="tooltip" data-placement="top" title="">sprite to playfield collision</label>
+              </div>
+              <div class="custom-control custom-switch mt-1">
+                <input type="checkbox" class="custom-control-input" id="OPT_CLX_PLF_PLF" />
+                <label class="custom-control-label" for="OPT_CLX_PLF_PLF" data-toggle="tooltip" data-placement="top" title="">playfield to playfield collision</label>
+              </div>
+            </div>
+            <div id="hardware_settings">
+            </div>
+
+<br>
+game controller type settings
+<div class="mt-2" style="font-size: smaller">
+  <button id="button_game_controller_type_choice" class="btn btn-primary dropdown-toggle text-right mb-1" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+  button support=1
+  </button>
+  <div id="choose_game_controller_type" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+      <a class="dropdown-item" href="#">1</a>
+      <a class="dropdown-item" href="#">2</a>
+      <a class="dropdown-item" href="#">3</a>
+  </div>
+<br>
+<div id="gc_buttons_1" class="ml-3 gc_choice_text">
+  <span>one fire button</span> when using virtual touch joystick the right half of screen is that button. All external controller buttons are mapped to button1. (original Amiga games before 1990 had only 1 button)
+</div>
+<div id="gc_buttons_2" class="ml-3 gc_choice_text" >
+  <span>two fire buttons</span> when using the virtual touch joystick the right half of screen is divided in two vertical stacked touch areas. All external controller buttons are mapped alternating to button1 and button2. When using keyboard joystick emulation button2 is mapped to key 'B'.   
+</div>
+<div id="gc_buttons_3" class="ml-3 gc_choice_text">
+  <span>three fire buttons</span> when using the virtual touch joystick the right half of screen is divided in three vertical stacked touch areas. All external controller buttons are mapped alternating to button1, 2 and 3. When using keyboard joystick emulation button2 is mapped to key 'B' and button3 to key 'N'.
+</div>
+</div>
+<br>
+<br>
+touch joystick and mouse touchpad layout
+<div class="mt-2">
+  <div class="custom-control custom-switch mt-1">
+    <input type="checkbox" class="custom-control-input" id="touch_swap_move_button" />
+    <label class="custom-control-label" for="touch_swap_move_button" data-toggle="tooltip" data-placement="top" title="">swap move and buttons side</label>
+  </div>
+  <div id="touch_swap_move_button_false" class="ml-3 help_text" style="font-size: smaller">
+    <span>move | buttons</span> the left half of the screen detects movement input and the right half detects button presses 
+  </div>
+  <div id="touch_swap_move_button_true" class="ml-3 help_text" style="font-size: smaller">
+    <span>buttons | move</span> the left half of the screen detects button presses and the right half detects movement input<br>This layout can be more comfortable for left handed players 
+  </div>
+</div>
+<br>
+<br>
+virtual touch joystick settings
+<div class="mt-2" style="font-size: smaller">
+  <button id="button_vjoy_touch" class="btn btn-primary dropdown-toggle text-right mb-1" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+  positioning=base moves
+  </button>
+  <div id="choose_vjoy_touch" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+      <a class="dropdown-item" href="#">base moves</a>
+      <a class="dropdown-item" href="#">base fixed on first touch</a>
+      <a class="dropdown-item" href="#">stationary middle</a>
+      <a class="dropdown-item" href="#">stationary bottom</a>
+  </div>
+<br>
+<div id="base_moves_text" class="ml-3 vjoy_choice_text">
+  <span>base moves</span>&nbsp;the base follows your finger when the stick circle passes the boundary of the base circle.
+</div>
+<div id="base_fixed_on_first_touch_text" class="ml-3 vjoy_choice_text" >
+  <span>base fixed on first touch</span>&nbsp;joystick base is fixed
+</div>
+<div id="stationary_middle_text" class="ml-3 vjoy_choice_text">
+  <span>stationary middle</span>&nbsp;the base at a fixed middle y position and always visible
+</div>
+<div id="stationary_bottom_text" class="ml-3 vjoy_choice_text">
+  <span>stationary bottom</span>&nbsp;the base at a fixed bottom y position and always visible
+</div>
+</div>
+
+<div class="dropdown mr-1 mt-4">
+  <button id="button_vjoy_dead_zone" class="btn btn-primary dropdown-toggle text-right" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+    virtual joysticks dead zone=12
+  </button>
+  <div id="choose_vjoy_dead_zone" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+    <a class="dropdown-item" href="#">0</a>
+    <a class="dropdown-item" href="#">4</a>
+    <a class="dropdown-item" href="#">8</a>
+    <a class="dropdown-item" href="#">12</a>
+    <a class="dropdown-item" href="#">14</a>
+    <a class="dropdown-item" href="#">16</a>
+    <a class="dropdown-item" href="#">20</a>
+    <a class="dropdown-item" href="#">24</a>
+  </div>
+</div>
+
+<br>     
+touch screen settings for virtual keyboard
+<div class="mt-2" style="font-size: smaller">
+  <button id="button_vbk_touch" class="btn btn-primary dropdown-toggle text-right mb-1" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+  keycap touch behaviour=exact timing
+  </button>
+  <div id="choose_vbk_touch" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+      <a class="dropdown-item" href="#">exact timing</a>
+      <a class="dropdown-item" href="#">smartphone like</a>
+      <a class="dropdown-item" href="#">mix of both</a>
+  </div>
+<br>
+<div id="exact_timing_text" class="ml-3 vbk_choice_text">
+  <span>exact timing</span>&nbsp;autorepeat and simultaneous keycap presses (disables default scroll gestures on keycaps, scroll gesture possible only on gaps around the keys)
+</div>
+<div id="smartphone_like_text" class="ml-3 vbk_choice_text" >
+  <span>smartphone like</span>&nbsp;native scroll gestures on keycaps (press starts after finger is lifted from keycap for a duration of 100ms)
+</div>
+<div id="mix_of_both_text" class="ml-3 vbk_choice_text">
+  <span>mix of both</span>&nbsp;tries to mix both worlds... i.e. exact timing and simultaneous presses but also scrolls keyboard when swiping the finger on keycaps. disadvantage: also does a keypress when only scrolling was intended 
+</div>
+</div>
+
+<div class="dropdown mr-1 mt-4">
+  <button id="button_keycap_size" class="btn btn-primary dropdown-toggle text-right" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+    keycap size=1.0
+  </button>
+  <div id="choose_keycap_size" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+    <a class="dropdown-item" href="#">0.40</a>
+    <a class="dropdown-item" href="#">0.45</a>
+    <a class="dropdown-item" href="#">0.50</a>
+    <a class="dropdown-item" href="#">0.55</a>
+    <a class="dropdown-item" href="#">0.60</a>
+    <a class="dropdown-item" href="#">0.65</a>
+    <a class="dropdown-item" href="#">0.70</a>
+    <a class="dropdown-item" href="#">0.75</a>
+    <a class="dropdown-item" href="#">0.80</a>
+    <a class="dropdown-item" href="#">0.85</a>
+    <a class="dropdown-item" href="#">0.90</a>
+    <a class="dropdown-item" href="#">0.95</a>
+    <a class="dropdown-item" href="#">1.00</a>
+    <a class="dropdown-item" href="#">1.10</a>
+    <a class="dropdown-item" href="#">1.20</a>
+    <a class="dropdown-item" href="#">1.30</a>
+  </div>
+</div>
+<div class="dropdown mr-1 mt-4">
+  <button id="button_keyboard_bottom_margin" class="btn btn-primary dropdown-toggle text-right" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+    keyboard bottom margin=0px
+  </button>
+  <div id="choose_keyboard_bottom_margin" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+    <a class="dropdown-item" href="#">auto</a>
+    <a class="dropdown-item" href="#">0px</a>
+    <a class="dropdown-item" href="#">5px</a>
+    <a class="dropdown-item" href="#">10px</a>
+    <a class="dropdown-item" href="#">15px</a>
+    <a class="dropdown-item" href="#">20px</a>
+    <a class="dropdown-item" href="#">25px</a>
+  </div>
+</div>
+
+<div class="dropdown mr-1 mt-4">
+  <button id="button_keyboard_transparency" class="btn btn-primary dropdown-toggle text-right" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+    keyboard transparency=0%
+  </button>
+  <div id="choose_keyboard_transparency" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+    <a class="dropdown-item" href="#">0</a>
+    <a class="dropdown-item" href="#">25</a>
+    <a class="dropdown-item" href="#">50</a>
+    <a class="dropdown-item" href="#">60</a>
+    <a class="dropdown-item" href="#">75</a>
+    <a class="dropdown-item" href="#">80</a>
+    <a class="dropdown-item" href="#">85</a>
+  </div>
+</div>
+
+<div class="dropdown mr-1 mt-4">
+  <button id="button_keyboard_sound_volume" class="btn btn-primary dropdown-toggle text-right" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+    key press sound feedback=50%
+  </button>
+  <div id="choose_keyboard_sound_volume" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+    <a class="dropdown-item" href="#">0</a>
+    <a class="dropdown-item" href="#">5</a>
+    <a class="dropdown-item" href="#">25</a>
+    <a class="dropdown-item" href="#">50</a>
+    <a class="dropdown-item" href="#">75</a>
+    <a class="dropdown-item" href="#">100</a>
+  </div>
+</div>
+
+<div class="custom-control custom-switch mt-2" >
+  <input type="checkbox" class="custom-control-input" id="key_haptic_feedback"/>
+  <label class="custom-control-label" for="key_haptic_feedback"  data-toggle="tooltip" data-placement="right" title="">haptic key press feedback</label>
+</div>
+
+
+
+            <div class="custom-control custom-switch mt-5">
+              <input type="checkbox" class="custom-control-input" id="cb_debug_output" />
+              <label class="custom-control-label" for="cb_debug_output">load logging console <span style="font-size:smaller">(after loaded click bottom right button)</span></label>
+            </div>
+
+            <hr>
+            <div class="mt-2" style="font-size: small;">
+            <p>
+              <br>
+              <a href="https://vamigaweb.github.io/doc/about.html" style="font-size:x-large">
+                learn more about vAmigaWeb<svg class="ml-1" style="width:1em;height:1em"><use xlink:href="img/sprites.svg#link"/></svg>
+              </a>
+              <br><br>
+              other members of the vAmiga family:
+              <br><a href="https://dirkwhoffmann.github.io/vAmiga/" style="font-size:medium">take me to vAmiga for Mac<svg class="ml-1" style="width:1em;height:1em"><use xlink:href="img/sprites.svg#link"/></svg></a>              
+              <br><a href="https://www.neoartcr.com/vamiga/" style="font-size:medium">take me to vAmiga Online<svg class="ml-1" style="width:1em;height:1em"><use xlink:href="img/sprites.svg#link"/></svg></a>
+              <br><br>
+              my 8-Bit brother:
+              <br><a href="https://vc64web.github.io/doc/about.html" style="font-size:medium">take me to vc64web<svg class="ml-1" style="width:1em;height:1em"><use xlink:href="img/sprites.svg#link"/></svg></a>
+            </p>
+            <div class="mt-3" id="version_display"></div>
+            <br>
+          </div>
+
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- end of modal settings-->
+
+    <!-- modal reset --->
+    <div class="modal fade" id="modal_reset" tabindex="-1" role="dialog" aria-hidden="true" ontouchstart="event.stopPropagation()">
+      <div class="modal-dialog" role="document">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">hard reset</h5>
+            <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+              <span aria-hidden="true">&times;</span>
+            </button>
+          </div>
+          <div class="modal-body">
+            By resetting the CPU and the custom chip set, the Amiga will be forced to reboot.<br><br>
+            Disk drives will stay connected.<br><br>
+            Current program state will be lost.
+
+            <div style="display: flex;justify-content: flex-end;">
+              <button type="button" id="button_reset_confirmed" class="btn btn-primary mr-2">reset now&nbsp;<svg width="1em" height="1em" viewBox="0 0 16 16" class="bi bi-arrow-return-left" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M14.5 1.5a.5.5 0 0 1 .5.5v4.8a2.5 2.5 0 0 1-2.5 2.5H2.707l3.347 3.346a.5.5 0 0 1-.708.708l-4.2-4.2a.5.5 0 0 1 0-.708l4-4a.5.5 0 1 1 .708.708L2.707 8.3H12.5A1.5 1.5 0 0 0 14 6.8V2a.5.5 0 0 1 .5-.5z"/></svg></button>
+              <button type="button" class="btn btn-secondary" data-dismiss="modal">cancel</button>  
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- modal take snapshot--->
+    <div class="modal fade" id="modal_take_snapshot" tabindex="-1" role="dialog" aria-labelledby="take_snapshot_ModalLabel" aria-hidden="true">
+      <div class="modal-dialog" role="document">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="take_snapshot_ModalLabel">save to local browser space</h5>
+            <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+              <span aria-hidden="true">&times;</span>
+            </button>
+          </div>
+          <div class="modal-body">
+            <div class="input-group mb-3">
+              <div class="input-group-prepend">
+                <span class="input-group-text" id="inputGroup-sizing-default">app title</span>
+              </div>
+              <input id="input_app_title" type="text" spellcheck="false" class="form-control" aria-label="Sizing example input" aria-describedby="inputGroup-sizing-default"
+              data-toggle="tooltip" data-placement="right" title="store in a snapshot browser row dedicated for this app title"
+              >
+            </div>
+            
+          </div>
+          <div class="modal-footer" style="align-items: flex-start;">
+            <div class="justify-start">
+<div style="display:flex; flex-direction: column">
+              <button id="button_export_df0" type="button" style="text-align:start" class="btn btn-success ml-2" data-toggle="tooltip" data-placement="top" title="export the current state of disk in df0">
+                <svg style="width:1.2em;height:1.2em;margin-top:-7px"><use xlink:href="img/sprites.svg#share"/></svg> disk in df0</button>
+              <button id="button_export_df1" type="button" style="text-align:start" class="btn btn-success ml-2 mt-1" data-toggle="tooltip" data-placement="top" title="export the current state of disk in df1">
+                              <svg style="width:1.2em;height:1.2em;margin-top:-7px"><use xlink:href="img/sprites.svg#share"/></svg> disk in df1</button>
+              <button id="button_export_df2" type="button" style="text-align:start" class="btn btn-success ml-2 mt-1" data-toggle="tooltip" data-placement="top" title="export the current state of disk in df2">
+                              <svg style="width:1.2em;height:1.2em;margin-top:-7px"><use xlink:href="img/sprites.svg#share"/></svg> disk in df2</button>
+              <button id="button_export_df3" type="button" style="text-align:start" class="btn btn-success ml-2 mt-1" data-toggle="tooltip" data-placement="top" title="export the current state of disk in df3">
+                              <svg style="width:1.2em;height:1.2em;margin-top:-7px"><use xlink:href="img/sprites.svg#share"/></svg> disk in df3</button>
+
+              <button id="button_export_hd0" type="button" style="text-align:start" class="btn btn-success ml-2 mt-1" data-toggle="tooltip" data-placement="top" title="export the current state of hard drive 0 as hdf file">
+                <svg style="width:1.2em;height:1.2em;margin-top:-7px"><use xlink:href="img/sprites.svg#share"/></svg> dh0 as hdf</button>
+              <button id="button_export_hd0_folder" type="button" style="text-align:start" class="btn btn-success ml-2 mt-1" data-toggle="tooltip" data-placement="top" title="export the current state of hard drive 0 as folder">
+                <svg style="width:1.2em;height:1.2em;margin-top:-7px"><use xlink:href="img/sprites.svg#share"/></svg> dh0 as folder</button>
+              <button id="button_export_hd1" type="button" style="text-align:start" class="btn btn-success ml-2 mt-1" data-toggle="tooltip" data-placement="top" title="export the current state of hard drive 1 as hdf file">
+                <svg style="width:1.2em;height:1.2em;margin-top:-7px"><use xlink:href="img/sprites.svg#share"/></svg> dh1 as hdf</button>
+              <button id="button_export_hd1_folder" type="button" style="text-align:start" class="btn btn-success ml-2 mt-1" data-toggle="tooltip" data-placement="top" title="export the current state of hard drive 1 as folder">
+                <svg style="width:1.2em;height:1.2em;margin-top:-7px"><use xlink:href="img/sprites.svg#share"/></svg> dh1 as folder</button>
+
+              <button id="button_export_hd2" type="button" style="text-align:start" class="btn btn-success ml-2 mt-1" data-toggle="tooltip" data-placement="top" title="export the current state of hard drive 2 as hdf file">
+                <svg style="width:1.2em;height:1.2em;margin-top:-7px"><use xlink:href="img/sprites.svg#share"/></svg> dh2 as hdf</button>
+              <button id="button_export_hd2_folder" type="button" style="text-align:start" class="btn btn-success ml-2 mt-1" data-toggle="tooltip" data-placement="top" title="export the current state of hard drive 2 as folder">
+                <svg style="width:1.2em;height:1.2em;margin-top:-7px"><use xlink:href="img/sprites.svg#share"/></svg> dh2 as folder</button>
+
+                <button id="button_export_hd3" type="button" style="text-align:start" class="btn btn-success ml-2 mt-1" data-toggle="tooltip" data-placement="top" title="export the current state of hard drive 3 as hdf file">
+                <svg style="width:1.2em;height:1.2em;margin-top:-7px"><use xlink:href="img/sprites.svg#share"/></svg> dh3 as hdf</button>
+              <button id="button_export_hd3_folder" type="button" style="text-align:start" class="btn btn-success ml-2 mt-1" data-toggle="tooltip" data-placement="top" title="export the current state of hard drive 3 as folder">
+                <svg style="width:1.2em;height:1.2em;margin-top:-7px"><use xlink:href="img/sprites.svg#share"/></svg> dh3 as folder</button>
+
+</div>
+            </div>
+            <button type="button" id="button_save_workspace" class="btn btn-primary">save workspace</button>
+
+            <button type="button" id="button_save_snapshot" class="btn btn-primary">save snapshot&nbsp;<svg width="1em" height="1em" viewBox="0 0 16 16" class="bi bi-arrow-return-left" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M14.5 1.5a.5.5 0 0 1 .5.5v4.8a2.5 2.5 0 0 1-2.5 2.5H2.707l3.347 3.346a.5.5 0 0 1-.708.708l-4.2-4.2a.5.5 0 0 1 0-.708l4-4a.5.5 0 1 1 .708.708L2.707 8.3H12.5A1.5 1.5 0 0 0 14 6.8V2a.5.5 0 0 1 .5-.5z"/></svg></button>
+            <button type="button" class="btn btn-secondary" data-dismiss="modal">cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!--take snapshot modal-->
+
+
+    <!-- custom key modal--->
+    <div class="modal fade" id="modal_custom_key" tabindex="-1" role="dialog" aria-labelledby="custom_key_ModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-lg" role="document">
+        <div class="modal-content">
+          <div class="modal-header pb-0">
+            <h5 class="modal-title" id="custom_key_ModalLabel">define the action</h5>
+            <div style="display:flex">
+              <div id="other_buttons"></div>
+              <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                <span aria-hidden="true">&times;</span>
+              </button>
+            </div>
+          </div>
+          <div class="modal-body pt-0">
+            <i>create app or game specific keyboard mappings or customized overlay buttons with free positioning that trigger your defined action.</i>
+            
+            <div class="mt-4 w-100">
+              action button (optional)<br>
+              <div class="input-group mb-3">
+                <input id="input_button_text" spellcheck="false" autocomplete="off" placeholder="Enter button text or use emojis 😊 as icon. Empty for no button." type="text" class="form-control" aria-label="action script" aria-describedby="inputGroup-sizing-default">
+                <div class="input-group-append">
+                  <button id="button_reset_position" class="btn btn-primary" style="border-top-right-radius: 0.25rem;border-bottom-right-radius: 0.25rem;">reset position</button>
+                </div>
+                <div id="input_button_text_error" class="invalid-feedback">specify either a button text or a keyboard shortcut or both</div>
+              </div>
+            </div>
+
+            <div class="mt-3" style="display:flex;justify-content:flex-start;width:100%">
+              <div class="dropdown">
+                <button id="button_padding" class="btn btn-primary dropdown-toggle text-right" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                  btn size = default
+                </button>
+                <div id="choose_padding" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+                  <a class="dropdown-item" href="#">default</a>
+                  <a class="dropdown-item" href="#">0.4</a>
+                  <a class="dropdown-item" href="#">0.6</a>
+                  <a class="dropdown-item" href="#">0.9</a>
+                  <a class="dropdown-item" href="#">1.1</a>
+                  <a class="dropdown-item" href="#">1.3</a>
+                  <a class="dropdown-item" href="#">1.8</a>
+                  <a class="dropdown-item" href="#">2.5</a>
+                  <a class="dropdown-item" href="#">3</a>
+                  <a class="dropdown-item" href="#">4</a>
+                  <a class="dropdown-item" href="#">6</a>
+                </div>
+              </div> 
+              <div class="dropdown">
+                <button id="button_opacity" class="ml-4 btn btn-primary dropdown-toggle text-right" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                  btn opacity = default
+                </button>
+                <div id="choose_opacity" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+                  <a class="dropdown-item" href="#">default</a>
+                  <a class="dropdown-item" href="#">0.0</a>
+                  <a class="dropdown-item" href="#">0.1</a>
+                  <a class="dropdown-item" href="#">0.2</a>
+                  <a class="dropdown-item" href="#">0.3</a>
+                  <a class="dropdown-item" href="#">0.4</a>
+                  <a class="dropdown-item" href="#">0.5</a>
+                  <a class="dropdown-item" href="#">0.6</a>
+                  <a class="dropdown-item" href="#">0.7</a>
+                  <a class="dropdown-item" href="#">0.8</a>
+                  <a class="dropdown-item" href="#">0.9</a>
+                  <a class="dropdown-item" href="#">1.0</a>
+                </div>
+              </div>
+            </div>
+            <div class="mt-4 w-100">
+              keyboard mapping shortcut<br>
+              <div class="input-group mb-3">
+                <input id="input_button_shortcut" placeholder="(optional)" spellcheck="false" autocomplete="off" type="text" class="form-control ml-1" style="width:8em;margin-left: 0 !important;" aria-label="action script" aria-describedby="inputGroup-sizing-default">
+                <div class="input-group-append">
+                  <button id="button_delete_shortcut" class="btn btn-primary" style="border-top-right-radius: 0.25rem;border-bottom-right-radius: 0.25rem;">×</button>
+                </div>
+                <div id="input_button_shortcut_error" class="invalid-feedback">specify either a button text or a keyboard shortcut or both</div>
+              </div>
+            </div>
+            app scope
+            <div class="custom-control-lg custom-control custom-checkbox">
+              <input id="check_app_scope" class="custom-control-input" type="checkbox" value="">
+              <label id="check_app_scope_label" class="custom-control-label text-muted" for="check_app_scope">
+              </label>
+            </div> 
+            <br>
+            compose an action sequence, for example<br>
+            <ul>
+            <li><b class="select-all" onclick="copy_to_clipboard(this)">loop5{j2fire1=>120ms=>j2fire0=>90ms}</b>&nbsp;which will shoot 5 times</li>
+            <li>or a literal action enclosed in single quotes e.g. <b class="select-all" onclick="copy_to_clipboard(this)">'I am an Amiga.'</b></li>
+            <li>or key combos e.g. CTRL+W &nbsp;<b class="select-all" onclick="copy_to_clipboard(this)">pressControlLeft=>W=>releaseControlLeft</b></li>
+            <li>or&nbsp;<b class="select-all" onclick="copy_to_clipboard(this)">pressA=>await_action_button_released=>releaseA</li> for A keydown on button down and A keyup on button up in locked mode (see settings or below)</li> 
+            <li>for more complex tasks you can also choose to add a javascript ...</li>
+            </ul>
+
+            <div class="input-group mb-3 mt-2">
+              <div class="dropdown" style="display:flex;justify-content:space-between;width:100%">
+                <div style="display:flex">
+                  <button id="button_script_language" class="btn btn-primary dropdown-toggle text-right" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                    actionscript
+                  </button>
+                  <div id="choose_script_language" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+                    <a class="dropdown-item" href="#">actionscript</a>
+                    <a class="dropdown-item" href="#">javascript</a>
+                  </div>
+                  
+                  <div id="check_autocomplete" class="custom-control-lg custom-control custom-checkbox ml-3 mt-2">
+                    <input id="check_livecomplete" class="custom-control-input" type="checkbox" value="">
+                    <label id="check_livecomplete_label" class="custom-control-label text-muted" for="check_livecomplete">
+                    live complete
+                    </label>
+                  </div> 
+                </div>
+
+                <div class="dropdown">
+                  <button id="button_script_add" class="btn btn-primary dropdown-toggle" type="button" style="height:100%"
+                  data-toggle="collapse" data-target="#predefined_actions" aria-controls="predefined_actions" aria-expanded="false" aria-label="predefined actions"                  
+                  >add 
+                  </button>
+                </div>
+                <div class="collapse" id="predefined_actions" style="position:absolute;z-index:2000;right:0;top:39px;">
+                  <div>
+                    <div class="dropdown">
+                      <button class="btn btn-primary dropdown-toggle text-right" style="width:100%" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                        javascript
+                      </button>
+                      <div id="add_javascript" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+                      </div>
+                    </div>
+                    <div class="dropdown">
+                      <button class="btn btn-primary dropdown-toggle text-right" style="width:100%" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                        special key
+                      </button>
+                      <div id="add_special_key" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+                      </div>
+                    </div>
+                    <div class="dropdown">
+                      <button class="btn btn-primary dropdown-toggle text-right" style="width:100%" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                        joyport1 action
+                      </button>
+                      <div id="add_joystick1_action" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+                      </div>
+                    </div>
+                    <div class="dropdown">
+                      <button class="btn btn-primary dropdown-toggle text-right" style="width:100%" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                        joyport2 action
+                      </button>
+                      <div id="add_joystick2_action" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+                      </div>
+                    </div>
+                    <div class="dropdown">
+                      <button class="btn btn-primary dropdown-toggle text-right" style="width:100%" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                        timer action
+                      </button>
+                      <div id="add_timer_action" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+                      </div>
+                    </div>
+                    <div class="dropdown">
+                      <button class="btn btn-primary dropdown-toggle text-right" style="width:100%" type="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                        system action
+                      </button>
+                      <div id="add_system_action" class="dropdown-menu dropdown-menu-right" aria-labelledby="dropdownMenuButton">
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-1" style="width: 100%">
+                <textarea id="input_action_script" style="width: 100%;" placeholder="" class="form-control" aria-label="action script" aria-describedby="inputGroup-sizing-default"></textarea>
+                <div id="action_button_syntax_error" class="invalid-feedback"></div>
+              </div>
+
+            </div>
+
+            <div class="custom-control custom-switch">
+                <input type="checkbox" class="custom-control-input" id="move_action_buttons_switch" />
+                 <label class="custom-control-label" for="move_action_buttons_switch">
+                  moveable action buttons
+                 </label>
+            </div>
+            <div id="move_action_buttons_label" class="movable_button_label" style="margin-top: 0.5em;"></div>
+
+          </div>
+          <div class="modal-footer">
+            <button type="button" id="button_delete_custom_button" class="btn btn-danger justify-start">delete</button>
+            
+            <button type="button" id="button_save_custom_button" class="btn btn-primary">save</button>
+            <button type="button" class="btn btn-secondary" data-dismiss="modal">cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!--custom key modal-->
+
+
+    <!-- file slot modal--->
+    <div class="modal fade" id="modal_file_slot" tabindex="-1" role="dialog" aria-labelledby="file_slot_ModalLabel" aria-hidden="true">
+      <div class="modal-dialog" role="document">
+        <div class="modal-content" style="display: grid;grid-template-rows: auto 1fr auto;max-height: 91vh;">
+          <div class="modal-header">
+            <h5 class="modal-title" id="file_slot_ModalLabel"><span id="file_slot_dialog_label"></span></h5>
+            <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+              <span aria-hidden="true">&times;</span>
+            </button>
+          </div>
+          <div class="modal-body" style="overflow: auto">            
+            <div id="div_zip_content"></div>
+          </div>
+          <div class="modal-footer">
+            <div class="justify-start">
+            <button type="button" class="btn btn-secondary" data-dismiss="modal">cancel</button>
+            <button id="button_eject_zip" type="button" class="btn btn-success ml-2">eject zip</button>
+            </div>
+            <button id="button_insert_folder" type="button" class="btn btn-secondary">import all</button>
+            <button id="button_insert_file" type="button" class="btn btn-primary">insert</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!--file slot modal-->
+
+<!-- toaster -->
+<!-- Position it -->
+<div id="div_toast" style="position: absolute; bottom: 0; right: 0">
+<div class="toast" role="alert" aria-live="assertive" aria-atomic="true">
+  <div id="toast_header" class="toast-header">
+    <img src="img/icon_borderless_x413.png" class="rounded mr-2" style="width:38px;height:38px" alt="vAmigaWeb">
+    <span style="font-size: larger" class="mr-auto">newer version available</span>
+    <button type="button" class="ml-2 mb-1 close" data-dismiss="toast" aria-label="Close">
+      <span aria-hidden="true">&times;</span>
+    </button>
+  </div>
+  <div id="toast_body" class="toast-body">
+    <div id="update_dialog"></div>
+    <div class="mt-3">
+      <button type="button" onclick="execute_update()" class="btn btn-success mt-1">upgrade</button>
+      <button type="button" class="btn btn-secondary mt-1 ml-1" data-dismiss="toast">stay on current version</button>
+    </div>
+  </div>
+</div>
+</div>
+<!-- toaster end-->
+
+    <script type='text/javascript'>
+      let light_mode = false;
+      if(window.location.href.indexOf('#dark=false') >=0)
+      {
+        light_mode=true;
+      }
+      else if(window.location.href.indexOf("#")>0)
+      { 
+        let param_part = decodeURIComponent(window.location.href.substring(window.location.href.indexOf("#")));
+        
+        let start_pos=param_part.indexOf('#{');        
+        if(start_pos == 0 && param_part.endsWith('}'))
+        {
+          try {
+            let dark_conf = JSON.parse(param_part.substring(1)).dark;
+            light_mode = dark_conf !== undefined && dark_conf == false;
+          } catch(e) {
+            console.error(`error in JSON preconfig parameter: ${param_part}`);
+            console.error(e);
+            alert(`error in JSON preconfig parameter: \n${e}`); 
+          }
+          
+        }
+      }
+      if(light_mode)
+      {
+        $("#canvas").css("background-color", "var(--lighterbg)");
+        $("body").removeAttr( "data-theme").css("background-color", "var(--lighterbg) !important");
+      }
+
+
+      is_inside_scrollable=(e)=>{
+        let inside_modal=false;
+        let el=e.target; 
+        while(el != document.body)
+        {
+          if(
+            el.id == 'virtual_keyboard'||
+            (
+              el.classList !== undefined && 
+              (
+                  el.classList.contains("modal-dialog")
+                ||el.classList.contains("modal-header")
+                ||el.classList.contains("modal-body")
+                ||el.classList.contains("modal-content")
+                ||el.classList.contains("modal-footer")
+              )
+            )
+          )
+          {
+            inside_modal=true;
+            break;
+          }
+          el=el.parentNode;
+        }
+        return inside_modal;
+      }
+
+      //prevent backgroundscroll
+      document.body.addEventListener('touchmove',function(e){
+        if(!is_inside_scrollable(e))
+        {//prevent scrolling except on modals and vbk
+          e.preventDefault();
+        }
+      },{ capture:false ,passive: false });
+
+      var statusElement = document.getElementById('status');
+      var progressElement = document.getElementById('progress');
+      var spinnerElement = document.getElementById('spinner');
+ 
+      var Module = {
+        preRun: [function () {
+        }
+      ],
+        postRun: [InitWrappers],
+        print: (function() {
+          var outputElement = document.getElementById('output');
+          if (outputElement) outputElement.value = ''; // clear browser cache
+          return async function(text) {
+            console.log(text);
+/*            if(typeof live_debug_output == 'undefined') 
+              return;
+            if(!live_debug_output)
+              return;
+            if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
+            //setTimeout((text) => 
+            //{
+              // These replacements are necessary if you render to raw HTML
+              //text = text.replace(/&/g, "&amp;");
+              //text = text.replace(/</g, "&lt;");
+              //text = text.replace(/>/g, "&gt;");
+              //text = text.replace('\n', '<br>', 'g');
+              if (outputElement) {
+                outputElement.innerHTML += text +'<br>';
+                //outputElement.value += text + '\n';
+                //outputElement.scrollTop = outputElement.scrollHeight; // focus on bottom
+              }              
+            //}, 0);
+*/
+          };
+        })(),
+        printErr: function(text) {
+          if (arguments.length > 1) text = Array.prototype.slice.call(arguments).join(' ');
+          console.error(text);
+        },
+        canvas: (function() {
+          var canvas = document.getElementById('canvas');
+
+          // As a default initial behavior, pop up an alert when webgl context is lost. To make your
+          // application robust, you may want to override this behavior before shipping!
+          // See http://www.khronos.org/registry/webgl/specs/latest/1.0/#5.15.2
+          canvas.addEventListener("webglcontextlost", function(e) { alert('WebGL context lost. You will need to reload the page.'); e.preventDefault(); }, false);
+
+          return canvas;
+        })(),
+        setStatus: function(text) {
+          if (!Module.setStatus.last) Module.setStatus.last = { time: Date.now(), text: '' };
+          if (text === Module.setStatus.last.text) return;
+          var m = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
+          var now = Date.now();
+          if (m && now - Module.setStatus.last.time < 30) return; // if this is a progress update, skip it if too soon
+          Module.setStatus.last.time = now;
+          Module.setStatus.last.text = text;
+          if (m) {
+            text = m[1];
+            progressElement.value = parseInt(m[2])*100;
+            progressElement.max = parseInt(m[4])*100;
+            progressElement.hidden = false;
+            spinnerElement.hidden = false;
+          } else {
+            progressElement.value = null;
+            progressElement.max = null;
+            progressElement.hidden = true;
+            if (!text) spinnerElement.hidden = true;
+          }
+          statusElement.innerHTML = text;
+        },
+        totalDependencies: 0,
+        monitorRunDependencies: function(left) {
+          this.totalDependencies = Math.max(this.totalDependencies, left);
+          Module.setStatus(left ? 'Preparing... (' + (this.totalDependencies-left) + '/' + this.totalDependencies + ')' : 'All downloads complete.');
+        }
+      };
+      Module.setStatus('Downloading...');
+      window.onerror = function(msg, url, lineNo, columnNo, error) {
+        if(msg.startsWith('Uncaught ')){
+          _wasm_print_error( JSON.stringify(error));
+        }
+        var message = [
+          'Error-Message: ' + msg,
+          'URL: ' + url,
+          'Line: ' + lineNo,
+          'Column: ' + columnNo,
+          'Error object: ' + JSON.stringify(error)
+        ].join('\n');
+        //alert(message + " -- go to settings open live debug console ...");
+        document.getElementById('output').value += "\n"+ message + "\n";
+
+        Module.setStatus('Error thrown, see JavaScript console ' + message);
+        spinnerElement.style.display = 'none';
+        Module.setStatus = function(text) {
+          if (text) Module.printErr('[post-exception status] ' + text);
+        };
+      };
+
+      var db;    
+      //ready function
+      $(function () {
+        $('[data-toggle="popover"]').popover();
+        //$('[data-toggle="tooltip"]').tooltip();
+        $("body").tooltip({selector: '[data-toggle="tooltip"]'});
+      });
+    </script>
+    {{{ SCRIPT }}}
+  </body>
+</html>

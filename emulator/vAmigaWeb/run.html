@@ -1,0 +1,117 @@
+<span style="display: flex;justify-content: center;">example how to embed an Amiga file into an existing html page</span> 
+
+<!-- vAmigaWeb-block start -->
+<script src="js/vAmigaWeb_player.js"></script>
+
+<script>
+//the following lines of code demonstrate how to receive serial data from the Amiga
+let out_buffer="";
+window.addEventListener('message', event => {
+    if(event.data.msg == 'serial_port_out')
+    {
+        let byte_from_amiga=event.data.value;
+        out_buffer+=String.fromCharCode( byte_from_amiga & 0xff );
+
+        if(out_buffer.length>80)
+        {
+            console.log(out_buffer);
+            out_buffer="";
+        }
+    }
+});
+
+
+function send_hello_to_ser(){
+    //get the vAmigaWeb iFrame window
+    let vAmigaWeb_window=document.getElementById("vAmigaWeb").contentWindow;
+
+    //data that should be written into the serial port
+    let data="sending text";
+
+    //send the data to the serial port of vAmigaWeb
+    vAmigaWeb_window.postMessage({cmd:"ser:", text: data}, "*");
+
+    //single bytes
+    let byte_buffer=(new TextEncoder()).encode(" sending single bytes");
+    for(let b of byte_buffer)
+        vAmigaWeb_window.postMessage({cmd:"ser:", byte: b}, "*");
+
+    //bytebuffer
+    let complete_buffer=(new TextEncoder()).encode(" sending a byte array");
+    vAmigaWeb_window.postMessage({cmd:"ser:", bytes: complete_buffer}, "*");
+}
+
+</script>
+
+
+<style>
+	body {
+        background-color: darkgray;
+	    color: white;
+	}	
+    #player_container {
+        background-color: darkgray;
+    }
+    #vAmigaWeb {
+        border:none;
+    }
+    .player_icon_btn {
+        background-color: transparent;
+        color: white;
+        margin-right: 15px;
+        cursor: pointer;
+    }
+    .btn_play {
+        color: #2575ff;
+        cursor: pointer;
+    }
+
+    @media (orientation: landscape) {
+        #container {
+            width: 60vw;
+        }
+    }    
+    @media (orientation: portrait) {
+        #container {
+            width: 99vw;
+        }
+    }
+
+    /* uncomment to disable the players icon control bar at the bottom
+    #player_container div {
+        display: none !important;
+    }
+    */
+</style>
+
+<div  style="display: flex;align-items: center;justify-content: center;">
+    <div id="container">
+        <img style="width:100%" src="https://vc64web.github.io/doc/images/wolfling.gif" 
+            ontouchstart="touched=true"
+            onclick="
+            vAmigaWeb_player.samesite_file={
+//                kickstart_rom_url:'./roms/kick2.rom',
+//                url:'./test2.adf',name:'my_demo.adf'
+            };
+            vAmigaWeb_player.vAmigaWeb_url='./';  //the emulator files are in the same folder as the run.html
+            let touch=(typeof touched!='undefined')?touched:false;touched=false;
+            let config={
+                touch:touch,
+                AROS:false,
+                x_wait_for_kickstart_injection:true,
+                navbar:false,   //you can also enable this and disable the players toolbar (see styles section above)
+                wide:true,
+                border:0.3,
+                port2:true,
+                url:'./test2.adf',
+                //kickstart_rom_url:'./roms/kick2.rom'
+            }; 
+            vAmigaWeb_player.load(this,encodeURIComponent(JSON.stringify(config)));
+            return false;"		
+        />
+    </div>
+</div>
+<br>
+<button type="button" onclick="send_hello_to_ser()">send hello to ser</button>
+
+<!-- vAmigaWeb-block end -->

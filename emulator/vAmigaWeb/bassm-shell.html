@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>BASSM Preview</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0a;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+      font-family: monospace;
+      color: #ccc;
+    }
+    #controls {
+      background: #1a1a1a;
+      border-bottom: 1px solid #333;
+      padding: 4px 8px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+      height: 28px;
+    }
+    #controls button {
+      padding: 1px 8px;
+      cursor: pointer;
+      background: #2a2a2a;
+      color: #ccc;
+      border: 1px solid #444;
+      border-radius: 2px;
+      font-size: 11px;
+      font-family: monospace;
+    }
+    #controls button:hover { background: #3a3a3a; border-color: #666; }
+    #controls button:disabled { opacity: 0.4; cursor: default; }
+    #status {
+      color: #666;
+      font-size: 11px;
+      margin-left: 8px;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #canvas-wrap {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+    #spinner {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      color: #666;
+      font-size: 12px;
+    }
+    #spinner-ring {
+      width: 32px;
+      height: 32px;
+      border: 3px solid #333;
+      border-top-color: #666;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <button id="btn-run"   disabled>Run</button>
+    <button id="btn-halt"  disabled>Halt</button>
+    <button id="btn-reset" disabled>Reset</button>
+    <span id="status">Loading WASM...</span>
+  </div>
+
+  <div id="canvas-wrap">
+    <div id="spinner">
+      <div id="spinner-ring"></div>
+      <span>Initializing emulator...</span>
+    </div>
+    <canvas id="canvas" width="724" height="568"
+      oncontextmenu="event.preventDefault()" tabindex="-1"
+      style="display:none">
+    </canvas>
+  </div>
+
+  <script>
+    // ── Rendering (adapted from vAmiga_canvas.js) ──────────────────────────
+    const TPP = 1;
+    const HBLANK_MIN = 0x12 * TPP;
+    const HPIXELS = 912 * TPP;
+    const VPIXELS = 313;
+    let xOff = HBLANK_MIN;
+    let yOff = 26 + 6;
+    let clipped_width  = HPIXELS - xOff - 8 * TPP;
+    let clipped_height = VPIXELS - yOff;
+    let ctx = null;
+    let image_data = null;
+
+    function create2d_context() {
+      const canvas = document.getElementById('canvas');
+      ctx = canvas.getContext('2d');
+      image_data = ctx.createImageData(HPIXELS, VPIXELS);
+    }
+
+    function render_canvas() {
+      const pixels = Module._wasm_pixel_buffer() + yOff * (HPIXELS << 2);
+      const pixel_buffer = new Uint8Array(
+        Module.HEAPU32.buffer, pixels, HPIXELS * clipped_height << 2
+      );
+      image_data.data.set(pixel_buffer);
+      ctx.putImageData(image_data, -xOff, 0, xOff, 0, clipped_width, clipped_height);
+    }
+
+    // ── Animation loop ─────────────────────────────────────────────────────
+    let stop_raf = true;
+    let do_animation_frame = null;
+    let queued_executes = 0;
+
+    function startAnimationLoop() {
+      if (do_animation_frame !== null) return;
+
+      const execute_frame = () => {
+        Module._wasm_execute();
+        queued_executes--;
+      };
+
+      const calculate_and_render = (now) => {
+        const behind = Module._wasm_draw_one_frame(now);
+        if (behind < 0) return;
+        render_canvas();
+        while (behind > queued_executes) {
+          queued_executes++;
+          setTimeout(execute_frame);
+        }
+      };
+
+      do_animation_frame = (now) => {
+        calculate_and_render(now);
+        if (!stop_raf) requestAnimationFrame(do_animation_frame);
+      };
+    }
+
+    // ── WASM API wrappers (set up in InitWrappers after Module is ready) ───
+    function InitWrappers() {
+      create2d_context();
+
+      const statusEl = document.getElementById('status');
+      const spinner  = document.getElementById('spinner');
+      const canvas   = document.getElementById('canvas');
+
+      statusEl.textContent = 'Ready — waiting for ROM';
+      spinner.style.display = 'none';
+      canvas.style.display  = 'block';
+
+      // Enable controls
+      document.getElementById('btn-run').disabled   = false;
+      document.getElementById('btn-halt').disabled  = false;
+      document.getElementById('btn-reset').disabled = false;
+
+      // Button handlers
+      document.getElementById('btn-run').onclick = () => {
+        Module._wasm_run();
+        startAnimationLoop();
+        stop_raf = false;
+        requestAnimationFrame(do_animation_frame);
+        statusEl.textContent = 'Running';
+      };
+
+      document.getElementById('btn-halt').onclick = () => {
+        Module._wasm_halt();
+        stop_raf = true;
+        statusEl.textContent = 'Halted';
+      };
+
+      document.getElementById('btn-reset').onclick = () => {
+        Module._wasm_reset();
+        statusEl.textContent = 'Reset';
+      };
+
+      // ── Electron IPC bridge ──────────────────────────────────────────────
+      // The preload script exposes window.electronAPI
+      if (window.electronAPI) {
+        window.electronAPI.onCommand((cmd) => {
+          handleCommand(cmd);
+        });
+      }
+
+      // Notify Electron that WASM is ready
+      if (window.electronAPI) {
+        window.electronAPI.ready();
+      }
+    }
+
+    function handleCommand(cmd) {
+      const statusEl = document.getElementById('status');
+      switch (cmd.type) {
+        case 'load-rom': {
+          const buf = new Uint8Array(cmd.data);
+          const ptr = Module._malloc(buf.byteLength);
+          Module.HEAPU8.set(buf, ptr);
+          const result = Module.ccall('wasm_loadFile', 'string',
+            ['string', 'number', 'number', 'number'],
+            ['rom.bin', ptr, buf.byteLength, 0]);
+          Module._free(ptr);
+          statusEl.textContent = result || 'ROM loaded';
+          break;
+        }
+        case 'load-exe': {
+          const buf = new Uint8Array(cmd.data);
+          const ptr = Module._malloc(buf.byteLength);
+          Module.HEAPU8.set(buf, ptr);
+          const result = Module.ccall('wasm_loadFile', 'string',
+            ['string', 'number', 'number', 'number'],
+            ['program.exe', ptr, buf.byteLength, 0]);
+          Module._free(ptr);
+          statusEl.textContent = result || 'EXE loaded';
+          break;
+        }
+        case 'power-on':
+          Module._wasm_power_on();
+          statusEl.textContent = 'Powered on';
+          break;
+        case 'run':
+          document.getElementById('btn-run').click();
+          break;
+        case 'halt':
+          document.getElementById('btn-halt').click();
+          break;
+        case 'reset':
+          document.getElementById('btn-reset').click();
+          break;
+      }
+    }
+
+    // ── Emscripten Module configuration ───────────────────────────────────
+    var Module = {
+      preRun:  [],
+      postRun: [InitWrappers],
+      canvas: (() => document.getElementById('canvas'))(),
+
+      print: (text) => console.log('[vAmiga]', text),
+      printErr: (text) => console.error('[vAmiga]', text),
+
+      setStatus: (text) => {
+        if (!text) return;
+        document.getElementById('status').textContent = text;
+      },
+      totalDependencies: 0,
+      monitorRunDependencies: (left) => {
+        Module.totalDependencies = Math.max(Module.totalDependencies, left);
+        Module.setStatus(left
+          ? `Loading... (${Module.totalDependencies - left}/${Module.totalDependencies})`
+          : 'All downloads complete.');
+      }
+    };
+  </script>
+
+  {{{ SCRIPT }}}
+</body>
+</html>

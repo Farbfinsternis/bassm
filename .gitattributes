@@ -1,0 +1,26 @@
+# Default: LF in repository, checkout as-is on all platforms
+* text=auto eol=lf
+
+# Explicitly binary files — no conversion
+*.exe    binary
+*.wasm   binary
+*.png    binary
+*.ico    binary
+*.pem    binary
+*.key    binary
+
+# C/C++ source — LF
+*.c      text eol=lf
+*.cpp    text eol=lf
+*.h      text eol=lf
+
+# Web files — LF
+*.html   text eol=lf
+*.js     text eol=lf
+*.css    text eol=lf
+*.json   text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+*.md     text eol=lf
+*.s      text eol=lf
+*.txt    text eol=lf

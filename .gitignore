@@ -1,0 +1,5 @@
+node_modules/
+emulator/vAmigaWeb/build/
+.DS_Store
+Thumbs.db
+.claude/
