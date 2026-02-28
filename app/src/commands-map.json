@@ -1,22 +1,61 @@
 [
     {
-        "name" : "Graphics",
-        "type" : "global",
-        "return" : "void",
-        "args" : [
-            {
-                "name" : "width",
-                "type" : "integer"
-            },
-            {
-                "name" : "height",
-                "type" : "integer"
-            },
-            {
-                "name" : "depth",
-                "type" : "integer"
-            }
+        "name": "Graphics",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "width",  "type": "integer" },
+            { "name": "height", "type": "integer" },
+            { "name": "depth",  "type": "integer" }
+        ]
+    },
+    {
+        "name": "Cls",
+        "type": "global",
+        "return": "void",
+        "args": []
+    },
+    {
+        "name": "ClsColor",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "color", "type": "integer" }
+        ]
+    },
+    {
+        "name": "Color",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "register", "type": "integer" },
+            { "name": "r",        "type": "integer" },
+            { "name": "g",        "type": "integer" },
+            { "name": "b",        "type": "integer" }
+        ]
+    },
+    {
+        "name": "WaitVbl",
+        "type": "global",
+        "return": "void",
+        "args": []
+    },
+    {
+        "name": "Text",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "x",      "type": "integer" },
+            { "name": "y",      "type": "integer" },
+            { "name": "string", "type": "string"  }
+        ]
+    },
+    {
+        "name": "NPrint",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "string", "type": "string" }
         ]
     }
-
 ]
