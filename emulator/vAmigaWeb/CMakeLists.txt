@@ -78,7 +78,7 @@ else()
 		-mbulk-memory
 		-sASSERTIONS=0
 		-sGL_ASSERTIONS=0
-		# no IndexedDB / filesystem needed — we load EXE directly
+		# no IndexedDB / filesystem needed - we load EXE directly
 		# host memory settings
 		-sINITIAL_MEMORY=320MB
 		-sTOTAL_STACK=32MB
@@ -86,7 +86,7 @@ else()
 		-sMAXIMUM_MEMORY=2GB
 		# exported runtime methods
 		-sEXPORTED_RUNTIME_METHODS=cwrap,ccall,HEAPU8,HEAPU32
-		# minimal export set for bare-metal preview (must be one string — no line breaks)
+		# minimal export set for bare-metal preview (must be one string - no line breaks)
 		"-sEXPORTED_FUNCTIONS=_malloc,_free,_main,_wasm_power_on,_wasm_run,_wasm_halt,_wasm_reset,_wasm_loadFile,_wasm_configure,_wasm_get_config_item,_wasm_execute,_wasm_draw_one_frame,_wasm_pixel_buffer,_wasm_frame_info,_wasm_get_render_width,_wasm_get_render_height,_wasm_rom_info,_wasm_get_sound_buffer_address,_wasm_copy_into_sound_buffer,_wasm_set_sample_rate,_wasm_update_audio,_wasm_rightChannelBuffer,_wasm_leftChannelBuffer,_wasm_get_core_version"
 		-sDISABLE_DEPRECATED_FIND_EVENT_TARGET_BEHAVIOR=1
 		-sLLD_REPORT_UNDEFINED
