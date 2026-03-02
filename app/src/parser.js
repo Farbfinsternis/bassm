@@ -5,23 +5,37 @@
 // Consumes the flat token array produced by the Lexer and returns an array
 // of statement AST nodes.
 //
-// STATEMENT NODES (current)
+// STATEMENT NODES
 //   { type: 'command', name: string, args: Expr[], line: number }
+//   { type: 'assign',  target: string, expr: Expr, line: number }
+//   { type: 'if',      cond: Expr, then: Stmt[], elseIfs: [{cond,body}[]], else: Stmt[], line: number }
+//   { type: 'while',   cond: Expr, body: Stmt[], line: number }
+//   { type: 'for',     var: string, from: Expr, to: Expr, step: Expr|null, body: Stmt[], line: number }
+//   { type: 'select',  expr: Expr, cases: [{values: Expr[], body: Stmt[]}[]], default: Stmt[], line: number }
 //
-// EXPRESSION NODES (current)
+// EXPRESSION NODES
 //   { type: 'int',    value: number }
 //   { type: 'float',  value: number }
 //   { type: 'string', value: string }
-//   { type: 'ident',  name:  string }
+//   { type: 'ident',  name: string }          — variable reference
+//   { type: 'binop',  op: string, left: Expr, right: Expr }
+//   { type: 'unary',  op: string, operand: Expr }
+//
+// EXPRESSION PRECEDENCE (low → high)
+//   comparison  =  <>  <  >  <=  >=   (non-associative, one per expression)
+//   add/sub     +  -
+//   mul/div     *  /
+//   unary       -
+//   primary     literal | identifier | ( expr )
 //
 // RULES
 //   • Statements are separated by NEWLINE tokens.
-//   • A command statement begins with a COMMAND token and is followed by
+//   • A command statement begins with a COMMAND token followed by
 //     zero or more comma-separated expressions until end of line.
-//   • Parentheses after a command name are optional:
-//       Graphics 320,256,5   and   Graphics(320,256,5)  both parse.
-//   • Lines that begin with an unrecognised token are skipped with a warning
-//     (forward-compatibility for features not yet implemented).
+//   • Parentheses after a command name are optional.
+//   • An assignment begins with an IDENT token followed by EQ ('=').
+//   • Inside expressions '=' is a comparison operator, not assignment.
+//   • Lines that begin with an unrecognised token are skipped.
 // ============================================================================
 
 import { TT } from './lexer.js';
@@ -38,7 +52,6 @@ export class Parser {
         const stmts  = [];
 
         while (!this._atEnd()) {
-            // Skip blank lines
             if (this._peek().type === TT.NEWLINE) { this._advance(); continue; }
             if (this._peek().type === TT.EOF)     { break; }
 
@@ -58,21 +71,46 @@ export class Parser {
             return this._parseCommand();
         }
 
-        // TODO: KEYWORD → control flow (If, While, For, …)
-        // TODO: IDENT   → variable assignment or procedure call
-
-        // Unknown — skip tokens until the next NEWLINE so we stay in sync
-        console.warn(`[Parser] Unhandled token type '${tok.type}' ("${tok.value}") on line ${tok.line}`);
-        while (!this._atEnd() && this._peek().type !== TT.NEWLINE && this._peek().type !== TT.EOF) {
-            this._advance();
+        // Variable assignment: IDENT = expr
+        if (tok.type === TT.IDENT) {
+            const next = this._peekAt(1);
+            if (next && next.type === TT.EQ) {
+                return this._parseAssignment();
+            }
         }
+
+        // Control-flow keywords
+        if (tok.type === TT.KEYWORD) {
+            if (tok.value === 'if')     return this._parseIf();
+            if (tok.value === 'while')  return this._parseWhile();
+            if (tok.value === 'for')    return this._parseFor();
+            if (tok.value === 'select') return this._parseSelect();
+        }
+
+        // Unknown — skip tokens until next NEWLINE
+        console.warn(`[Parser] Unhandled token '${tok.type}' ("${tok.value}") on line ${tok.line}`);
+        this._skipToNewline();
         return null;
+    }
+
+    // ── Assignment statement: <ident> = <expr> ───────────────────────────────
+
+    _parseAssignment() {
+        const nameTok = this._advance();            // consume IDENT
+        this._advance();                             // consume EQ
+        const expr = this._parseExpr();
+        return {
+            type:   'assign',
+            target: nameTok.value.toLowerCase(),
+            expr,
+            line:   nameTok.line,
+        };
     }
 
     // ── Command statement ────────────────────────────────────────────────────
 
     _parseCommand() {
-        const nameTok = this._advance();        // consume COMMAND token
+        const nameTok = this._advance();            // consume COMMAND token
         const args    = [];
 
         // Optional opening parenthesis: Graphics(320,256,5)
@@ -80,7 +118,10 @@ export class Parser {
         if (hasParen) this._advance();
 
         // Collect comma-separated argument expressions
-        while (!this._atEnd() && this._peek().type !== TT.NEWLINE && this._peek().type !== TT.EOF) {
+        while (!this._atEnd() &&
+               this._peek().type !== TT.NEWLINE &&
+               this._peek().type !== TT.EOF) {
+
             if (this._peek().type === TT.RPAREN) { this._advance(); break; }
             if (this._peek().type === TT.COMMA)  { this._advance(); continue; }
 
@@ -91,21 +132,85 @@ export class Parser {
         return { type: 'command', name: nameTok.value, args, line: nameTok.line };
     }
 
-    // ── Expression parser (minimal — literals + identifiers) ─────────────────
+    // ── Expression parser — recursive descent ────────────────────────────────
+    //
+    // Entry point.  Parses one comparison (or lower-precedence expression).
 
     _parseExpr() {
+        return this._parseComparison();
+    }
+
+    // comparison: addSub [ (= | <> | < | > | <= | >=) addSub ]
+    //
+    // Non-associative: only one comparison per expression.
+    // Inside expressions, '=' is always a comparison, never assignment.
+
+    _parseComparison() {
+        const left = this._parseAddSub();
+        const tok  = this._peek();
+
+        if (tok && this._isCompOp(tok.type)) {
+            this._advance();
+            const right = this._parseAddSub();
+            return { type: 'binop', op: tok.value, left, right };
+        }
+
+        return left;
+    }
+
+    // addSub: mulDiv { (+|-) mulDiv }
+
+    _parseAddSub() {
+        let left = this._parseMulDiv();
+
+        while (true) {
+            const tok = this._peek();
+            if (!tok || (tok.type !== TT.PLUS && tok.type !== TT.MINUS)) break;
+            this._advance();
+            const right = this._parseMulDiv();
+            left = { type: 'binop', op: tok.value, left, right };
+        }
+
+        return left;
+    }
+
+    // mulDiv: unary { (*|/) unary }
+
+    _parseMulDiv() {
+        let left = this._parseUnary();
+
+        while (true) {
+            const tok = this._peek();
+            if (!tok || (tok.type !== TT.STAR && tok.type !== TT.SLASH)) break;
+            this._advance();
+            const right = this._parseUnary();
+            left = { type: 'binop', op: tok.value, left, right };
+        }
+
+        return left;
+    }
+
+    // unary: - unary | primary
+
+    _parseUnary() {
+        if (this._peek().type === TT.MINUS) {
+            this._advance();
+            const operand = this._parseUnary();
+            // Fold constant unary minus at parse time
+            if (operand && (operand.type === 'int' || operand.type === 'float')) {
+                return { ...operand, value: -operand.value };
+            }
+            return { type: 'unary', op: '-', operand };
+        }
+        return this._parsePrimary();
+    }
+
+    // primary: INT | FLOAT | STRING | IDENT | ( expr )
+
+    _parsePrimary() {
         const tok = this._peek();
 
-        // Unary minus: -42
-        if (tok.type === TT.MINUS) {
-            this._advance();
-            const operand = this._peek();
-            if (operand.type === TT.INT || operand.type === TT.FLOAT) {
-                this._advance();
-                return { type: operand.type, value: -operand.value };
-            }
-            return null;
-        }
+        if (!tok) return null;
 
         switch (tok.type) {
             case TT.INT:
@@ -122,21 +227,289 @@ export class Parser {
 
             case TT.IDENT:
                 this._advance();
-                return { type: 'ident', name: tok.value };
+                return { type: 'ident', name: tok.value.toLowerCase() };
+
+            case TT.LPAREN: {
+                this._advance();
+                const expr = this._parseExpr();
+                if (this._peek().type === TT.RPAREN) this._advance();
+                return expr;
+            }
+
+            // These tokens end an expression — return null without consuming
+            case TT.NEWLINE:
+            case TT.EOF:
+            case TT.COMMA:
+            case TT.RPAREN:
+                return null;
 
             default:
-                // Unexpected token in argument position — skip it
-                console.warn(`[Parser] Unexpected token in expression: '${tok.type}' on line ${tok.line}`);
+                console.warn(`[Parser] Unexpected token in expression: '${tok.type}' ("${tok.value}") on line ${tok.line}`);
                 this._advance();
                 return null;
         }
     }
 
+    // ── If statement ──────────────────────────────────────────────────────────
+    //
+    // Single-line:  If <cond> Then <stmt>
+    // Block form:   If <cond> NEWLINE … [ElseIf <cond> NEWLINE …]* [Else NEWLINE …] EndIf
+
+    _parseIf() {
+        const ifTok = this._advance();              // consume 'if' KEYWORD
+        const cond  = this._parseExpr();
+
+        // Single-line form: If <cond> Then <stmt>
+        if (this._peek().type === TT.KEYWORD && this._peek().value === 'then') {
+            this._advance();                        // consume 'then'
+            const stmt = this._parseStatement();
+            return {
+                type:    'if',
+                cond,
+                then:    stmt ? [stmt] : [],
+                elseIfs: [],
+                else:    [],
+                line:    ifTok.line,
+            };
+        }
+
+        // Block form
+        this._skipToNewline();                      // skip any trailing tokens on the If line
+        const thenBody = this._parseBlock(['elseif', 'else', 'endif']);
+
+        const elseIfs = [];
+        while (this._peek().type === TT.KEYWORD && this._peek().value === 'elseif') {
+            this._advance();                        // consume 'elseif'
+            const eiCond = this._parseExpr();
+            this._skipToNewline();
+            const eiBody = this._parseBlock(['elseif', 'else', 'endif']);
+            elseIfs.push({ cond: eiCond, body: eiBody });
+        }
+
+        let elseBody = [];
+        if (this._peek().type === TT.KEYWORD && this._peek().value === 'else') {
+            this._advance();                        // consume 'else'
+            this._skipToNewline();
+            elseBody = this._parseBlock(['endif']);
+        }
+
+        if (this._peek().type === TT.KEYWORD && this._peek().value === 'endif') {
+            this._advance();                        // consume 'endif'
+        } else {
+            const t = this._peek();
+            console.warn(`[Parser] Expected EndIf but got '${t?.value}' on line ${t?.line}`);
+        }
+        this._skipToNewline();
+
+        return {
+            type:    'if',
+            cond,
+            then:    thenBody,
+            elseIfs,
+            else:    elseBody,
+            line:    ifTok.line,
+        };
+    }
+
+    // ── While statement ───────────────────────────────────────────────────────
+    //
+    // While <cond> NEWLINE … Wend
+
+    _parseWhile() {
+        const whileTok = this._advance();           // consume 'while'
+        const cond     = this._parseExpr();
+        this._skipToNewline();
+        const body     = this._parseBlock(['wend']);
+
+        if (this._peek().type === TT.KEYWORD && this._peek().value === 'wend') {
+            this._advance();                        // consume 'wend'
+        } else {
+            const t = this._peek();
+            console.warn(`[Parser] Expected Wend but got '${t?.value}' on line ${t?.line}`);
+        }
+        this._skipToNewline();
+
+        return { type: 'while', cond, body, line: whileTok.line };
+    }
+
+    // ── For statement ─────────────────────────────────────────────────────────
+    //
+    // For <var> = <from> To <to> [Step <step>] NEWLINE … Next [<var>]
+
+    _parseFor() {
+        const forTok = this._advance();             // consume 'for'
+
+        if (this._peek().type !== TT.IDENT) {
+            console.warn(`[Parser] For: expected variable name on line ${forTok.line}`);
+            this._skipToNewline();
+            return null;
+        }
+        const nameTok = this._advance();            // consume IDENT
+
+        if (this._peek().type !== TT.EQ) {
+            console.warn(`[Parser] For: expected '=' on line ${forTok.line}`);
+            this._skipToNewline();
+            return null;
+        }
+        this._advance();                            // consume '='
+
+        const from = this._parseExpr();
+
+        if (!(this._peek().type === TT.KEYWORD && this._peek().value === 'to')) {
+            console.warn(`[Parser] For: expected 'To' on line ${forTok.line}`);
+            this._skipToNewline();
+            return null;
+        }
+        this._advance();                            // consume 'to'
+
+        const to = this._parseExpr();
+
+        let step = null;
+        if (this._peek().type === TT.KEYWORD && this._peek().value === 'step') {
+            this._advance();                        // consume 'step'
+            step = this._parseExpr();
+        }
+
+        this._skipToNewline();
+        const body = this._parseBlock(['next']);
+
+        if (this._peek().type === TT.KEYWORD && this._peek().value === 'next') {
+            this._advance();                        // consume 'next'
+            if (this._peek().type === TT.IDENT) this._advance(); // optional: Next i
+        } else {
+            const t = this._peek();
+            console.warn(`[Parser] For: expected 'Next' but got '${t?.value}' on line ${t?.line}`);
+        }
+        this._skipToNewline();
+
+        return {
+            type: 'for',
+            var:  nameTok.value.toLowerCase(),
+            from,
+            to,
+            step,
+            body,
+            line: forTok.line,
+        };
+    }
+
+    // ── Block parser — parses statements until a stop keyword is peeked ───────
+    //
+    // Does NOT consume the stop keyword itself; the caller does that.
+
+    _parseBlock(stopKeywords) {
+        const stmts = [];
+        while (!this._atEnd()) {
+            if (this._peek().type === TT.NEWLINE) { this._advance(); continue; }
+            if (this._peek().type === TT.EOF)     break;
+            const tok = this._peek();
+            if (tok.type === TT.KEYWORD && stopKeywords.includes(tok.value)) break;
+            const stmt = this._parseStatement();
+            if (stmt !== null) stmts.push(stmt);
+        }
+        return stmts;
+    }
+
+    // ── Select statement ──────────────────────────────────────────────────────
+    //
+    // Select <expr>
+    //   Case <val>[, <val>…]   — one or more values per Case
+    //     <stmts>
+    //   [Default
+    //     <stmts>]
+    // EndSelect
+
+    _parseSelect() {
+        const selTok = this._advance();             // consume 'select'
+        const expr   = this._parseExpr();
+        this._skipToNewline();
+
+        const cases  = [];
+        let defBody  = [];
+
+        outer:
+        while (!this._atEnd()) {
+            if (this._peek().type === TT.NEWLINE) { this._advance(); continue; }
+            if (this._peek().type === TT.EOF)     break;
+
+            const tok = this._peek();
+            if (tok.type !== TT.KEYWORD) { this._advance(); continue; } // skip junk
+
+            switch (tok.value) {
+
+                case 'endselect':
+                    break outer;
+
+                case 'case': {
+                    this._advance();                // consume 'case'
+
+                    // Parse comma-separated case values on the same line
+                    const values = [];
+                    while (!this._atEnd() &&
+                           this._peek().type !== TT.NEWLINE &&
+                           this._peek().type !== TT.EOF) {
+                        if (this._peek().type === TT.COMMA) { this._advance(); continue; }
+                        const v = this._parseExpr();
+                        if (v) values.push(v);
+                    }
+                    this._skipToNewline();
+
+                    const body = this._parseBlock(['case', 'default', 'endselect']);
+                    cases.push({ values, body });
+                    break;
+                }
+
+                case 'default':
+                    this._advance();                // consume 'default'
+                    this._skipToNewline();
+                    defBody = this._parseBlock(['endselect']);
+                    break outer;
+
+                default:
+                    this._advance();                // skip unknown keyword
+                    break;
+            }
+        }
+
+        if (this._peek().type === TT.KEYWORD && this._peek().value === 'endselect') {
+            this._advance();                        // consume 'endselect'
+        } else {
+            const t = this._peek();
+            console.warn(`[Parser] Expected EndSelect but got '${t?.value}' on line ${t?.line}`);
+        }
+        this._skipToNewline();
+
+        return {
+            type:    'select',
+            expr,
+            cases,
+            default: defBody,
+            line:    selTok.line,
+        };
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    _isCompOp(type) {
+        return type === TT.EQ  || type === TT.NEQ ||
+               type === TT.LT  || type === TT.GT  ||
+               type === TT.LTE || type === TT.GTE;
+    }
+
+    _skipToNewline() {
+        while (!this._atEnd() &&
+               this._peek().type !== TT.NEWLINE &&
+               this._peek().type !== TT.EOF) {
+            this._advance();
+        }
+    }
+
     // ── Cursor helpers ───────────────────────────────────────────────────────
 
-    _peek()    { return this._tokens[this._pos]; }
-    _advance() { return this._tokens[this._pos++]; }
-    _atEnd()   {
+    _peek()          { return this._tokens[this._pos]; }
+    _peekAt(offset)  { return this._tokens[this._pos + offset]; }
+    _advance()       { return this._tokens[this._pos++]; }
+    _atEnd() {
         return this._pos >= this._tokens.length ||
                this._tokens[this._pos].type === TT.EOF;
     }

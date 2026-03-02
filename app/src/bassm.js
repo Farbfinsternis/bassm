@@ -53,18 +53,72 @@ class BASSM {
 
         return asm;
     }
+
+    /**
+     * Full pipeline: Blitz2D source → m68k asm → HUNK binary → emulator.
+     *
+     * @param  {string} source  Raw Blitz2D program text
+     * @returns {{ asm: string }}   The generated assembly (for display)
+     * @throws  {Error}             On compile or assemble error
+     */
+    async run(source) {
+        // 1. Blitz2D → m68k assembly
+        const asm = this.compile(source);
+
+        // 2. Assemble with vasmm68k_mot via Electron IPC
+        const result = await window.electronAPI.assemble(asm);
+        if (!result.ok) throw new Error(result.error);
+
+        // 3. Send HUNK binary to emulator — triggers reset + boot from virtual disk
+        window.electronAPI.emulator.send({ type: 'load-exe', data: result.data });
+
+        return { asm };
+    }
 }
 
 // ── Bootstrap ─────────────────────────────────────────────────────────────────
-// Expose a single global instance for the UI layer and browser devtools.
 
 const bassm = new BASSM();
 
 bassm.init()
     .then(() => {
         window.bassm = bassm;
-        console.log('[BASSM] Ready — try: bassm.compile("Graphics 320,256,5\\nCls")');
+
+        const btnRun  = document.getElementById('btn-run');
+        const status  = document.getElementById('status');
+        const console_ = document.getElementById('console');
+
+        status.textContent = 'Ready';
+
+        function log(text, cls = '') {
+            const line = document.createElement('div');
+            if (cls) line.className = cls;
+            line.textContent = text;
+            console_.appendChild(line);
+            console_.scrollTop = console_.scrollHeight;
+        }
+
+        btnRun.addEventListener('click', async () => {
+            const source = document.getElementById('editor').value;
+            console_.innerHTML = '';
+            btnRun.disabled = true;
+            status.textContent = 'Compiling…';
+
+            try {
+                const { asm } = await bassm.run(source);
+                log('── Generated assembly ──────────────────', 'info');
+                log(asm);
+                status.textContent = 'Running';
+            } catch (err) {
+                log(err.message, 'error');
+                status.textContent = 'Error';
+            } finally {
+                btnRun.disabled = false;
+            }
+        });
     })
     .catch(err => {
         console.error('[BASSM] Init failed:', err);
+        const s = document.getElementById('status');
+        if (s) s.textContent = 'Init failed';
     });

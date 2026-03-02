@@ -1,87 +1,59 @@
 ; ============================================================================
-; cls.s — BASSM Screen Clear Subroutines
+; cls.s — BASSM Screen Clear (Blitter A→D fill)
 ; ============================================================================
 ;
 ; PURPOSE
-;   Provides the runtime helper that supports the Blitz2D "Cls" command:
+;   Provides the runtime helpers that support the Blitz2D "Cls" command:
 ;
-;     _Cls  — clears all bitplanes to the current ClsColor (default: 0 = black)
+;     _Cls  — fill all bitplanes to the current ClsColor (default 0 = black)
 ;
 ; BLITZ2D SYNTAX
 ;   Cls
-;   Example: Cls       (clears the screen to colour 0 unless ClsColor was used)
+;   Example: Cls       (clears screen to colour 0 unless ClsColor was used)
 ;
 ; HOW IT WORKS
-;   The Blitter hardware can fill chip-RAM rectangles at full DMA bandwidth
-;   without CPU involvement. For a zero-fill (colour 0), it uses minterm $00;
-;   for an all-ones fill (any colour bit = 1), it uses minterm $01.  Each
-;   bitplane is cleared in a separate blit because the colour representation
-;   spans multiple planes (1 bit per plane per pixel).
+;   Uses the Amiga Blitter (A→D mode) to fill each bitplane independently.
+;   One Blitter operation per plane:
 ;
-;   Clearing GFXDEPTH planes of GFXHEIGHT × GFXBPR bytes each:
-;     BLTCON0 = $0100 | minterm   (D channel only — no A/B/C sources)
-;     BLTCON1 = $0000              (ascending, no fill mode, no shift)
-;     BLTDMOD = 0                  (contiguous rows — no gaps)
-;     BLTSIZE = (GFXHEIGHT<<6) | (GFXBPR/2)   [assembly-time constant]
+;     BLTCON0 = $09F0  USEA=1 (bit 11), USED=1 (bit 8), minterm $F0 (D = A)
+;     BLTCON1 = $0000  normal copy mode (no line mode, no fill mode)
+;     BLTAFWM = $FFFF  first-word mask: all bits active
+;     BLTALWM = $FFFF  last-word mask:  all bits active
+;     BLTAPT  → _blt_ones_row  (if plane bit = 1: fill with $FFFF)
+;            or _blt_zero_row  (if plane bit = 0: fill with $0000)
+;     BLTAMOD = -GFXBPR  A-pointer resets to start of row each line
+;     BLTDPT  → start of the bitplane in chip RAM
+;     BLTDMOD = 0       D plane is contiguous (no per-row padding)
+;     BLTSIZE = (GFXHEIGHT << 6) | (GFXBPR/2)
+;               bits 15:6 = height (scan lines), bits 5:0 = width (words)
 ;
-;   The Blitter must be idle before any new blit is started; this routine
-;   polls DMACONR.BBUSY (bit 14 = bit 6 of the high byte at offset $002)
-;   twice per plane to guard against the OCS blitter busy-flag glitch.
+;   BLTAMOD = -GFXBPR means: after reading GFXBPR/2 words (= GFXBPR bytes)
+;   per row, the A pointer goes back GFXBPR bytes, so it always re-reads
+;   from the start of the pattern row.  The pattern buffer is thus re-used
+;   for every scan line without any DMA refresh.
 ;
 ; COLOUR-TO-PLANE MAPPING
-;   Colour index n has its binary representation spread across the bitplanes:
-;     bit 0 of n → bitplane 0 (filled with $FFFF if set, $0000 if clear)
-;     bit 1 of n → bitplane 1
-;     ...
-;     bit (GFXDEPTH-1) of n → top bitplane
+;   Colour index n: bit b of n → bitplane b
+;     bit 0 of n → plane 0  (filled with $FFFF if set, $0000 if clear)
+;     bit 1 of n → plane 1 ... etc.
 ;
-; CODEGEN CONTRACT — what codegen.js must define for Cls to work:
-;   Assembly-time constants (EQUs):
-;     GFXDEPTH   — number of bitplanes
-;     GFXHEIGHT  — screen height in pixels
-;     GFXBPR     — bytes per row  (= GFXWIDTH/8)
-;     GFXPSIZE   — bytes per plane (= GFXBPR*GFXHEIGHT)
-;   Runtime label:
-;     _gfx_planes — base address of bitplane chip-RAM buffer (BSS_C)
+; PATTERN BUFFERS (chip RAM — shared with box.s)
+;   _blt_ones_row  DATA_C  — one full row ($FFFF × GFXBPR/2 words)
+;   _blt_zero_row  BSS_C   — one full row of zeros (BSS = zero-init)
+;   Both are XDEF'd for use by box.s.
 ;
-; Generated CODE for each Cls statement:
-;         bsr  _Cls
+; CODEGEN CONTRACT
+;   GFXDEPTH, GFXHEIGHT, GFXBPR, GFXPSIZE must be defined as EQUs.
+;   _gfx_planes must label the chip-RAM bitplane buffer.
+;   Generated code for Cls:   jsr _Cls
 ;
-; Generated CODE for ClsColor n (see clscolor.s):
-;         moveq  #n,d0
-;         bsr    _ClsColor
-;         bsr    _Cls
-;   (or split across the program as needed)
+; DEPENDENCY
+;   startup.s must be included first (defines _WaitBlit, Blitter register EQUs,
+;   and _gfx_planes is defined by codegen in the generated file).
 ;
 ; ── REGISTER CONVENTION ─────────────────────────────────────────────────────
-;   a5 = $DFF000  (established by startup.s)
+;   a5 = $DFF000  (established by startup.s — used for all chip-reg accesses)
 ; ============================================================================
-
-
-; ── Blitter Register Offsets (from $DFF000) ──────────────────────────────────
-
-BLTCON0     EQU $040        ; Blitter control 0 (channel enables + minterm)
-BLTCON1     EQU $042        ; Blitter control 1 (shift, line/fill modes)
-BLTDPTH     EQU $054        ; Blitter destination pointer — high word
-BLTDPTL     EQU $056        ; Blitter destination pointer — low word
-BLTSIZE     EQU $058        ; Blitter size (height:10 | width:6) — STARTS BLIT
-BLTDMOD     EQU $066        ; Blitter destination modulo (bytes skipped per row)
-
-; ── Blitter Control Bits ──────────────────────────────────────────────────────
-
-BLTF_USEA   EQU $0800       ; BLTCON0 bit 11 — enable A source channel
-BLTF_USEB   EQU $0400       ; BLTCON0 bit 10 — enable B source channel
-BLTF_USEC   EQU $0200       ; BLTCON0 bit  9 — enable C (destination read) channel
-BLTF_USED   EQU $0100       ; BLTCON0 bit  8 — enable D destination channel
-
-; Minterms for D-only fill (no A/B/C → all inputs = 0 → bit 0 of minterm)
-BLTMT_ZERO  EQU $00         ; minterm $00 — D = 0 always (zero fill)
-BLTMT_ONE   EQU $01         ; minterm $01 — D = 1 always (all-ones fill)
-
-; ── DMACONR Blitter Busy ─────────────────────────────────────────────────────
-; DMACONR ($002) is a word. BBUSY = bit 14 = bit 6 of the HIGH byte at $002.
-; Use: btst #6,DMACONR(a5)   — byte access to high byte of the register word.
-BBUSY_BIT   EQU 6           ; bit number within the DMACONR high byte
 
 
         SECTION cls_code,CODE
@@ -89,67 +61,109 @@ BBUSY_BIT   EQU 6           ; bit number within the DMACONR high byte
 
 ; ── _Cls ─────────────────────────────────────────────────────────────────────
 ;
-; Clears all GFXDEPTH bitplanes to the current ClsColor (stored in _cls_color).
-; Uses the Blitter for maximum throughput — CPU is not stalled.
+; Fills all GFXDEPTH bitplanes with the pattern stored in _cls_color.
+; One Blitter operation per plane.
 ;
 ; Args:   none
-; Trashes: d0-d2, a0  (all preserved via movem)
+; Trashes: nothing (saves/restores d0-d5/a0-a1)
 
         XDEF    _Cls
 _Cls:
-        movem.l d0-d2/a0,-(sp)
+        movem.l d0-d5/a0-a1,-(sp)
 
-        lea     _gfx_planes,a0          ; a0 = base of bitplane data in chip RAM
-        move.l  _cls_color,d2           ; d2 = colour index bit field
-        moveq   #GFXDEPTH-1,d0         ; d0 = loop counter (GFXDEPTH planes)
+        lea     _gfx_planes,a0          ; a0 = base of bitplane buffers in chip RAM
+        move.l  _cls_color,d4           ; d4 = colour index bitfield
+        moveq   #GFXDEPTH-1,d5         ; d5 = plane loop counter (dbra = GFXDEPTH iters)
 
 .cls_plane:
-        ; ── Wait for Blitter idle (poll twice — OCS BBUSY glitch workaround) ──
-.bltwait1:
-        btst    #BBUSY_BIT,DMACONR(a5) ; high byte of DMACONR, bit 6 = BBUSY
-        bne.s   .bltwait1
-.bltwait2:
-        btst    #BBUSY_BIT,DMACONR(a5) ; second check — guards against glitch
-        bne.s   .bltwait2
+        ; ── Wait: previous blit must finish before we touch Blitter registers ──
+        jsr     _WaitBlit               ; trashes d0
 
-        ; ── Choose minterm: bit 0 of d2 determines fill value for this plane ─
-        move.w  #(BLTF_USED|BLTMT_ZERO),d1  ; default: D-only, fill with 0
-        btst    #0,d2                   ; is bit 0 of colour index set?
-        beq.s   .set_bltcon0
-        move.w  #(BLTF_USED|BLTMT_ONE),d1   ; yes: fill this plane with 1s
-.set_bltcon0:
-        move.w  d1,BLTCON0(a5)
-        move.w  #$0000,BLTCON1(a5)      ; ascending, no special modes
-        move.w  #$0000,BLTDMOD(a5)      ; no modulo — contiguous rows
+        ; ── Choose A-source: ones or zeros depending on this plane's colour bit ─
+        btst    #0,d4                   ; is colour bit 0 set for this plane?
+        beq.s   .cls_use_zeros
+        lea     _blt_ones_row,a1        ; yes → fill plane with $FFFF
+        bra.s   .cls_start_blit
+.cls_use_zeros:
+        lea     _blt_zero_row,a1        ; no  → fill plane with $0000
 
-        ; ── Point Blitter destination at this bitplane ────────────────────────
-        move.l  a0,d1
-        swap    d1
-        move.w  d1,BLTDPTH(a5)         ; high word of plane address
-        swap    d1
-        move.w  d1,BLTDPTL(a5)         ; low word of plane address
+.cls_start_blit:
+        ; ── Program Blitter ──────────────────────────────────────────────────
+        ; BLTCON0: USEA=1 (bit 11), USED=1 (bit 8), minterm $F0 → D = A
+        move.w  #$09F0,BLTCON0(a5)
+        clr.w   BLTCON1(a5)             ; no line mode, no fill mode
+        move.w  #$FFFF,BLTAFWM(a5)     ; first-word mask: all bits active
+        move.w  #$FFFF,BLTALWM(a5)     ; last-word mask:  all bits active
 
-        ; ── Trigger: writing BLTSIZE starts the blit immediately ─────────────
-        ; BLTSIZE = (height in lines << 6) | (width in 16-bit words)
-        ; Both GFXHEIGHT and GFXBPR are assembly-time EQUs from codegen.
-        move.w  #((GFXHEIGHT<<6)|(GFXBPR/2)),BLTSIZE(a5)
+        ; BLTAMOD = -GFXBPR: after reading one row (GFXBPR/2 words = GFXBPR bytes),
+        ; A pointer net advance = GFXBPR + (-GFXBPR) = 0 → always re-reads row 0.
+        move.w  #-GFXBPR,BLTAMOD(a5)
+
+        ; BLTDMOD = 0: destination plane is contiguous (no inter-row skip bytes)
+        clr.w   BLTDMOD(a5)
+
+        ; A source pointer (high word first — Amiga bus convention)
+        move.l  a1,d0
+        swap    d0
+        move.w  d0,BLTAPTH(a5)
+        swap    d0
+        move.w  d0,BLTAPTL(a5)
+
+        ; D destination pointer
+        move.l  a0,d0
+        swap    d0
+        move.w  d0,BLTDPTH(a5)
+        swap    d0
+        move.w  d0,BLTDPTL(a5)
+
+        ; BLTSIZE write triggers the blit immediately.
+        ; bits 15:6 = height in scan lines, bits 5:0 = width in 16-bit words.
+        move.w  #(GFXHEIGHT<<6)|(GFXBPR/2),BLTSIZE(a5)
 
         ; ── Advance to next plane ─────────────────────────────────────────────
-        lsr.l   #1,d2                   ; shift colour right: next bit → bit 0
-        add.l   #GFXPSIZE,a0            ; advance destination to next bitplane
+        add.l   #GFXPSIZE,a0            ; next bitplane buffer
+        lsr.l   #1,d4                   ; shift colour right: next bit → bit 0
+        dbra    d5,.cls_plane
 
-        dbra    d0,.cls_plane
+        ; Wait for the last blit to finish before returning to caller.
+        jsr     _WaitBlit
 
-        movem.l (sp)+,d0-d2/a0
+        movem.l (sp)+,d0-d5/a0-a1
         rts
+
+
+; ============================================================================
+;  Blitter pattern buffers — shared with box.s (XDEF'd)
+; ============================================================================
+;
+; _blt_ones_row:
+;   One full lores scan line of all-ones pixels in chip RAM (DATA_C).
+;   Used for bitplane fill when the colour bit for that plane is 1.
+;   GFXBPR/2 words wide (= GFXWIDTH/16 words = one full-width lores row).
+;
+; _blt_zero_row:
+;   One full lores scan line of all-zeros in chip RAM (BSS_C = zero-filled).
+;   Used for bitplane fill when the colour bit for that plane is 0.
+
+        SECTION cls_pat,DATA_C
+
+        XDEF    _blt_ones_row
+_blt_ones_row:
+        dcb.w   GFXBPR/2,$FFFF         ; GFXBPR/2 words of $FFFF (all pixels on)
+
+
+        SECTION cls_zero,BSS_C
+
+        XDEF    _blt_zero_row
+_blt_zero_row:  ds.b    GFXBPR          ; GFXBPR bytes of $00  (all pixels off)
 
 
 ; ============================================================================
 ;  BSS — ClsColor storage
 ; ============================================================================
 ;
-; _cls_color holds the colour index set by the last ClsColor command.
-; Initialised to 0 (clear to black) — matches BSS zero-init semantics.
+; _cls_color holds the colour index set by ClsColor.
+; Initialised to 0 (clear to black) via BSS zero-init semantics.
 ; XDEF'd so clscolor.s can write to it.
 
         SECTION cls_bss,BSS

@@ -3,3 +3,4 @@ emulator/vAmigaWeb/build/
 .DS_Store
 Thumbs.db
 .claude/
+out/

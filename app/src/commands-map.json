@@ -28,10 +28,18 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "register", "type": "integer" },
-            { "name": "r",        "type": "integer" },
-            { "name": "g",        "type": "integer" },
-            { "name": "b",        "type": "integer" }
+            { "name": "index", "type": "integer" }
+        ]
+    },
+    {
+        "name": "PaletteColor",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "n", "type": "integer" },
+            { "name": "r", "type": "integer" },
+            { "name": "g", "type": "integer" },
+            { "name": "b", "type": "integer" }
         ]
     },
     {
@@ -57,5 +65,67 @@
         "args": [
             { "name": "string", "type": "string" }
         ]
+    },
+    {
+        "name": "End",
+        "type": "global",
+        "return": "void",
+        "args": []
+    },
+    {
+        "name": "Delay",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "frames", "type": "integer" }
+        ]
+    },
+    {
+        "name": "Plot",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "x", "type": "integer" },
+            { "name": "y", "type": "integer" }
+        ]
+    },
+    {
+        "name": "Line",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "x1", "type": "integer" },
+            { "name": "y1", "type": "integer" },
+            { "name": "x2", "type": "integer" },
+            { "name": "y2", "type": "integer" }
+        ]
+    },
+    {
+        "name": "Rect",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "x", "type": "integer" },
+            { "name": "y", "type": "integer" },
+            { "name": "w", "type": "integer" },
+            { "name": "h", "type": "integer" }
+        ]
+    },
+    {
+        "name": "Box",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "x", "type": "integer" },
+            { "name": "y", "type": "integer" },
+            { "name": "w", "type": "integer" },
+            { "name": "h", "type": "integer" }
+        ]
+    },
+    {
+        "name": "WaitKey",
+        "type": "global",
+        "return": "void",
+        "args": []
     }
 ]

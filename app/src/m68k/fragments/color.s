@@ -8,8 +8,10 @@
 ;     _SetColor  — writes one OCS palette entry to the hardware color table
 ;
 ; BLITZ2D SYNTAX
-;   Color register, r, g, b
-;   Example: Color 1, 15, 0, 7    (palette entry 1 = red=15, green=0, blue=7)
+;   Color r, g, b
+;   Example: Color 15, 0, 7    (red=15, green=0, blue=7 → palette register 1)
+;   Always targets palette register 1 (foreground drawing color).
+;   Register 0 (background) is written by Cls/ClsColor.
 ;
 ; OCS COLOUR FORMAT
 ;   Each OCS palette register holds a 12-bit colour:
@@ -25,8 +27,8 @@
 ;   hardware register — no Blitter required.
 ;
 ; CODEGEN CONTRACT
-;   Generated CODE for Color n, r, g, b  (all literal values):
-;         moveq  #n,d0
+;   Generated CODE for Color r, g, b  (all literal values):
+;         moveq  #1,d0           ; always palette register 1
 ;         move.w #$0RGB,d1       ; codegen assembles the nibbles at compile time
 ;         bsr    _SetColor
 ;

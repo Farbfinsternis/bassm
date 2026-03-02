@@ -4,6 +4,15 @@ const {
 } = require('electron/main');
 const path = require('node:path');
 const fs   = require('node:fs');
+const os   = require('node:os');
+const { execFile } = require('node:child_process');
+
+// ── Paths ──────────────────────────────────────────────────────────────────
+const VASM      = path.join(__dirname, 'bin', 'vasmm68k_mot.exe');
+const FRAGMENTS = path.join(__dirname, 'app', 'src', 'm68k', 'fragments');
+const ROM_MAIN  = path.join(__dirname, 'emulator', 'vAmigaWeb', 'roms', 'aros.bin');
+const ROM_EXT   = path.join(__dirname, 'emulator', 'vAmigaWeb', 'roms', 'aros_ext.bin');
+const OUT_DIR   = path.join(__dirname, 'out');
 
 // ── Protocol: serve emulator/preview/ with correct MIME types ─────────────
 // WASM files need application/wasm — Electron's file:// doesn't set this.
@@ -72,19 +81,64 @@ ipcMain.on('emulator:bounds', (_event, bounds) => {
 
 // Renderer (editor) → main: send command to emulator
 ipcMain.on('emulator:send', (_event, cmd) => {
+  console.log('[BASSM] emulator:send', cmd.type, cmd.data ? `(${cmd.data.length} bytes)` : '');
   if (emulatorView) {
     emulatorView.webContents.send('emulator:command', cmd);
   }
 });
 
-// Emulator → main: ready signal
+// Emulator → main: ready signal → auto-load AROS ROM for development
 ipcMain.on('emulator:ready', () => {
-  console.log('[BASSM] Emulator ready');
+  console.log('[BASSM] Emulator ready — auto-loading AROS ROM');
+  if (!emulatorView) return;
+  try {
+    const romMain = Array.from(fs.readFileSync(ROM_MAIN));
+    const romExt  = Array.from(fs.readFileSync(ROM_EXT));
+    emulatorView.webContents.send('emulator:command', { type: 'load-rom', data: romMain });
+    emulatorView.webContents.send('emulator:command', { type: 'load-ext', data: romExt });
+    console.log('[BASSM] ROM sent to emulator');
+  } catch (e) {
+    console.error('[BASSM] Failed to load ROM:', e.message);
+  }
 });
 
 // Emulator → main: status update
 ipcMain.on('emulator:status', (_event, text) => {
   console.log('[BASSM] Emulator:', text);
+});
+
+// Renderer → main: assemble m68k source with vasmm68k_mot
+// Returns { ok: true, data: Buffer } or { ok: false, error: string }
+ipcMain.handle('bassm:assemble', (_event, asmText) => {
+  return new Promise((resolve) => {
+    const tmpDir = os.tmpdir();
+    const srcFile = path.join(tmpDir, 'bassm_src.s');
+    const outFile = path.join(tmpDir, 'bassm_out.exe');
+    fs.writeFileSync(srcFile, asmText, 'utf8');
+    execFile(VASM, ['-Fhunkexe', '-I', FRAGMENTS, '-o', outFile, srcFile], (err, _stdout, stderr) => {
+      if (err) {
+        resolve({ ok: false, error: stderr || err.message });
+        return;
+      }
+      try {
+        const data = Array.from(fs.readFileSync(outFile));
+        fs.mkdirSync(OUT_DIR, { recursive: true });
+        fs.copyFileSync(outFile, path.join(OUT_DIR, 'bassm_out.exe'));
+        resolve({ ok: true, data });
+      } catch (readErr) {
+        resolve({ ok: false, error: readErr.message });
+      }
+    });
+  });
+});
+
+// Renderer → main: load AROS ROM bytes
+// Returns { main: number[], ext: number[] }
+ipcMain.handle('bassm:rom', () => {
+  return {
+    main: Array.from(fs.readFileSync(ROM_MAIN)),
+    ext:  Array.from(fs.readFileSync(ROM_EXT)),
+  };
 });
 
 // ── Main window ────────────────────────────────────────────────────────────
@@ -104,6 +158,10 @@ function createWindow() {
 
   createEmulatorView(win);
   win.loadFile('app/index.html');
+
+  // DevTools for both views — remove or guard with isDev check for production
+  win.webContents.openDevTools({ mode: 'detach' });
+  emulatorView.webContents.openDevTools({ mode: 'detach' });
 
   return win;
 }

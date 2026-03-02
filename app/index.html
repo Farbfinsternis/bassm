@@ -2,22 +2,74 @@
 <html>
 	<head>
 		<meta charset="UTF-8" />
-		<!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
 		<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'" />
 		<meta http-equiv="X-Content-Security-Policy" content="default-src 'self'; script-src 'self'" />
 		<title>BASSM</title>
+		<link rel="stylesheet" href="style.css" />
 	</head>
 	<body>
-		<!-- project / asset manager -->
+		<div id="toolbar">
+			<button id="btn-run">&#9654; Run</button>
+			<span id="status">Initialising...</span>
+		</div>
 
-		<!-- code editor -->
+		<div id="editor-pane">
+			<textarea id="editor" spellcheck="false">; Bouncing Box Demo
+; Eine rote, gefuellte Box springt von allen Bildschirmraendern ab.
+; Animiert mit Dirty-Erase (kein Cls per Frame) fuer fluessige Bewegung.
+Graphics 320,256,3
 
-		<!-- emulator preview -->
+PaletteColor 0,0,0,0      ; 0 = Schwarz (Hintergrund)
+PaletteColor 1,15,0,0     ; 1 = Rot (Box)
 
-		<!-- console -->
+ClsColor 0
+Cls
 
-		<!-- assembler output -->
-		
+; Startposition und Geschwindigkeit
+x = 10
+y = 10
+dx = 3
+dy = 2
+
+While 1
+  ; Alte Position loeschen (schwarz uebermalen)
+  Color 0
+  Box x,y,30,20
+
+  ; Position aktualisieren
+  x = x + dx
+  y = y + dy
+
+  ; Links/rechts abprallen
+  If x < 0
+    x = 0
+    dx = -dx
+  EndIf
+  If x + 30 > 320
+    x = 290
+    dx = -dx
+  EndIf
+
+  ; Oben/unten abprallen
+  If y < 0
+    y = 0
+    dy = -dy
+  EndIf
+  If y + 20 > 256
+    y = 236
+    dy = -dy
+  EndIf
+
+  ; Neue Position zeichnen
+  Color 1
+  Box x,y,30,20
+
+  WaitVbl
+Wend
+</textarea>
+			<div id="console"></div>
+		</div>
+
 		<script type="module" src="src/bassm.js"></script>
 	</body>
 </html>

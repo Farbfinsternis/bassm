@@ -38,6 +38,7 @@
 ;   _WaitVBL        wait for next vertical blank (50 Hz PAL)
 ;   _GetFrameCount  return 50 Hz frame counter in d0
 ;   _SetVBlankHook  register a per-VBlank callback
+;   _WaitBlit       spin until Blitter DMA is idle (call before Blitter setup)
 ;
 ; CHIP RAM LAYOUT (defined here, used by copper and graphics fragments)
 ;   _null_copper    4-byte copper list that immediately ends — safe default
@@ -69,6 +70,29 @@ DDFSTOP     EQU $094        ; Bitplane DMA fetch stop
 DMACON      EQU $096        ; DMA enable (write)
 INTENA      EQU $09A        ; Interrupt enable (write)
 INTREQ      EQU $09C        ; Interrupt request acknowledge (write)
+
+; Blitter registers
+BLTCON0     EQU $040        ; Blitter control 0  (minterm, channels enabled)
+BLTCON1     EQU $042        ; Blitter control 1  (line mode, fill mode, etc.)
+BLTAFWM     EQU $044        ; Blitter A first-word mask
+BLTALWM     EQU $046        ; Blitter A last-word mask
+BLTCPTH     EQU $048        ; Blitter C source pointer high
+BLTCPTL     EQU $04A        ; Blitter C source pointer low
+BLTBPTH     EQU $04C        ; Blitter B source pointer high
+BLTBPTL     EQU $04E        ; Blitter B source pointer low
+BLTAPTH     EQU $050        ; Blitter A source pointer high
+BLTAPTL     EQU $052        ; Blitter A source pointer low
+BLTDPTH     EQU $054        ; Blitter D destination pointer high
+BLTDPTL     EQU $056        ; Blitter D destination pointer low
+BLTSIZE     EQU $058        ; Blitter size (starts blit on write, h in bits 15:6, w in bits 5:0)
+BLTCMOD     EQU $060        ; Blitter C source modulo
+BLTBMOD     EQU $062        ; Blitter B source modulo
+BLTAMOD     EQU $064        ; Blitter A source modulo
+BLTDMOD     EQU $066        ; Blitter D destination modulo
+BLTADAT     EQU $074        ; Blitter A data register (preloaded shift data)
+
+; Blitter DMACONR status bit
+DMAB_BBUSY  EQU 14          ; Bit 14 of DMACONR: Blitter busy (1 = active, 0 = idle)
 
 ; Bitplane control
 BPLCON0     EQU $100        ; Bitplane control 0 (bpp count, modes)
@@ -122,12 +146,17 @@ INTF_BLIT   EQU $0040       ; Blitter finished
 INTF_PORTS  EQU $0008       ; CIA-A port (keyboard / joystick)
 
 ; ── Exec Library Offsets ─────────────────────────────────────────────────────
-_LVOForbid  EQU -132        ; Forbid()  — freeze scheduler
-_LVOPermit  EQU -138        ; Permit()  — unfreeze scheduler
+_LVOForbid          EQU -132    ; Forbid()  — freeze scheduler
+_LVOPermit          EQU -138    ; Permit()  — unfreeze scheduler
+_LVOOpenLibrary     EQU -552    ; OpenLibrary(name, ver) — open a named library
+
+; ── Graphics Library Offsets ─────────────────────────────────────────────────
+gb_ActiView         EQU 34      ; GfxBase→ActiView — currently installed View
 
 ; ── System Constants ─────────────────────────────────────────────────────────
 CUSTOM      EQU $DFF000     ; Custom chip registers base address
 ABSEXECBASE EQU 4           ; Address 4 always contains ExecBase pointer
+VEC_LEVEL2  EQU $68         ; 68000 Level-2 autovector (CIA-A: keyboard, timers)
 VEC_LEVEL3  EQU $6C         ; 68000 Level-3 autovector (VBlank on Amiga)
 
 
@@ -146,12 +175,26 @@ start:
         lea     CUSTOM,a5               ; a5 = $DFF000 — never changes again
         move.l  ABSEXECBASE.w,a6        ; a6 = ExecBase
 
+; ── 1a. Open graphics.library and save current View ──────────────────────────
+        ; Done BEFORE Forbid() so OpenLibrary can use the task scheduler.
+        ; offload.s uses the saved GfxBase to call LoadView() on exit,
+        ; which is the only proper way to restore the AROS Workbench display.
+        lea     _gfx_lib_name,a1        ; name = "graphics.library"
+        moveq   #0,d0                   ; minimum version = any
+        jsr     _LVOOpenLibrary(a6)     ; d0 = GfxBase (or NULL on failure)
+        move.l  d0,_saved_gfx_base
+        beq.s   .no_view_save           ; skip if OpenLibrary failed (shouldn't)
+        move.l  d0,a0
+        move.l  gb_ActiView(a0),_saved_view  ; save active OS View pointer
+.no_view_save:
+
         jsr     _LVOForbid(a6)          ; freeze OS scheduler
 
 ; ── 2. Snapshot current hardware masks ───────────────────────────────────────
         ; offload.s will use these to restore the system on exit
         move.w  INTENAR(a5),_saved_intena
         move.w  DMACONR(a5),_saved_dmacon
+        move.l  VEC_LEVEL2.w,_saved_lev2vec
         move.l  VEC_LEVEL3.w,_saved_lev3vec
 
 ; ── 3. Disable all interrupts and DMA ────────────────────────────────────────
@@ -197,9 +240,12 @@ start:
         ; Black background — prevents random color flicker during setup
         clr.w   COLOR00(a5)
 
-; ── 7. Install our VBlank interrupt handler ───────────────────────────────────
-        ; The Level-3 autovector lives in Chip RAM at $6C.
-        ; Overwriting it is normal bare-metal practice on the Amiga.
+; ── 7. Install our interrupt handlers ────────────────────────────────────────
+        ; Level-2 ($68): CIA-A keyboard handler — populates _kbd_pending.
+        ; Level-3 ($6C): VBlank handler — increments _frame_count.
+        ; Overwriting autovectors is normal bare-metal practice on the Amiga.
+        move.l  #_lev2_kbd_handler,VEC_LEVEL2.w
+        clr.b   _kbd_pending
         move.l  #_lev3_handler,VEC_LEVEL3.w
         clr.l   _frame_count
 
@@ -209,8 +255,11 @@ start:
         ; only when the program actually uses sprites.
         move.w  #(DMAF_SETCLR|DMAF_MASTER|DMAF_COPEN|DMAF_BPLEN|DMAF_BLTEN),DMACON(a5)
 
-; ── 9. Enable VBlank interrupt ───────────────────────────────────────────────
-        move.w  #(INTF_SETCLR|INTF_INTEN|INTF_VERTB),INTENA(a5)
+; ── 9. Enable VBlank + CIA-A keyboard interrupts ─────────────────────────────
+        ; INTF_PORTS (Level-2): enables CIA-A INT → keyboard bytes arrive in
+        ; _kbd_pending via _lev2_kbd_handler.  Without this bit vAmiga does not
+        ; inject keyboard events into the simulated CIA-A shift register.
+        move.w  #(INTF_SETCLR|INTF_INTEN|INTF_VERTB|INTF_PORTS),INTENA(a5)
 
 ; ── 10. Wait for first clean VBlank ─────────────────────────────────────────
         ; All register writes above take effect immediately but the video beam
@@ -222,7 +271,7 @@ start:
         ; codegen.js emits a subroutine labelled _main_program containing
         ; the translated Blitz2D statements. Returning from it (or calling
         ; jmp _exit from inside it) triggers the offload.s cleanup.
-        bsr     _main_program
+        jsr     _main_program
 
 ; ── 12. Hand off to cleanup ──────────────────────────────────────────────────
         ; _exit is defined in offload.s which must follow this file
@@ -261,6 +310,51 @@ _lev3_handler:
         jsr     (a0)
 .no_hook:
         movem.l (sp)+,d0-d7/a0-a5
+        rte
+
+
+; ============================================================================
+;  LEVEL-2 KEYBOARD INTERRUPT HANDLER
+; ============================================================================
+;
+; Fired by Agnus when CIA-A asserts INT (Level-2 / PORTS).
+; The most common cause is a keyboard byte arriving in the CIA-A shift register.
+;
+; Strategy:
+;   1. Read CIAICR — clears all CIA-A flags and reveals which source fired.
+;   2. If SP flag (bit 3) is set: read CIASDR, send ACK, store byte in _kbd_pending.
+;   3. Acknowledge INTREQ.PORTS so the Level-2 interrupt does not re-fire.
+;
+; _kbd_pending = 0:       no byte waiting
+; _kbd_pending = non-0:   raw CIA key byte (inverted, MSB-first from keyboard)
+;
+; Note: Other CIA-A sources (Timer A, Timer B) are silently acknowledged.
+
+_lev2_kbd_handler:
+        movem.l d0-d1/a5,-(sp)
+        lea     CUSTOM,a5
+
+        move.b  $BFED01,d0              ; read CIA-A ICR  (clears all CIA-A flags)
+        btst    #3,d0                   ; SP flag = keyboard byte arrived?
+        beq.s   .lev2_exit             ; no keyboard byte → just acknowledge
+
+        ; Read and store the keyboard byte
+        move.b  $BFEC01,d0              ; d0 = raw byte from CIASDR
+        move.b  d0,_kbd_pending         ; save for _WaitKey / InKey$ to consume
+
+        ; ACK handshake (~600 µs: CIACRA bit 6 = output → delay → input)
+        bset    #6,$BFEE01              ; CIACRA: SP → output  (KDAT low = ACK start)
+        move.w  #200,d1
+.lev2_ack:
+        dbra    d1,.lev2_ack
+        bclr    #6,$BFEE01              ; CIACRA: SP → input   (KDAT release = ACK end)
+
+.lev2_exit:
+        ; Acknowledge INTREQ.PORTS (CIA-A INT cleared by ICR read above)
+        move.w  #INTF_PORTS,INTREQ(a5)
+        move.w  #INTF_PORTS,INTREQ(a5)  ; double-write for chipset bus settling
+
+        movem.l (sp)+,d0-d1/a5
         rte
 
 
@@ -316,6 +410,33 @@ _SetVBlankHook:
         rts
 
 
+; ── _WaitBlit ─────────────────────────────────────────────────────────────────
+; Spin until the Blitter has finished any in-progress DMA operation.
+;
+; MUST be called before writing any Blitter registers, so the previous blit
+; has fully completed before new registers are loaded.
+;
+; How it works:
+;   DMACONR bit 14 (BBUSY) is 1 while the Blitter is executing a blit and
+;   returns to 0 when the Blitter becomes idle.  We poll this bit.
+;
+; OCS timing note:
+;   The Blitter starts on the write to BLTSIZE.  If _WaitBlit is called
+;   immediately after a BLTSIZE write, BBUSY might not be asserted yet for
+;   the very first bus cycle.  Always call _WaitBlit BEFORE setting up new
+;   registers (at the top of each Blitter operation), not after BLTSIZE.
+;
+; Usage:    jsr  _WaitBlit      (or bsr _WaitBlit)
+; Trashes:  d0
+
+        XDEF    _WaitBlit
+_WaitBlit:
+        move.w  DMACONR(a5),d0         ; read DMA status register (read-only port)
+        btst    #DMAB_BBUSY,d0         ; BBUSY = bit 14: is blitter still active?
+        bne.s   _WaitBlit              ; yes → keep polling
+        rts
+
+
 ; ============================================================================
 ;  CHIP RAM DATA — null copper list
 ; ============================================================================
@@ -324,6 +445,17 @@ _SetVBlankHook:
 ; A single WAIT $FFFF,$FFFE instruction tells the copper "wait for a beam
 ; position that can never be reached" — it stalls harmlessly at the end
 ; of every frame until graphics.s installs the real copper list.
+
+        SECTION startup_data,DATA       ; normal (fast) RAM — library name string
+
+_gfx_lib_name:
+        dc.b    'graphics.library',0
+        EVEN
+
+_intui_lib_name:
+        dc.b    'intuition.library',0
+        EVEN
+
 
         SECTION startup_copper,DATA_C   ; DATA_C = AmigaOS places in chip RAM
 
@@ -340,13 +472,21 @@ _null_copper:
         XDEF    _saved_sp
         XDEF    _saved_intena
         XDEF    _saved_dmacon
+        XDEF    _saved_lev2vec
         XDEF    _saved_lev3vec
+        XDEF    _saved_gfx_base
+        XDEF    _saved_view
         XDEF    _frame_count
         XDEF    _vblank_hook
+        XDEF    _kbd_pending
 
-_saved_sp:      ds.l    1   ; stack pointer on entry — restored by offload.s
-_saved_intena:  ds.w    1   ; INTENAR snapshot   — restored by offload.s
-_saved_dmacon:  ds.w    1   ; DMACONR snapshot   — restored by offload.s
-_saved_lev3vec: ds.l    1   ; Level-3 vector     — restored by offload.s
-_frame_count:   ds.l    1   ; VBlank counter, incremented 50×/sec
-_vblank_hook:   ds.l    1   ; optional callback address (0 = none)
+_saved_sp:          ds.l    1   ; stack pointer on entry — restored by offload.s
+_saved_intena:      ds.w    1   ; INTENAR snapshot   — restored by offload.s
+_saved_dmacon:      ds.w    1   ; DMACONR snapshot   — restored by offload.s
+_saved_lev2vec:     ds.l    1   ; Level-2 vector     — restored by offload.s
+_saved_lev3vec:     ds.l    1   ; Level-3 vector     — restored by offload.s
+_saved_gfx_base:    ds.l    1   ; graphics.library base — used by offload.s for LoadView
+_saved_view:        ds.l    1   ; GfxBase->ActiView on entry — restored by offload.s
+_frame_count:       ds.l    1   ; VBlank counter, incremented 50×/sec
+_vblank_hook:       ds.l    1   ; optional callback address (0 = none)
+_kbd_pending:       ds.b    1   ; raw CIA key byte from _lev2_kbd_handler (0 = none)

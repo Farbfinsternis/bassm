@@ -8,42 +8,41 @@
 // OUTPUT STRUCTURE
 //   1.  Header comment
 //   2.  Screen EQUs  (computed from the Graphics statement)
-//   3.  Fragment INCLUDEs  (startup, offload, graphics, cls, …)
-//       NOTE: INCLUDEs use bare filenames — the vasm -I flag must point to
-//       the fragments directory at assembly time.
+//   3.  Fragment INCLUDEs
 //   4.  Chip-RAM BSS section  (_gfx_planes)
 //   5.  Chip-RAM DATA section (_gfx_copper)
-//   6.  _setup_graphics CODE  (patches copper + installs copper)
-//   7.  _main_program CODE    (one instruction per Blitz2D statement)
+//   6.  User variable BSS section  (_var_*)  — one ds.l per integer variable
+//   7.  _setup_graphics CODE
+//   8.  _main_program CODE   (one instruction sequence per Blitz2D statement)
 //
-// CONSTRAINTS (current)
-//   • Width must be 320 pixels (lores OCS).  DDFSTRT/DDFSTOP are fixed.
-//   • Depth 1–6 bitplanes.
-//   • The Graphics statement must appear before any graphical commands.
+// EXPRESSION EVALUATION CONVENTION
+//   • All expressions evaluate to a 32-bit signed integer in d0.
+//   • Temporaries are pushed on the system stack; the stack is always clean
+//     at the point of any subroutine call.
+//   • Comparison operators produce Blitz2D boolean values: -1 (true) / 0 (false).
+//   • Multiplication uses muls.w (16×16→32); operands must fit in 16 bits.
+//   • Division uses divs.w (32÷16→16q); operands must fit accordingly.
 // ============================================================================
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Zero-padded uppercase hex string, default 4 digits */
 const hex = (n, digits = 4) =>
     n.toString(16).toUpperCase().padStart(digits, '0');
 
-/** Pad a string on the right to a given width */
 const pad = (s, w) => s.padEnd(w, ' ');
 
-/** Emit a copper MOVE instruction: register-offset word + value word */
 const copMove = (reg, val, comment) =>
     `        dc.w    $${hex(reg)},$${hex(val)}${comment ? `             ; ${comment}` : ''}`;
 
 // ── Bitplane pointer register pairs (OCS, 1-indexed) ─────────────────────────
 
 const BPL_PTR_REGS = [
-    [0x00E0, 0x00E2],   // BPL1PTH / BPL1PTL
-    [0x00E4, 0x00E6],   // BPL2PTH / BPL2PTL
-    [0x00E8, 0x00EA],   // BPL3PTH / BPL3PTL
-    [0x00EC, 0x00EE],   // BPL4PTH / BPL4PTL
-    [0x00F0, 0x00F2],   // BPL5PTH / BPL5PTL
-    [0x00F4, 0x00F6],   // BPL6PTH / BPL6PTL
+    [0x00E0, 0x00E2],
+    [0x00E4, 0x00E6],
+    [0x00E8, 0x00EA],
+    [0x00EC, 0x00EE],
+    [0x00F0, 0x00F2],
+    [0x00F4, 0x00F6],
 ];
 
 // ── CodeGen class ─────────────────────────────────────────────────────────────
@@ -55,14 +54,13 @@ export class CodeGen {
      *
      * @param {object[]} ast  Statement nodes from Parser.parse()
      * @returns {string}      Assembly source text
-     * @throws {Error}        If the program has no Graphics statement or uses
-     *                        unsupported screen dimensions.
      */
     generate(ast) {
+        // Reset label counter for each compilation
+        this._labelCount = 0;
+
         // ── Locate and validate the Graphics statement ────────────────────────
-        const gfxStmt = ast.find(
-            s => s && s.type === 'command' && s.name === 'graphics'
-        );
+        const gfxStmt = ast.find(s => s && s.type === 'command' && s.name === 'graphics');
         if (!gfxStmt) {
             throw new Error('Every BASSM program must begin with a Graphics statement.');
         }
@@ -72,35 +70,38 @@ export class CodeGen {
         const D = this._intArg(gfxStmt, 2, 'Graphics depth');
 
         if (W !== 320) {
-            throw new Error(`Graphics width ${W} is not supported — only 320 pixels (lores OCS) is implemented.`);
+            throw new Error(`Graphics width ${W} not supported — only 320px lores OCS.`);
         }
         if (D < 1 || D > 6) {
-            throw new Error(`Graphics depth ${D} is out of range — must be 1–6 bitplanes.`);
+            throw new Error(`Graphics depth ${D} out of range — must be 1–6 bitplanes.`);
         }
 
-        // ── Compute display timing constants ──────────────────────────────────
-        const colors  = 1 << D;                     // number of colour registers
-        const bplcon0 = (D << 12) | 0x0200;         // BPLCON0: depth field + colour enable
-        const hStart  = 0x81;                       // horizontal display start (fixed for lores)
-        const vStart  = 0x2C;                       // vertical display start  (PAL line 44)
+        // ── Display timing constants ──────────────────────────────────────────
+        const colors  = 1 << D;
+        const bplcon0 = (D << 12) | 0x0200;
+        const hStart  = 0x81;
+        const vStart  = 0x2C;
         const diwstrt = (vStart << 8) | hStart;
-        const hStop   = (hStart + W) & 0xFF;        // right edge (hardware adds bit 8)
-        const vStop   = (vStart + H) & 0xFF;        // bottom edge (hardware adds bit 8)
+        const hStop   = (hStart + W) & 0xFF;
+        const vStop   = (vStart + H) & 0xFF;
         const diwstop = (vStop  << 8) | hStop;
-        const ddfstrt = 0x003C;                     // fixed for 320-wide lores OCS
+        const ddfstrt = 0x003C;
         const ddfstop = 0x00D4;
 
-        // ── Build output lines ────────────────────────────────────────────────
+        // ── Collect all integer variable names ────────────────────────────────
+        const varNames = new Set();
+        this._collectVars(ast, varNames);
+
+        // ── Build output ──────────────────────────────────────────────────────
         const out = [];
 
-        // Header
         out.push('; ============================================================');
         out.push('; Generated by BASSM — do not edit');
         out.push(`; Screen: ${W}×${H}, ${D} bitplane${D > 1 ? 's' : ''}, ${colors} colours (PAL lores OCS)`);
         out.push('; ============================================================');
         out.push('');
 
-        // EQUs (must precede INCLUDEs so fragment assembly-time expressions resolve)
+        // EQUs
         out.push(`${pad('GFXWIDTH',12)} EQU ${W}`);
         out.push(`${pad('GFXHEIGHT',12)} EQU ${H}`);
         out.push(`${pad('GFXDEPTH',12)} EQU ${D}`);
@@ -114,22 +115,28 @@ export class CodeGen {
         out.push(`${pad('GFXDDFSTOP',12)} EQU $${hex(ddfstop)}`);
         out.push('');
 
-        // Fragment INCLUDEs (vasm -I must point to fragments dir)
+        // Fragment INCLUDEs
         out.push('        INCLUDE "startup.s"');
         out.push('        INCLUDE "offload.s"');
         out.push('        INCLUDE "graphics.s"');
         out.push('        INCLUDE "cls.s"');
         out.push('        INCLUDE "clscolor.s"');
         out.push('        INCLUDE "color.s"');
+        out.push('        INCLUDE "palette.s"');
         out.push('        INCLUDE "text.s"');
+        out.push('        INCLUDE "plot.s"');
+        out.push('        INCLUDE "line.s"');
+        out.push('        INCLUDE "rect.s"');
+        out.push('        INCLUDE "box.s"');
+        out.push('        INCLUDE "waitkey.s"');
         out.push('');
 
-        // Chip-RAM BSS — bitplane pixel buffers
+        // Chip-RAM BSS — bitplane buffers
         out.push('        SECTION gfx_planes,BSS_C');
         out.push('_gfx_planes:    ds.b  GFXPSIZE*GFXDEPTH');
         out.push('');
 
-        // Chip-RAM DATA — copper list template
+        // Chip-RAM DATA — copper list
         out.push('        SECTION gfx_copper,DATA_C');
         out.push('_gfx_copper:');
         out.push(copMove(0x008E, diwstrt, 'DIWSTRT'));
@@ -137,25 +144,29 @@ export class CodeGen {
         out.push(copMove(0x0092, ddfstrt, 'DDFSTRT'));
         out.push(copMove(0x0094, ddfstop, 'DDFSTOP'));
         out.push(copMove(0x0100, bplcon0, 'BPLCON0'));
-        out.push(copMove(0x0102, 0x0000,  'BPLCON1 — no scroll'));
-        out.push(copMove(0x0104, 0x0000,  'BPLCON2 — default priority'));
-        out.push(copMove(0x0108, 0x0000,  'BPL1MOD — no modulo'));
+        out.push(copMove(0x0102, 0x0000,  'BPLCON1'));
+        out.push(copMove(0x0104, 0x0000,  'BPLCON2'));
+        out.push(copMove(0x0108, 0x0000,  'BPL1MOD'));
         out.push(copMove(0x010A, 0x0000,  'BPL2MOD'));
-        out.push('_gfx_cop_bpl_table:             ; _PatchBitplanePtrs writes here');
+        out.push('_gfx_cop_bpl_table:');
         for (let i = 0; i < D; i++) {
             const [pth, ptl] = BPL_PTR_REGS[i];
             out.push(copMove(pth, 0, `BPL${i+1}PTH`));
             out.push(copMove(ptl, 0, `BPL${i+1}PTL`));
         }
-        out.push('_gfx_cop_color_table:           ; color.s / cls.s write palette here');
-        for (let i = 0; i < colors; i++) {
-            const reg = 0x0180 + i * 2;
-            out.push(copMove(reg, 0, i === 0 ? 'COLOR00' : null));
-        }
         out.push('        dc.w    $FFFF,$FFFE             ; END of copper list');
         out.push('');
 
-        // _setup_graphics subroutine (calls the two helpers from graphics.s)
+        // User variable BSS — one longword per integer variable
+        if (varNames.size > 0) {
+            out.push('        SECTION user_vars,BSS');
+            for (const name of varNames) {
+                out.push(`_var_${name}:    ds.l    1`);
+            }
+            out.push('');
+        }
+
+        // _setup_graphics subroutine
         out.push('        SECTION gfx_init,CODE');
         out.push('');
         out.push('_setup_graphics:');
@@ -163,23 +174,22 @@ export class CodeGen {
         out.push('        lea     _gfx_planes,a1');
         out.push('        moveq   #GFXDEPTH,d0');
         out.push('        move.l  #GFXPSIZE,d1');
-        out.push('        bsr     _PatchBitplanePtrs');
+        out.push('        jsr     _PatchBitplanePtrs');
         out.push('        lea     _gfx_copper,a0');
-        out.push('        bsr     _InstallCopper');
+        out.push('        jsr     _InstallCopper');
+        out.push('        jsr     _InitPalette');
         out.push('        rts');
         out.push('');
 
-        // _main_program — one instruction sequence per Blitz2D statement
+        // _main_program
         out.push('        SECTION main_code,CODE');
         out.push('');
         out.push('        XDEF    _main_program');
         out.push('_main_program:');
 
-        let strCounter = 0;
-
         for (const stmt of ast) {
             if (!stmt) continue;
-            out.push(...this._genStatement(stmt, () => strCounter++));
+            out.push(...this._genStatement(stmt));
         }
 
         out.push('        rts');
@@ -188,112 +198,644 @@ export class CodeGen {
         return out.join('\n');
     }
 
+    // ── Variable collection (pre-pass) ────────────────────────────────────────
+    //
+    // Walks the AST and collects all variable names so we can emit BSS
+    // declarations before _main_program.
+
+    _collectVars(ast, varSet) {
+        for (const stmt of ast) {
+            if (!stmt) continue;
+            if (stmt.type === 'assign') {
+                varSet.add(stmt.target);
+                this._collectVarsInExpr(stmt.expr, varSet);
+            } else if (stmt.type === 'command') {
+                for (const arg of stmt.args) {
+                    this._collectVarsInExpr(arg, varSet);
+                }
+            } else if (stmt.type === 'if') {
+                this._collectVarsInExpr(stmt.cond, varSet);
+                this._collectVars(stmt.then, varSet);
+                for (const ei of stmt.elseIfs) {
+                    this._collectVarsInExpr(ei.cond, varSet);
+                    this._collectVars(ei.body, varSet);
+                }
+                this._collectVars(stmt.else, varSet);
+            } else if (stmt.type === 'while') {
+                this._collectVarsInExpr(stmt.cond, varSet);
+                this._collectVars(stmt.body, varSet);
+            } else if (stmt.type === 'for') {
+                varSet.add(stmt.var);
+                this._collectVarsInExpr(stmt.from, varSet);
+                this._collectVarsInExpr(stmt.to,   varSet);
+                if (stmt.step) this._collectVarsInExpr(stmt.step, varSet);
+                this._collectVars(stmt.body, varSet);
+            } else if (stmt.type === 'select') {
+                this._collectVarsInExpr(stmt.expr, varSet);
+                for (const c of stmt.cases) {
+                    for (const v of c.values) this._collectVarsInExpr(v, varSet);
+                    this._collectVars(c.body, varSet);
+                }
+                this._collectVars(stmt.default, varSet);
+            }
+        }
+    }
+
+    _collectVarsInExpr(expr, varSet) {
+        if (!expr) return;
+        switch (expr.type) {
+            case 'ident':
+                varSet.add(expr.name);
+                break;
+            case 'binop':
+                this._collectVarsInExpr(expr.left,    varSet);
+                this._collectVarsInExpr(expr.right,   varSet);
+                break;
+            case 'unary':
+                this._collectVarsInExpr(expr.operand, varSet);
+                break;
+        }
+    }
+
     // ── Per-statement code generation ─────────────────────────────────────────
 
-    _genStatement(stmt, nextStrIdx) {
+    _genStatement(stmt) {
         const lines = [];
-        const name  = stmt.name; // already normalised to lowercase by Lexer
+
+        // ── Variable assignment: target = expr ───────────────────────────────
+        if (stmt.type === 'assign') {
+            this._genExpr(stmt.expr, lines);
+            lines.push(`        move.l  d0,_var_${stmt.target}`);
+            return lines;
+        }
+
+        // ── If / ElseIf / Else / EndIf ────────────────────────────────────────
+        if (stmt.type === 'if') {
+            this._genIf(stmt, lines);
+            return lines;
+        }
+
+        // ── While / Wend ──────────────────────────────────────────────────────
+        if (stmt.type === 'while') {
+            this._genWhile(stmt, lines);
+            return lines;
+        }
+
+        // ── For / To / Step / Next ────────────────────────────────────────────
+        if (stmt.type === 'for') {
+            this._genFor(stmt, lines);
+            return lines;
+        }
+
+        // ── Select / Case / Default / EndSelect ───────────────────────────────
+        if (stmt.type === 'select') {
+            this._genSelect(stmt, lines);
+            return lines;
+        }
+
+        if (stmt.type !== 'command') return lines;
+
+        const name = stmt.name;
 
         switch (name) {
 
             case 'graphics':
-                // Screen setup — handled at the top level; emit the call here
-                lines.push('        bsr     _setup_graphics');
+                lines.push('        jsr     _setup_graphics');
                 break;
 
             case 'cls':
-                lines.push('        bsr     _Cls');
+                lines.push('        jsr     _Cls');
                 break;
 
             case 'clscolor': {
-                const col = this._intArg(stmt, 0, 'ClsColor');
-                lines.push(`        moveq   #${col},d0`);
-                lines.push('        bsr     _ClsColor');
+                this._genExprArg(stmt, 0, 'ClsColor', lines);
+                lines.push('        jsr     _ClsColor');
                 break;
             }
 
             case 'color': {
-                const reg = this._intArg(stmt, 0, 'Color register');
-                const r   = this._intArg(stmt, 1, 'Color r') & 0xF;
-                const g   = this._intArg(stmt, 2, 'Color g') & 0xF;
-                const b   = this._intArg(stmt, 3, 'Color b') & 0xF;
+                this._genExprArg(stmt, 0, 'Color', lines);
+                lines.push('        move.w  d0,_draw_color');
+                break;
+            }
+
+            case 'palettecolor': {
+                // Compile-time only — palette index and r,g,b must be literals.
+                // (Runtime PaletteColor will be added in a later milestone.)
+                const n   = this._intArg(stmt, 0, 'PaletteColor n');
+                const r   = this._intArg(stmt, 1, 'PaletteColor r') & 0xF;
+                const g   = this._intArg(stmt, 2, 'PaletteColor g') & 0xF;
+                const b   = this._intArg(stmt, 3, 'PaletteColor b') & 0xF;
                 const rgb = (r << 8) | (g << 4) | b;
-                lines.push(`        moveq   #${reg},d0`);
+                lines.push(`        moveq   #${n},d0`);
                 lines.push(`        move.w  #$${hex(rgb)},d1`);
-                lines.push('        bsr     _SetColor');
+                lines.push('        jsr     _SetPaletteColor');
+                break;
+            }
+
+            case 'end':
+                lines.push('        rts');
+                break;
+
+            case 'delay': {
+                // Delay n — wait n VBlanks.  n may be any integer expression.
+                const loopLbl = this._nextLabel();
+                const skipLbl = this._nextLabel();
+                this._genExprArg(stmt, 0, 'Delay frames', lines);
+                // Guard: skip loop if n <= 0
+                lines.push(`        tst.l   d0`);
+                lines.push(`        ble.s   ${skipLbl}`);
+                lines.push(`        subq.l  #1,d0`);
+                lines.push(`        move.l  d0,d7`);
+                lines.push(`${loopLbl}:`);
+                lines.push(`        jsr     _WaitVBL`);
+                lines.push(`        dbra    d7,${loopLbl}`);
+                lines.push(`${skipLbl}:`);
                 break;
             }
 
             case 'waitvbl':
-                lines.push('        bsr     _WaitVBL');
+                lines.push('        jsr     _WaitVBL');
+                break;
+
+            case 'waitkey':
+                lines.push('        jsr     _WaitKey');
                 break;
 
             case 'text': {
-                const x   = this._intArg(stmt, 0, 'Text x');
-                const y   = this._intArg(stmt, 1, 'Text y');
-                const str = this._strArg(stmt, 2, 'Text string');
-                const idx = nextStrIdx();
-                const lbl = `.tstr${idx}`;
-                const end = `.tpast${idx}`;
-                lines.push(`        lea     ${lbl},a0`);
-                lines.push(`        move.w  #${x},d0`);
-                lines.push(`        move.w  #${y},d1`);
-                lines.push('        bsr     _Text');
-                lines.push(`        bra.s   ${end}`);
-                lines.push(`${lbl}:`);
+                const str     = this._strArg(stmt, 2, 'Text string');
+                const strLbl  = this._nextLabel();
+                const pastLbl = this._nextLabel();
+                // _Text(a0=str, d0=x, d1=y)
+                // Evaluate y first (save it), then x, then move y to d1
+                this._genExprArg(stmt, 1, 'Text y', lines);
+                lines.push(`        move.l  d0,-(sp)`);
+                this._genExprArg(stmt, 0, 'Text x', lines);
+                lines.push(`        move.l  (sp)+,d1`);
+                lines.push(`        lea     ${strLbl},a0`);
+                lines.push(`        jsr     _Text`);
+                lines.push(`        bra.s   ${pastLbl}`);
+                lines.push(`${strLbl}:`);
                 lines.push(`        dc.b    "${this._escapeStr(str)}",0`);
                 lines.push('        even');
-                lines.push(`${end}:`);
+                lines.push(`${pastLbl}:`);
                 break;
             }
 
             case 'nprint': {
-                const str = this._strArg(stmt, 0, 'NPrint string');
-                const idx = nextStrIdx();
-                const lbl = `.nstr${idx}`;
-                const end = `.npast${idx}`;
-                lines.push(`        lea     ${lbl},a0`);
-                lines.push('        bsr     _NPrint');
-                lines.push(`        bra.s   ${end}`);
-                lines.push(`${lbl}:`);
+                const str     = this._strArg(stmt, 0, 'NPrint string');
+                const strLbl  = this._nextLabel();
+                const pastLbl = this._nextLabel();
+                lines.push(`        lea     ${strLbl},a0`);
+                lines.push('        jsr     _NPrint');
+                lines.push(`        bra.s   ${pastLbl}`);
+                lines.push(`${strLbl}:`);
                 lines.push(`        dc.b    "${this._escapeStr(str)}",0`);
                 lines.push('        even');
-                lines.push(`${end}:`);
+                lines.push(`${pastLbl}:`);
+                break;
+            }
+
+            // ── Drawing commands ──────────────────────────────────────────────
+
+            case 'plot': {
+                // Plot x, y  →  _Plot(d0=x, d1=y)
+                // Evaluate y first (push), then x → d0, pop y → d1
+                this._genExprArg(stmt, 1, 'Plot y', lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExprArg(stmt, 0, 'Plot x', lines);
+                lines.push('        move.l  (sp)+,d1');
+                lines.push('        jsr     _Plot');
+                break;
+            }
+
+            case 'line': {
+                // Line x1,y1,x2,y2  →  _Line(d0=x1, d1=y1, d2=x2, d3=y2)
+                // Push y2, x2, y1; then x1 → d0; pop y1→d1, x2→d2, y2→d3
+                this._genExprArg(stmt, 3, 'Line y2', lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExprArg(stmt, 2, 'Line x2', lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExprArg(stmt, 1, 'Line y1', lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExprArg(stmt, 0, 'Line x1', lines);
+                lines.push('        movem.l (sp)+,d1-d3');
+                lines.push('        jsr     _Line');
+                break;
+            }
+
+            case 'rect': {
+                // Rect x,y,w,h  →  _Rect(d0=x, d1=y, d2=w, d3=h)
+                // Push h, w, y; then x → d0; pop y→d1, w→d2, h→d3
+                this._genExprArg(stmt, 3, 'Rect h', lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExprArg(stmt, 2, 'Rect w', lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExprArg(stmt, 1, 'Rect y', lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExprArg(stmt, 0, 'Rect x', lines);
+                lines.push('        movem.l (sp)+,d1-d3');
+                lines.push('        jsr     _Rect');
+                break;
+            }
+
+            case 'box': {
+                // Box x,y,w,h  →  _Box(d0=x, d1=y, d2=w, d3=h)
+                // Push h, w, y; then x → d0; pop y→d1, w→d2, h→d3
+                this._genExprArg(stmt, 3, 'Box h', lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExprArg(stmt, 2, 'Box w', lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExprArg(stmt, 1, 'Box y', lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExprArg(stmt, 0, 'Box x', lines);
+                lines.push('        movem.l (sp)+,d1-d3');
+                lines.push('        jsr     _Box');
                 break;
             }
 
             default:
                 lines.push(`; [codegen] Unhandled command: ${stmt.name} (line ${stmt.line})`);
-                console.warn(`[CodeGen] No code generation for command '${stmt.name}' on line ${stmt.line}`);
+                console.warn(`[CodeGen] No codegen for '${stmt.name}' on line ${stmt.line}`);
         }
 
         return lines;
     }
 
-    // ── Argument extractors ───────────────────────────────────────────────────
+    // ── If statement code generation ──────────────────────────────────────────
+    //
+    // Evaluates cond into d0; tst.l; beq.w branches to else/endif.
+    // Uses .w branches so bodies can be arbitrarily large.
 
+    _genIf(stmt, lines) {
+        const hasElseIf = stmt.elseIfs.length > 0;
+        const hasElse   = stmt.else.length > 0;
+        const endLbl    = this._nextLabel();
+
+        // Evaluate condition → d0
+        this._genExpr(stmt.cond, lines);
+        lines.push('        tst.l   d0');
+
+        if (hasElseIf || hasElse) {
+            const firstAltLbl = this._nextLabel();
+            lines.push(`        beq.w   ${firstAltLbl}`);
+
+            // Then body
+            for (const s of stmt.then) lines.push(...this._genStatement(s));
+            lines.push(`        bra.w   ${endLbl}`);
+            lines.push(`${firstAltLbl}:`);
+
+            // ElseIf chain — each produces its own branch-to-endif
+            for (const ei of stmt.elseIfs) {
+                const nextAltLbl = this._nextLabel();
+                this._genExpr(ei.cond, lines);
+                lines.push('        tst.l   d0');
+                lines.push(`        beq.w   ${nextAltLbl}`);
+                for (const s of ei.body) lines.push(...this._genStatement(s));
+                lines.push(`        bra.w   ${endLbl}`);
+                lines.push(`${nextAltLbl}:`);
+            }
+
+            // Else body (empty if none)
+            for (const s of stmt.else) lines.push(...this._genStatement(s));
+        } else {
+            // Simple If without any alternate branch
+            lines.push(`        beq.w   ${endLbl}`);
+            for (const s of stmt.then) lines.push(...this._genStatement(s));
+        }
+
+        lines.push(`${endLbl}:`);
+    }
+
+    // ── While statement code generation ───────────────────────────────────────
+    //
+    // While <cond> … Wend
+    //   Condition is re-evaluated at the top of every iteration.
+
+    _genWhile(stmt, lines) {
+        const topLbl = this._nextLabel();
+        const endLbl = this._nextLabel();
+
+        lines.push(`${topLbl}:`);
+        this._genExpr(stmt.cond, lines);
+        lines.push('        tst.l   d0');
+        lines.push(`        beq.w   ${endLbl}`);
+
+        for (const s of stmt.body) lines.push(...this._genStatement(s));
+
+        lines.push(`        bra.w   ${topLbl}`);
+        lines.push(`${endLbl}:`);
+    }
+
+    // ── For statement code generation ─────────────────────────────────────────
+    //
+    // For <var> = <from> To <to> [Step <step>] … Next [<var>]
+    //
+    // Literal step (known at compile time):
+    //   Step >= 0 → bgt.w to exit; addq.l / add.l for increment.
+    //   Step <  0 → blt.w to exit; subq.l / sub.l for decrement.
+    //
+    // Expression step (not a literal integer):
+    //   Runtime sign check — re-evaluates step and limit each iteration.
+
+    _genFor(stmt, lines) {
+        const topLbl = this._nextLabel();
+        const endLbl = this._nextLabel();
+
+        // Determine step value at compile time (null = unknown / expression)
+        const stepLit = stmt.step === null       ? 1
+                      : stmt.step.type === 'int' ? stmt.step.value
+                      :                            null;
+
+        // Initialise loop variable
+        this._genExpr(stmt.from, lines);
+        lines.push(`        move.l  d0,_var_${stmt.var}`);
+
+        lines.push(`${topLbl}:`);
+
+        if (stepLit !== null) {
+            // ── Literal step: direction known at compile time ─────────────────
+            this._genExpr(stmt.to, lines);
+            lines.push('        move.l  d0,-(sp)');
+            lines.push(`        move.l  _var_${stmt.var},d0`);
+            lines.push('        move.l  (sp)+,d1');        // d0=i, d1=limit
+            lines.push('        cmp.l   d1,d0');            // i - limit
+            lines.push(stepLit >= 0
+                ? `        bgt.w   ${endLbl}`              // i > limit → exit
+                : `        blt.w   ${endLbl}`);            // i < limit → exit
+
+            for (const s of stmt.body) lines.push(...this._genStatement(s));
+
+            // Step increment / decrement
+            const av = Math.abs(stepLit);
+            if (av >= 1 && av <= 8) {
+                const op = stepLit > 0 ? 'addq.l' : 'subq.l';
+                lines.push(`        ${op}  #${av},_var_${stmt.var}`);
+            } else {
+                lines.push(`        move.l  _var_${stmt.var},d0`);
+                lines.push(`        add.l   #${stepLit},d0`);
+                lines.push(`        move.l  d0,_var_${stmt.var}`);
+            }
+
+        } else {
+            // ── Expression step: runtime sign check ───────────────────────────
+            const negLbl  = this._nextLabel();
+            const bodyLbl = this._nextLabel();
+
+            // Check sign of step to pick branch direction
+            this._genExpr(stmt.step, lines);
+            lines.push('        tst.l   d0');
+            lines.push(`        bmi.s   ${negLbl}`);       // step < 0?
+
+            // step >= 0: exit if i > limit
+            this._genExpr(stmt.to, lines);
+            lines.push('        move.l  d0,-(sp)');
+            lines.push(`        move.l  _var_${stmt.var},d0`);
+            lines.push('        move.l  (sp)+,d1');
+            lines.push('        cmp.l   d1,d0');
+            lines.push(`        bgt.w   ${endLbl}`);
+            lines.push(`        bra.s   ${bodyLbl}`);
+
+            lines.push(`${negLbl}:`);
+            // step < 0: exit if i < limit
+            this._genExpr(stmt.to, lines);
+            lines.push('        move.l  d0,-(sp)');
+            lines.push(`        move.l  _var_${stmt.var},d0`);
+            lines.push('        move.l  (sp)+,d1');
+            lines.push('        cmp.l   d1,d0');
+            lines.push(`        blt.w   ${endLbl}`);
+
+            lines.push(`${bodyLbl}:`);
+            for (const s of stmt.body) lines.push(...this._genStatement(s));
+
+            // Step: i += step (re-evaluate)
+            this._genExpr(stmt.step, lines);
+            lines.push(`        add.l   _var_${stmt.var},d0`);
+            lines.push(`        move.l  d0,_var_${stmt.var}`);
+        }
+
+        lines.push(`        bra.w   ${topLbl}`);
+        lines.push(`${endLbl}:`);
+    }
+
+    // ── Select statement code generation ─────────────────────────────────────
+    //
+    // Select <expr>
+    //   Case <val>[, <val>…]  — multiple values per Case share one jump target
+    //   Default
+    // EndSelect
+    //
+    // Pattern:
+    //   Evaluate selector → push on stack.
+    //   Comparison chain: for each Case value, peek selector, compare, beq.w.
+    //   No match → bra.w to default or end.
+    //   Case bodies follow, each ending with bra.w to end.
+    //   Default body (if any).
+    //   End label + addq.l #4,sp (pop selector).
+    //
+    // For literal integer Case values: optimised to move.l (sp),d0 / cmp.l #n,d0.
+    // For expression values: general 4-instruction push/peek/pop/cmp sequence.
+
+    _genSelect(stmt, lines) {
+        const endLbl  = this._nextLabel();
+        const defLbl  = stmt.default.length > 0 ? this._nextLabel() : endLbl;
+
+        // Evaluate selector → push on stack
+        this._genExpr(stmt.expr, lines);
+        lines.push('        move.l  d0,-(sp)');
+
+        // Assign one label per Case block
+        const caseLabels = stmt.cases.map(() => this._nextLabel());
+
+        // ── Comparison chain ──────────────────────────────────────────────────
+        for (let i = 0; i < stmt.cases.length; i++) {
+            const caseLbl = caseLabels[i];
+            for (const val of stmt.cases[i].values) {
+                if (val.type === 'int') {
+                    // Optimised: peek selector, compare with immediate
+                    lines.push('        move.l  (sp),d0');
+                    lines.push(`        cmp.l   #${val.value},d0`);
+                } else {
+                    // General: eval value → push; peek selector; pop value → d1; cmp
+                    this._genExpr(val, lines);              // value → d0
+                    lines.push('        move.l  d0,-(sp)'); // push value
+                    lines.push('        move.l  4(sp),d0'); // peek selector (below value)
+                    lines.push('        move.l  (sp)+,d1'); // pop value → d1
+                    lines.push('        cmp.l   d1,d0');    // selector - value
+                }
+                lines.push(`        beq.w   ${caseLbl}`);
+            }
+        }
+        // No match → jump to default (or end if none)
+        lines.push(`        bra.w   ${defLbl}`);
+
+        // ── Case bodies ───────────────────────────────────────────────────────
+        for (let i = 0; i < stmt.cases.length; i++) {
+            lines.push(`${caseLabels[i]}:`);
+            for (const s of stmt.cases[i].body) lines.push(...this._genStatement(s));
+            lines.push(`        bra.w   ${endLbl}`);
+        }
+
+        // ── Default body ──────────────────────────────────────────────────────
+        if (stmt.default.length > 0) {
+            lines.push(`${defLbl}:`);
+            for (const s of stmt.default) lines.push(...this._genStatement(s));
+        }
+
+        // ── Pop selector + end ────────────────────────────────────────────────
+        lines.push(`${endLbl}:`);
+        lines.push('        addq.l  #4,sp');
+    }
+
+    // ── Expression code generation ────────────────────────────────────────────
+    //
+    // Emits code that evaluates `expr` and leaves the result in d0.
+    // Uses the system stack for sub-expression temporaries.
+
+    _genExpr(expr, lines) {
+        if (!expr) {
+            lines.push('        moveq   #0,d0');
+            return;
+        }
+
+        switch (expr.type) {
+
+            case 'int':
+                if (expr.value >= -128 && expr.value <= 127) {
+                    lines.push(`        moveq   #${expr.value},d0`);
+                } else {
+                    lines.push(`        move.l  #${expr.value},d0`);
+                }
+                break;
+
+            case 'ident':
+                lines.push(`        move.l  _var_${expr.name},d0`);
+                break;
+
+            case 'unary':
+                if (expr.op === '-') {
+                    this._genExpr(expr.operand, lines);
+                    lines.push('        neg.l   d0');
+                }
+                break;
+
+            case 'binop':
+                this._genBinop(expr, lines);
+                break;
+
+            case 'float':
+                throw new Error(`Float expressions are not yet supported (line ${expr.line ?? '?'})`);
+
+            case 'string':
+                throw new Error(`String expressions cannot be used as integer values`);
+
+            default:
+                lines.push('        moveq   #0,d0');
+                console.warn(`[CodeGen] Unknown expression type: ${expr.type}`);
+        }
+    }
+
+    _genBinop(expr, lines) {
+        const op = expr.op;
+
+        // ── Arithmetic: + - * / ───────────────────────────────────────────────
+        if (op === '+' || op === '-' || op === '*' || op === '/') {
+            // Evaluate right → d0, save on stack.
+            // Evaluate left  → d0.
+            // Pop right into d1.
+            // Apply operation: result in d0.
+            this._genExpr(expr.right, lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExpr(expr.left, lines);
+            lines.push('        move.l  (sp)+,d1');   // d0=left, d1=right
+
+            switch (op) {
+                case '+':
+                    lines.push('        add.l   d1,d0');
+                    break;
+                case '-':
+                    lines.push('        sub.l   d1,d0');
+                    break;
+                case '*':
+                    // muls.w: d0.w × d1.w → d0.l (signed, 16×16→32)
+                    // Operands must fit in 16 bits for correct results.
+                    lines.push('        muls.w  d1,d0');
+                    break;
+                case '/':
+                    // divs.w: d0.l ÷ d1.w → d0.w quotient (signed)
+                    // ext.l sign-extends quotient from 16 to 32 bits.
+                    lines.push('        divs.w  d1,d0');
+                    lines.push('        ext.l   d0');
+                    break;
+            }
+            return;
+        }
+
+        // ── Comparison: = <> < > <= >= ────────────────────────────────────────
+        // Produces Blitz2D boolean: -1 (true) or 0 (false).
+        // Uses Scc (Set According to Condition) + sign extension.
+        const sccMap = {
+            '=':  'seq',
+            '<>': 'sne',
+            '<':  'slt',
+            '>':  'sgt',
+            '<=': 'sle',
+            '>=': 'sge',
+        };
+        if (sccMap[op]) {
+            this._genExpr(expr.right, lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExpr(expr.left, lines);
+            lines.push('        move.l  (sp)+,d1');   // d0=left, d1=right
+            lines.push('        cmp.l   d1,d0');       // flags: d0 - d1 (left - right)
+            lines.push(`        ${sccMap[op]}     d0`); // d0.b = $FF (true) or $00 (false)
+            lines.push('        ext.w   d0');           // sign-extend to word
+            lines.push('        ext.l   d0');           // sign-extend to long (-1 or 0)
+            return;
+        }
+
+        lines.push('        moveq   #0,d0');
+        console.warn(`[CodeGen] Unknown binary operator: '${op}'`);
+    }
+
+    // ── Argument helpers ──────────────────────────────────────────────────────
+
+    /** Evaluate stmt.args[idx] into d0 via _genExpr. */
+    _genExprArg(stmt, idx, label, lines) {
+        const arg = stmt.args[idx];
+        if (!arg) throw new Error(`${label}: missing argument at position ${idx} on line ${stmt.line}`);
+        this._genExpr(arg, lines);
+    }
+
+    /** Extract a compile-time integer literal (for Graphics and similar). */
     _intArg(stmt, idx, label) {
         const arg = stmt.args[idx];
         if (!arg || arg.type !== 'int') {
             throw new Error(
-                `${label}: expected integer argument at position ${idx} on line ${stmt.line}`
+                `${label}: expected integer literal at position ${idx} on line ${stmt.line}`
             );
         }
         return arg.value;
     }
 
+    /** Extract a compile-time string literal. */
     _strArg(stmt, idx, label) {
         const arg = stmt.args[idx];
         if (!arg || arg.type !== 'string') {
             throw new Error(
-                `${label}: expected string argument at position ${idx} on line ${stmt.line}`
+                `${label}: expected string literal at position ${idx} on line ${stmt.line}`
             );
         }
         return arg.value;
     }
 
-    /** Escape double quotes and backslashes inside a dc.b string */
+    /** Escape double-quotes and backslashes inside a dc.b string literal. */
     _escapeStr(s) {
         return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    }
+
+    /** Return a globally unique local label string. */
+    _nextLabel() {
+        return `.L${this._labelCount++}`;
     }
 }
