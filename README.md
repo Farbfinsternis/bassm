@@ -1,6 +1,8 @@
 # BASSM — Blitz2D to Amiga m68k Assembler
 
-A compiler and live-preview IDE that translates a subset of the **Blitz2D** BASIC dialect into native **Motorola 68000 assembly** for the Commodore Amiga, assembles it with **vasmm68k_mot**, and previews the result in the **vAmiga** WASM emulator — all inside a single Electron app.
+A compiler and live-preview IDE that translates a subset of the **Blitz2D** BASIC dialect into native **Motorola 68000 assembly** for the Commodore Amiga, assembles and links it with **vasmm68k_mot + vlink**, and previews the result in the **vAmiga** WASM emulator — all inside a single Electron app.
+
+The generated executables are standard **AmigaOS hunk-format binaries** compatible with AROS, real Amiga hardware (OCS/ECS), and Amiga emulators (vAmiga, WinUAE).
 
 ---
 
@@ -58,10 +60,16 @@ Blitz2D source
    CodeGen           emit m68k assembly + fragment INCLUDEs
       │
       ▼
-vasmm68k_mot         assemble to Amiga HUNK binary (.exe)
+vasmm68k_mot         assemble → hunk object file (-Fhunk)
       │
       ▼
+    vlink            link → clean AmigaOS hunk executable (-bamigahunk)
+      │              (merges sections: one CODE hunk, CHIP DATA/BSS hunks)
+      ▼
    vAmiga            WASM emulator — boots the .exe and renders to canvas
+      │
+      ▼  (copy of .exe also written to out/bassm_out.exe)
+real Amiga / WinUAE  runs natively on hardware and any compatible emulator
 ```
 
 ---
@@ -156,7 +164,8 @@ offload.s      OS restoration (LoadView, RethinkDisplay, return to CLI)
 ## Hardware Notes (Amiga OCS, bare-metal)
 
 - **Target:** OCS/ECS Amiga, PAL, Motorola 68000, Kickstart 1.3+
-- **Assembler:** `vasmm68k_mot -Fhunk` + `vlink`
+- **Compatibility:** executables run on AROS, real Amiga hardware, vAmiga, and WinUAE
+- **Assembler:** `vasmm68k_mot -Fhunk` (object) + `vlink -bamigahunk` (executable)
 - **Register convention:** `a5 = $DFF000` (custom chip base) for the entire program lifetime
 - **VBL interrupt:** Level-3 autovector at `$6C`, 50 Hz PAL frame counter
 - **Keyboard:** Interrupt-driven Level-2 (CIA-A) handler at `$68`; `_kbd_pending` byte shared with `_WaitKey`

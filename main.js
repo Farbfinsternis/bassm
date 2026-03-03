@@ -9,6 +9,7 @@ const { execFile } = require('node:child_process');
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 const VASM      = path.join(__dirname, 'bin', 'vasmm68k_mot.exe');
+const VLINK     = path.join(__dirname, 'bin', 'vlink.exe');
 const FRAGMENTS = path.join(__dirname, 'app', 'src', 'm68k', 'fragments');
 const ROM_MAIN  = path.join(__dirname, 'emulator', 'vAmigaWeb', 'roms', 'aros.bin');
 const ROM_EXT   = path.join(__dirname, 'emulator', 'vAmigaWeb', 'roms', 'aros_ext.bin');
@@ -113,24 +114,36 @@ ipcMain.handle('bassm:assemble', (_event, asmText) => {
   return new Promise((resolve) => {
     const tmpDir = os.tmpdir();
     const srcFile = path.join(tmpDir, 'bassm_src.s');
+    const objFile = path.join(tmpDir, 'bassm_out.o');
     const outFile = path.join(tmpDir, 'bassm_out.exe');
+
     fs.writeFileSync(srcFile, asmText, 'utf8');
-    execFile(VASM, ['-Fhunkexe', '-I', FRAGMENTS, '-o', outFile, srcFile], (err, _stdout, stderr) => {
+
+    // Step 1: assemble → hunk object file
+    execFile(VASM, ['-Fhunk', '-I', FRAGMENTS, '-o', objFile, srcFile], (err, _stdout, stderr) => {
       if (err) {
         resolve({ ok: false, error: stderr || err.message });
         return;
       }
-      try {
-        // Nutze direkt den Buffer (Uint8Array). 
-        // Electron kann Buffer effizient via IPC übertragen, 
-        // ohne sie in ein langsames JS-Array umzuwandeln.
-        const data = fs.readFileSync(outFile); 
-        fs.mkdirSync(OUT_DIR, { recursive: true });
-        fs.copyFileSync(outFile, path.join(OUT_DIR, 'bassm_out.exe'));
-        resolve({ ok: true, data });
-      } catch (readErr) {
-        resolve({ ok: false, error: readErr.message });
-      }
+
+      // Step 2: link → AmigaOS hunk executable
+      // vlink merges same-type sections: all CODE into one hunk, DATA_C into
+      // one CHIP hunk, BSS_C into one CHIP BSS hunk — producing a clean,
+      // Kickstart-compatible executable.
+      execFile(VLINK, ['-bamigahunk', '-e', 'start', '-o', outFile, objFile], (err2, _stdout2, stderr2) => {
+        if (err2) {
+          resolve({ ok: false, error: stderr2 || err2.message });
+          return;
+        }
+        try {
+          const data = fs.readFileSync(outFile);
+          fs.mkdirSync(OUT_DIR, { recursive: true });
+          fs.copyFileSync(outFile, path.join(OUT_DIR, 'bassm_out.exe'));
+          resolve({ ok: true, data });
+        } catch (readErr) {
+          resolve({ ok: false, error: readErr.message });
+        }
+      });
     });
   });
 });
