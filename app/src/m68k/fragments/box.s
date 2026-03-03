@@ -18,12 +18,27 @@
 ;   bitplane region from (x,y) to (x+w-1, y+h-1).
 ;
 ;   Blitter register values per plane:
-;     BLTCON0 = $09F0  (USEA=1, USED=1, minterm $F0 = D→A)
+;
+;     A = _blt_ones_row (mask: 1 inside box after BLTAFWM/BLTALWM, 0 outside)
+;     C = D (the destination bitplane — read first, then written)
+;
+;     Ones-fill (colour bit = 1):
+;       BLTCON0 = $0B32  (USEA+USEC+USED, minterm $32 = D = A OR C)
+;         inside box (A=1): D = 1  (set)
+;         outside box (A=0): D = C (preserve — no corruption of adjacent pixels)
+;
+;     Zeros-fill (colour bit = 0):
+;       BLTCON0 = $0B02  (USEA+USEC+USED, minterm $02 = D = !A AND C)
+;         inside box (A=1): D = 0  (clear)
+;         outside box (A=0): D = C (preserve — no corruption of adjacent pixels)
+;
 ;     BLTCON1 = $0000
 ;     BLTAFWM = $FFFF >> (x % 16)                     left-edge mask
 ;     BLTALWM = $FFFF XOR ($FFFF >> ((x+w-1)%16 + 1)) right-edge mask
-;     BLTAPT  → _blt_ones_row  or  _blt_zero_row (per colour bit for this plane)
+;     BLTAPT  → _blt_ones_row  (always — serves as the box-region mask)
 ;     BLTAMOD = -(word_count × 2)  A-pointer resets to row start each line
+;     BLTCPT  = BLTDPT  (C reads the same bitplane data as D will write)
+;     BLTCMOD = BLTDMOD
 ;     BLTDPT  → &plane[y × GFXBPR + (x/16) × 2]      first dest word
 ;     BLTDMOD = GFXBPR − word_count × 2               bytes to skip per row
 ;     BLTSIZE = (h << 6) | word_count                  triggers blit
@@ -50,7 +65,7 @@
 ;   Boxes that extend beyond the right edge produce undefined results.
 ;
 ; DEPENDENCY
-;   cls.s must be included first (defines _blt_ones_row, _blt_zero_row).
+;   cls.s must be included first (defines _blt_ones_row).
 ;   startup.s defines _WaitBlit and all Blitter register EQUs.
 ;   palette.s defines _draw_color (ds.w 1).
 ;   codegen.js defines GFXDEPTH, GFXPSIZE, GFXBPR.
@@ -212,13 +227,15 @@ _Box:
         move.w  _draw_color,d4          ; d4 = palette index (bits → per-plane pattern)
 
         ; ── Initial Blitter Setup (constant for all planes) ──────────────────
+        ; BLTCON0 is set per-plane (ones vs zeros fill use different minterms).
+        ; BLTCMOD = BLTDMOD because C tracks D through the destination bitplane.
         jsr     _WaitBlit
-        move.w  #$09F0,BLTCON0(a5)      ; USEA=1, USED=1, minterm $F0 (D = A)
         clr.w   BLTCON1(a5)
         move.w  d6,BLTAFWM(a5)
         move.w  d7,BLTALWM(a5)
-        move.w  d3,BLTAMOD(a5)          ; BLTAMOD
+        move.w  d3,BLTAMOD(a5)          ; BLTAMOD (A-pointer rewinds each row)
         move.w  d2,BLTDMOD(a5)          ; BLTDMOD
+        move.w  d2,BLTCMOD(a5)          ; BLTCMOD = BLTDMOD (C tracks D)
 
         ; ════════════════════════════════════════════════════════════════════
         ;  PLANE LOOP — one Blitter operation per bitplane
@@ -230,13 +247,24 @@ _Box:
         ; ── Wait for previous blit ───────────────────────────────────────────
         jsr     _WaitBlit               ; trashes d0
 
-        ; ── Choose A-source based on colour bit for this plane ───────────────
-        btst    #0,d4                   ; is this plane's colour bit set?
-        beq.s   .box_use_zeros
-        lea     _blt_ones_row,a1        ; yes → fill with $FFFF
+        ; ── A is always _blt_ones_row — it acts as the box-region mask ────────
+        ; BLTAFWM/BLTALWM trim A to 1 inside the box boundary, 0 outside.
+        ; C reads the current destination data so pixels outside the box are
+        ; preserved (not overwritten) regardless of fill direction.
+        ;
+        ; Ones-fill (colour bit = 1): minterm $32 = D = A OR C
+        ;   inside (A=1): D=1 (set)     outside (A=0): D=C (preserve)
+        ; Zeros-fill (colour bit = 0): minterm $02 = D = !A AND C
+        ;   inside (A=1): D=0 (clear)   outside (A=0): D=C (preserve)
+        lea     _blt_ones_row,a1
+
+        ; ── Choose minterm based on colour bit ────────────────────────────────
+        btst    #0,d4
+        bne.s   .box_set_ones
+        move.w  #$0B02,BLTCON0(a5)      ; USEA+USEC+USED, minterm $02 (D=!A AND C)
         bra.s   .box_blit
-.box_use_zeros:
-        lea     _blt_zero_row,a1        ; no  → fill with $0000
+.box_set_ones:
+        move.w  #$0B32,BLTCON0(a5)      ; USEA+USEC+USED, minterm $32 (D=A OR C)
 
 .box_blit:
         ; ── Program Blitter ──────────────────────────────────────────────────
@@ -248,11 +276,14 @@ _Box:
         swap    d0
         move.w  d0,BLTAPTL(a5)
 
-        ; D destination pointer
+        ; C source pointer = D destination pointer (same chip-RAM address).
+        ; C and D point to the same bitplane so C reads what D will overwrite.
         move.l  a0,d0
         swap    d0
+        move.w  d0,BLTCPTH(a5)
         move.w  d0,BLTDPTH(a5)
         swap    d0
+        move.w  d0,BLTCPTL(a5)
         move.w  d0,BLTDPTL(a5)
 
         ; BLTSIZE write triggers the blit
