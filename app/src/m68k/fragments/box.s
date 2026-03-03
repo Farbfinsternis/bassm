@@ -94,6 +94,38 @@ _Box:
         movem.l d0-d7/a0-a2,-(sp)
 
         ; ════════════════════════════════════════════════════════════════════
+        ;  SAFETY CLIPPING (Prevent Pixel-Müll & Crashes)
+        ; ════════════════════════════════════════════════════════════════════
+        tst.l   d0
+        blt.w   .box_done               ; x < 0 -> Abbruch
+        tst.l   d1
+        blt.w   .box_done               ; y < 0 -> Abbruch
+        cmp.l   #GFXWIDTH,d0
+        bge.w   .box_done               ; x >= 320 -> Abbruch
+        cmp.l   #GFXHEIGHT,d1
+        bge.w   .box_done               ; y >= 256 -> Abbruch
+
+        move.l  d0,d4
+        add.l   d2,d4                   ; d4 = x + w
+        cmp.l   #GFXWIDTH,d4
+        ble.s   .no_clip_x
+        move.l  #GFXWIDTH,d2
+        sub.l   d0,d2                   ; w = 320 - x
+.no_clip_x:
+
+        move.l  d1,d4
+        add.l   d3,d4                   ; d4 = y + h
+        cmp.l   #GFXHEIGHT,d4
+        ble.s   .no_clip_y
+        move.l  #GFXHEIGHT,d3
+        sub.l   d1,d3                   ; h = 256 - y
+.no_clip_y:
+        tst.l   d2
+        ble.w   .box_done               ; Breite <= 0? -> Abbruch
+        tst.l   d3
+        ble.w   .box_done               ; Höhe <= 0? -> Abbruch
+
+        ; ════════════════════════════════════════════════════════════════════
         ;  PROLOGUE — compute everything we need once, before the plane loop.
         ;  After the prologue, d0, d1, d2 (x, y, w) are free scratch.
         ; ════════════════════════════════════════════════════════════════════
@@ -144,14 +176,32 @@ _Box:
         ; First destination word for plane 0:
         ;   _gfx_planes + y*GFXBPR + (x/16)*2
         ;
-        lea     _gfx_planes,a0          ; a0 = bitplane buffer base
+        move.l  _back_planes_ptr,a0     ; a0 = back buffer base (double-buffering)
         move.l  d1,d5                   ; d5 = y
-        mulu.w  #GFXBPR,d5             ; d5 = y * GFXBPR  (fits in 32 bits for H≤256)
+        lsl.l   #3,d5                   ; d5 = y * 8
+        move.l  d5,d1                   ; d1 = y * 8 (use d1 as temp, d0 is x!)
+        lsl.l   #2,d5                   ; d5 = y * 32
+        add.l   d1,d5                   ; d5 = y * 40 (GFXBPR)
         add.l   d5,a0                   ; a0 += y*GFXBPR
         move.l  d0,d5                   ; d5 = x
         lsr.l   #4,d5                   ; d5 = x/16 (word index of first column)
         add.l   d5,d5                   ; d5 = (x/16)*2 (byte offset)
         add.l   d5,a0                   ; a0 = _gfx_planes + y*GFXBPR + (x/16)*2
+
+        ; ── Precompute Blitter constants ─────────────────────────────────────
+        move.l  a2,d0                   ; d0 = word_count
+        add.l   d0,d0                   ; d0 = word_count * 2
+        move.l  d0,d1                   ; d1 = word_count * 2
+        neg.w   d1                      ; d1 = BLTAMOD
+        
+        move.w  #GFXBPR,d2
+        sub.w   d0,d2                   ; d2 = BLTDMOD
+
+        move.l  d3,d0                   ; d0 = h
+        lsl.w   #6,d0                   ; d0 = h << 6
+        add.l   a2,d0                   ; d0 = BLTSIZE (Legal: ADD.L An, Dn)
+        move.l  d0,a2                   ; Store final BLTSIZE in a2 for the loop
+        move.w  d1,d3                   ; Store BLTAMOD in d3.w
 
         ; ── Load draw colour ─────────────────────────────────────────────────
         ;
@@ -160,6 +210,15 @@ _Box:
         ;
         moveq   #0,d4
         move.w  _draw_color,d4          ; d4 = palette index (bits → per-plane pattern)
+
+        ; ── Initial Blitter Setup (constant for all planes) ──────────────────
+        jsr     _WaitBlit
+        move.w  #$09F0,BLTCON0(a5)      ; USEA=1, USED=1, minterm $F0 (D = A)
+        clr.w   BLTCON1(a5)
+        move.w  d6,BLTAFWM(a5)
+        move.w  d7,BLTALWM(a5)
+        move.w  d3,BLTAMOD(a5)          ; BLTAMOD
+        move.w  d2,BLTDMOD(a5)          ; BLTDMOD
 
         ; ════════════════════════════════════════════════════════════════════
         ;  PLANE LOOP — one Blitter operation per bitplane
@@ -181,25 +240,6 @@ _Box:
 
 .box_blit:
         ; ── Program Blitter ──────────────────────────────────────────────────
-        move.w  #$09F0,BLTCON0(a5)     ; USEA=1, USED=1, minterm $F0 (D = A)
-        clr.w   BLTCON1(a5)             ; no line mode, no fill mode
-        move.w  d6,BLTAFWM(a5)         ; left-edge mask (computed in prologue)
-        move.w  d7,BLTALWM(a5)         ; right-edge mask
-
-        ; BLTAMOD = -(word_count × 2)
-        ; After reading word_count words (= word_count×2 bytes) per row,
-        ; the A pointer goes back word_count×2 bytes → net advance = 0.
-        ; _blt_ones_row and _blt_zero_row are GFXBPR bytes wide, so re-reading
-        ; from the start is always valid.
-        move.l  a2,d0                   ; d0 = word_count
-        add.l   a2,d0                   ; d0 = word_count × 2
-        neg.l   d0                      ; d0 = -(word_count × 2) = BLTAMOD
-        move.w  d0,BLTAMOD(a5)
-
-        ; BLTDMOD = GFXBPR − word_count×2
-        ; Bytes to skip at end of each destination row (= unused bytes in row).
-        add.l   #GFXBPR,d0             ; d0 = GFXBPR - word_count×2 = BLTDMOD
-        move.w  d0,BLTDMOD(a5)
 
         ; A source pointer (high word first)
         move.l  a1,d0
@@ -215,21 +255,18 @@ _Box:
         swap    d0
         move.w  d0,BLTDPTL(a5)
 
-        ; BLTSIZE = (h << 6) | word_count — triggers blit immediately.
-        ; bits 15:6 = height (scan lines), bits 5:0 = width in 16-bit words.
-        move.l  d3,d1                   ; d1 = h  (d3 kept for all planes)
-        lsl.w   #6,d1                   ; d1 = h << 6
-        move.l  a2,d0                   ; d0 = word_count
-        or.w    d0,d1                   ; d1 = BLTSIZE
-        move.w  d1,BLTSIZE(a5)         ; write to BLTSIZE → blit starts
+        ; BLTSIZE write triggers the blit
+        move.w  a2,BLTSIZE(a5)
 
         ; ── Advance to next plane ─────────────────────────────────────────────
         add.l   #GFXPSIZE,a0           ; next bitplane buffer
         lsr.l   #1,d4                   ; shift colour right: next bit → bit 0
         dbra    d5,.box_plane
 
-        ; Wait for the last blit to complete before returning.
-        jsr     _WaitBlit
+        ; We NO LONGER wait for the last blit here. This allows the CPU to
+        ; continue with BASIC logic while the Blitter finishes the last plane.
+        ; _ScreenFlip or the next drawing command will call _WaitBlit.
 
+.box_done:
         movem.l (sp)+,d0-d7/a0-a2
         rts

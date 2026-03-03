@@ -71,7 +71,7 @@
 _Cls:
         movem.l d0-d5/a0-a1,-(sp)
 
-        lea     _gfx_planes,a0          ; a0 = base of bitplane buffers in chip RAM
+        move.l  _back_planes_ptr,a0     ; a0 = back buffer base (double-buffering)
         move.l  _cls_color,d4           ; d4 = colour index bitfield
         moveq   #GFXDEPTH-1,d5         ; d5 = plane loop counter (dbra = GFXDEPTH iters)
 

@@ -92,8 +92,8 @@ ipcMain.on('emulator:ready', () => {
   console.log('[BASSM] Emulator ready — auto-loading AROS ROM');
   if (!emulatorView) return;
   try {
-    const romMain = Array.from(fs.readFileSync(ROM_MAIN));
-    const romExt  = Array.from(fs.readFileSync(ROM_EXT));
+    const romMain = fs.readFileSync(ROM_MAIN);
+    const romExt  = fs.readFileSync(ROM_EXT);
     emulatorView.webContents.send('emulator:command', { type: 'load-rom', data: romMain });
     emulatorView.webContents.send('emulator:command', { type: 'load-ext', data: romExt });
     console.log('[BASSM] ROM sent to emulator');
@@ -121,7 +121,10 @@ ipcMain.handle('bassm:assemble', (_event, asmText) => {
         return;
       }
       try {
-        const data = Array.from(fs.readFileSync(outFile));
+        // Nutze direkt den Buffer (Uint8Array). 
+        // Electron kann Buffer effizient via IPC übertragen, 
+        // ohne sie in ein langsames JS-Array umzuwandeln.
+        const data = fs.readFileSync(outFile); 
         fs.mkdirSync(OUT_DIR, { recursive: true });
         fs.copyFileSync(outFile, path.join(OUT_DIR, 'bassm_out.exe'));
         resolve({ ok: true, data });
@@ -136,8 +139,8 @@ ipcMain.handle('bassm:assemble', (_event, asmText) => {
 // Returns { main: number[], ext: number[] }
 ipcMain.handle('bassm:rom', () => {
   return {
-    main: Array.from(fs.readFileSync(ROM_MAIN)),
-    ext:  Array.from(fs.readFileSync(ROM_EXT)),
+    main: fs.readFileSync(ROM_MAIN),
+    ext:  fs.readFileSync(ROM_EXT),
   };
 });
 

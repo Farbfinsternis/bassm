@@ -9,25 +9,32 @@ A compiler and live-preview IDE that translates a subset of the **Blitz2D** BASI
 Write Blitz2D-style code on the left; click **Run** to compile, assemble, and boot it in the embedded Amiga emulator on the right. No Amiga hardware required.
 
 ```basic
-Graphics 320,256,5
+Graphics 320,256,3
 
 PaletteColor 0,0,0,0      ; black background
 PaletteColor 1,15,0,0     ; red box
 
 ClsColor 0
-Cls
 
-x = 10 : y = 10 : dx = 3 : dy = 2
+x = 10
+y = 10
+dx = 3
+dy = 2
 
 While 1
-  Color 0 : Box x,y,30,20    ; erase old position
-  x = x + dx : y = y + dy
-  If x < 0    Then x = 0  : dx = -dx : EndIf
-  If x > 290  Then x = 290 : dx = -dx : EndIf
-  If y < 0    Then y = 0  : dy = -dy : EndIf
-  If y > 236  Then y = 236 : dy = -dy : EndIf
-  Color 1 : Box x,y,30,20    ; draw new position
-  WaitVbl
+  Cls                        ; clear back buffer (Blitter)
+
+  x = x + dx
+  y = y + dy
+
+  If x < 0    Then x = 0   : dx = -dx : EndIf
+  If x + 30 > 320 Then x = 290 : dx = -dx : EndIf
+  If y < 0    Then y = 0   : dy = -dy : EndIf
+  If y + 20 > 256 Then y = 236 : dy = -dy : EndIf
+
+  Color 1 : Box x,y,30,20   ; draw into back buffer
+
+  ScreenFlip                 ; VBL-sync swap — no tearing
 Wend
 ```
 
@@ -79,17 +86,18 @@ Every compiled program is assembled from these fragments in order:
 
 ```
 startup.s      bare-metal system takeover (Forbid, VBL handler, keyboard ISR)
-graphics.s     bitplane + copper list setup
-cls.s          Blitter screen clear (_Cls, pattern buffers)
+graphics.s     bitplane + two copper lists setup (double-buffering)
+cls.s          Blitter screen clear (_Cls, writes to back buffer)
 clscolor.s     _ClsColor (sets background fill colour)
 color.s        _SetColor
 palette.s      32-entry OCS palette (_InitPalette, _SetPaletteColor, _draw_color)
 text.s         stub (bitmap font not yet implemented)
-plot.s         _Plot (single pixel, CPU)
+plot.s         _Plot (single pixel, CPU, writes to back buffer)
 line.s         _Line (Bresenham, CPU)
-rect.s         _Rect (outline rectangle, CPU)
-box.s          _Box (filled rectangle, Blitter A→D)
+rect.s         _Rect (outline rectangle, 4× _Box calls)
+box.s          _Box (filled rectangle, Blitter A→D, writes to back buffer)
 waitkey.s      _WaitKey (interrupt-driven CIA-A keyboard)
+flip.s         _ScreenFlip (VBL-synchronised front/back buffer swap)
 [_main_program]  generated user code
 offload.s      OS restoration (LoadView, RethinkDisplay, return to CLI)
 ```
@@ -135,12 +143,13 @@ offload.s      OS restoration (LoadView, RethinkDisplay, return to CLI)
 - Comparisons: `= <> < > <= >=` (return Blitz2D boolean −1/0)
 - Variables as command arguments
 
-### Timing & Input
+### Timing, Input & Double-Buffering
 | Command | Description |
 |---------|-------------|
 | `WaitVbl` | Wait for next vertical blank (50 Hz PAL) |
 | `Delay n` | Wait n VBlanks |
 | `WaitKey` | Halt until any key is pressed (interrupt-driven CIA-A) |
+| `ScreenFlip` | VBL-synchronised front/back buffer swap (no screen tearing) |
 
 ---
 
@@ -176,9 +185,9 @@ npm test
 
 See [ROADMAP.md](ROADMAP.md) for the full implementation plan.
 
-**Current milestone:** M5b (Blitter drawing) + M5c (Double-Buffering / `ScreenFlip`).
+**Next milestone:** M6 (Text-Rendering) · M7 (Functions) · M9 (full Input: Joystick, KeyDown).
 
-Completed milestones: M0 (core pipeline), M1 (integer variables), M2 (If/Else), M3 (While/For), M4 (Select/Case), M5 (drawing commands), M9-partial (WaitKey).
+Completed milestones: M0 (core pipeline), M1 (integer variables), M2 (If/Else), M3 (While/For), M4 (Select/Case), M5 (drawing commands), M5b (Blitter fill), M5c (Double-Buffering / `ScreenFlip`), M9-partial (WaitKey).
 
 ---
 

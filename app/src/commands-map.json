@@ -127,5 +127,11 @@
         "type": "global",
         "return": "void",
         "args": []
+    },
+    {
+        "name": "ScreenFlip",
+        "type": "global",
+        "return": "void",
+        "args": []
     }
 ]

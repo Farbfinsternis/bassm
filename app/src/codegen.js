@@ -129,33 +129,47 @@ export class CodeGen {
         out.push('        INCLUDE "rect.s"');
         out.push('        INCLUDE "box.s"');
         out.push('        INCLUDE "waitkey.s"');
+        out.push('        INCLUDE "flip.s"');
+        out.push('');
+        out.push('        even');
         out.push('');
 
-        // Chip-RAM BSS — bitplane buffers
-        out.push('        SECTION gfx_planes,BSS_C');
-        out.push('_gfx_planes:    ds.b  GFXPSIZE*GFXDEPTH');
+        // _setup_graphics subroutine
+        out.push('        SECTION gfx_init,CODE');
+        out.push('');
+        out.push('_setup_graphics:');
+        out.push('        lea     _gfx_cop_a_bpl_table,a0');
+        out.push('        lea     _gfx_planes,a1');
+        out.push('        moveq   #GFXDEPTH,d0');
+        out.push('        move.l  #GFXPSIZE,d1');
+        out.push('        jsr     _PatchBitplanePtrs');
+        out.push('        lea     _gfx_cop_b_bpl_table,a0');
+        out.push('        lea     _gfx_planes_b,a1');
+        out.push('        moveq   #GFXDEPTH,d0');
+        out.push('        move.l  #GFXPSIZE,d1');
+        out.push('        jsr     _PatchBitplanePtrs');
+        out.push('        lea     _gfx_copper_a,a0');
+        out.push('        jsr     _InstallCopper');
+        out.push('        jsr     _InitPalette');
+        out.push('        lea     _gfx_planes_b,a0');
+        out.push('        move.l  a0,_back_planes_ptr');
+        out.push('        clr.b   _front_is_a');
+        out.push('        rts');
         out.push('');
 
-        // Chip-RAM DATA — copper list
-        out.push('        SECTION gfx_copper,DATA_C');
-        out.push('_gfx_copper:');
-        out.push(copMove(0x008E, diwstrt, 'DIWSTRT'));
-        out.push(copMove(0x0090, diwstop, 'DIWSTOP'));
-        out.push(copMove(0x0092, ddfstrt, 'DDFSTRT'));
-        out.push(copMove(0x0094, ddfstop, 'DDFSTOP'));
-        out.push(copMove(0x0100, bplcon0, 'BPLCON0'));
-        out.push(copMove(0x0102, 0x0000,  'BPLCON1'));
-        out.push(copMove(0x0104, 0x0000,  'BPLCON2'));
-        out.push(copMove(0x0108, 0x0000,  'BPL1MOD'));
-        out.push(copMove(0x010A, 0x0000,  'BPL2MOD'));
-        out.push('_gfx_cop_bpl_table:');
-        for (let i = 0; i < D; i++) {
-            const [pth, ptl] = BPL_PTR_REGS[i];
-            out.push(copMove(pth, 0, `BPL${i+1}PTH`));
-            out.push(copMove(ptl, 0, `BPL${i+1}PTL`));
+        // _main_program
+        out.push('');
+        out.push('        XDEF    _main_program');
+        out.push('_main_program:');
+
+        for (const stmt of ast) {
+            if (!stmt) continue;
+            out.push(...this._genStatement(stmt));
         }
-        out.push('        dc.w    $FFFF,$FFFE             ; END of copper list');
+        out.push('        rts');
         out.push('');
+
+        // ── DATA & BSS SECTIONS (Must come after CODE for WinUAE compatibility) ──
 
         // User variable BSS — one longword per integer variable
         if (varNames.size > 0) {
@@ -166,33 +180,48 @@ export class CodeGen {
             out.push('');
         }
 
-        // _setup_graphics subroutine
-        out.push('        SECTION gfx_init,CODE');
-        out.push('');
-        out.push('_setup_graphics:');
-        out.push('        lea     _gfx_cop_bpl_table,a0');
-        out.push('        lea     _gfx_planes,a1');
-        out.push('        moveq   #GFXDEPTH,d0');
-        out.push('        move.l  #GFXPSIZE,d1');
-        out.push('        jsr     _PatchBitplanePtrs');
-        out.push('        lea     _gfx_copper,a0');
-        out.push('        jsr     _InstallCopper');
-        out.push('        jsr     _InitPalette');
-        out.push('        rts');
+        // Chip-RAM BSS — two bitplane buffers (A = front, B = back initially)
+        out.push('        SECTION gfx_planes,BSS_C');
+        out.push('_gfx_planes:    ds.b  GFXPSIZE*GFXDEPTH');
+        out.push('_gfx_planes_b:  ds.b  GFXPSIZE*GFXDEPTH');
         out.push('');
 
-        // _main_program
-        out.push('        SECTION main_code,CODE');
-        out.push('');
-        out.push('        XDEF    _main_program');
-        out.push('_main_program:');
+        // Helper: emit display-setup copper moves (shared header for both lists)
+        const emitCopHeader = () => {
+            out.push(copMove(0x008E, diwstrt, 'DIWSTRT'));
+            out.push(copMove(0x0090, diwstop, 'DIWSTOP'));
+            out.push(copMove(0x0092, ddfstrt, 'DDFSTRT'));
+            out.push(copMove(0x0094, ddfstop, 'DDFSTOP'));
+            out.push(copMove(0x0100, bplcon0, 'BPLCON0'));
+            out.push(copMove(0x0102, 0x0000,  'BPLCON1'));
+            out.push(copMove(0x0104, 0x0000,  'BPLCON2'));
+            out.push(copMove(0x0108, 0x0000,  'BPL1MOD'));
+            out.push(copMove(0x010A, 0x0000,  'BPL2MOD'));
+        };
 
-        for (const stmt of ast) {
-            if (!stmt) continue;
-            out.push(...this._genStatement(stmt));
+        // Chip-RAM DATA — copper list A (bitplane pointers → buffer A)
+        out.push('        SECTION gfx_copper,DATA_C');
+        out.push('_gfx_copper_a:');
+        emitCopHeader();
+        out.push('_gfx_cop_a_bpl_table:');
+        for (let i = 0; i < D; i++) {
+            const [pth, ptl] = BPL_PTR_REGS[i];
+            out.push(copMove(pth, 0, `BPL${i+1}PTH`));
+            out.push(copMove(ptl, 0, `BPL${i+1}PTL`));
         }
+        out.push('        dc.w    $FFFF,$FFFE             ; END of copper list A');
+        out.push('');
 
-        out.push('        rts');
+        // Chip-RAM DATA — copper list B (bitplane pointers → buffer B)
+        out.push('_gfx_copper_b:');
+        emitCopHeader();
+        out.push('_gfx_cop_b_bpl_table:');
+        for (let i = 0; i < D; i++) {
+            const [pth, ptl] = BPL_PTR_REGS[i];
+            out.push(copMove(pth, 0, `BPL${i+1}PTH`));
+            out.push(copMove(ptl, 0, `BPL${i+1}PTL`));
+        }
+        out.push('        dc.w    $FFFF,$FFFE             ; END of copper list B');
         out.push('');
 
         return out.join('\n');
@@ -362,6 +391,10 @@ export class CodeGen {
                 lines.push('        jsr     _WaitKey');
                 break;
 
+            case 'screenflip':
+                lines.push('        jsr     _ScreenFlip');
+                break;
+
             case 'text': {
                 const str     = this._strArg(stmt, 2, 'Text string');
                 const strLbl  = this._nextLabel();
@@ -514,6 +547,17 @@ export class CodeGen {
 
     _genWhile(stmt, lines) {
         const topLbl = this._nextLabel();
+
+        // Constant-true condition (While 1, While -1, …): no test needed.
+        // Emits just a top label + body + unconditional branch — saves 3 instructions
+        // per iteration compared to the generic moveq/tst.l/beq.w sequence.
+        if (stmt.cond.type === 'int' && stmt.cond.value !== 0) {
+            lines.push(`${topLbl}:`);
+            for (const s of stmt.body) lines.push(...this._genStatement(s));
+            lines.push(`        bra.w   ${topLbl}`);
+            return;
+        }
+
         const endLbl = this._nextLabel();
 
         lines.push(`${topLbl}:`);

@@ -1,5 +1,5 @@
 ; ============================================================================
-; rect.s — BASSM Rectangle Outline
+; rect.s — BASSM Rectangle Outline (Blitter-accelerated)
 ; ============================================================================
 ;
 ; PURPOSE
@@ -16,25 +16,35 @@
 ;         movem.l (sp)+,d1-d3          ; pop y→d1, w→d2, h→d3
 ;         jsr     _Rect                ; d0=x, d1=y, d2=w, d3=h
 ;
-; HOW IT WORKS
-;   Draws four sides by calling _Line:
-;     Top    : (x,       y      ) → (x+w-1, y      )
-;     Bottom : (x,       y+h-1  ) → (x+w-1, y+h-1  )
-;     Left   : (x,       y      ) → (x,     y+h-1  )
-;     Right  : (x+w-1,   y      ) → (x+w-1, y+h-1  )
+; HOW IT WORKS (Blitter A→D, via _Box)
+;   Four Blitter fill operations — one per edge:
+;     Top    : _Box(x,     y,     w,   1  )
+;     Bottom : _Box(x,     y+h-1, w,   1  )   (skipped if h <= 1)
+;     Left   : _Box(x,     y+1,   1,   h-2)   (skipped if h <= 2)
+;     Right  : _Box(x+w-1, y+1,   1,   h-2)   (skipped if h <= 2)
 ;
-;   _Line saves/restores d0-d7/a0-a2, so all working registers are intact
-;   after each call.
+;   _Box saves/restores d0-d7/a0-a2, so working registers survive each call.
+;   Because _Box preserves all caller-visible registers, values stored in
+;   a0 (x), a1 (y), a2 (w), d7 (h) remain valid across all four jsr _Box calls.
 ;
-; REGISTER MAP (inside _Rect)
-;   a0 = x        a2 = x2 = x+w-1
-;   a1 = y        d7 = y2 = y+h-1
+; REGISTER MAP (inside _Rect, between _Box calls)
+;   a0 = x          (preserved across jsr _Box — _Box saves/restores a0)
+;   a1 = y          (preserved across jsr _Box — _Box saves/restores a1)
+;   a2 = w          (preserved across jsr _Box — _Box saves/restores a2)
+;   d7 = h          (preserved across jsr _Box — _Box saves/restores d7)
+;   d3 = h-2        (set once before side-edge calls; preserved by _Box)
+;
+; EDGE CASES
+;   h = 1: only top edge drawn.
+;   h = 2: top and bottom edges drawn; no side edges (h-2 = 0 → skipped).
+;   w = 1: top/bottom are 1×1 pixels; sides coincide → single-column outline.
 ;
 ; DEPENDENCY
-;   line.s must be included before this fragment (defines _Line).
+;   box.s must be included before this fragment (defines _Box).
+;   _Box draws into _back_planes_ptr (set by double-buffering init).
 ;
 ; ── REGISTER CONVENTION ─────────────────────────────────────────────────────
-;   a5 = $DFF000  (established by startup.s — not used by this routine)
+;   a5 = $DFF000  (established by startup.s — not used directly here)
 ; ============================================================================
 
 
@@ -43,8 +53,7 @@
 
 ; ── _Rect ─────────────────────────────────────────────────────────────────────
 ;
-; Draws a rectangle outline.
-; Clipping is handled per-pixel by _Plot (called from _Line).
+; Draws a rectangle outline using four Blitter fill operations.
 ;
 ; Args:   d0.l = x,  d1.l = y  (top-left corner)
 ;         d2.l = w,  d3.l = h  (width, height in pixels)
@@ -54,45 +63,55 @@
 _Rect:
         movem.l d0-d7/a0-a2,-(sp)
 
-        ; ── Pre-compute corners ───────────────────────────────────────────────
+        ; ── Stash parameters in preserved registers ───────────────────────────
         move.l  d0,a0                   ; a0 = x
         move.l  d1,a1                   ; a1 = y
+        move.l  d2,a2                   ; a2 = w
+        move.l  d3,d7                   ; d7 = h
 
-        move.l  d0,a2
-        add.l   d2,a2
-        subq.l  #1,a2                   ; a2 = x2 = x+w-1
+        ; ── Top edge: Box(x, y, w, 1) ────────────────────────────────────────
+        move.l  a0,d0                   ; d0 = x
+        move.l  a1,d1                   ; d1 = y
+        move.l  a2,d2                   ; d2 = w
+        moveq   #1,d3                   ; d3 = height 1
+        jsr     _Box                    ; _Box saves/restores d0-d7/a0-a2
 
-        move.l  d1,d7
-        add.l   d3,d7
-        subq.l  #1,d7                   ; d7 = y2 = y+h-1
+        ; ── Bottom edge: Box(x, y+h-1, w, 1) — only if h > 1 ────────────────
+        cmp.l   #1,d7
+        ble.s   .rect_done
 
-        ; ── Top: Line(x, y, x2, y) ───────────────────────────────────────────
-        move.l  a0,d0
-        move.l  a1,d1
-        move.l  a2,d2
-        move.l  a1,d3                   ; y2 = y  (horizontal)
-        jsr     _Line
+        move.l  a0,d0                   ; d0 = x
+        move.l  a1,d1                   ; d1 = y
+        add.l   d7,d1
+        subq.l  #1,d1                   ; d1 = y + h - 1
+        move.l  a2,d2                   ; d2 = w
+        moveq   #1,d3                   ; d3 = height 1
+        jsr     _Box
 
-        ; ── Bottom: Line(x, y2, x2, y2) ──────────────────────────────────────
-        move.l  a0,d0
-        move.l  d7,d1                   ; y1 = y2
-        move.l  a2,d2
-        move.l  d7,d3                   ; y2 = y2
-        jsr     _Line
+        ; ── Side edges — only if h > 2 (side height = h-2 >= 1) ──────────────
+        cmp.l   #2,d7
+        ble.s   .rect_done
 
-        ; ── Left: Line(x, y, x, y2) ──────────────────────────────────────────
-        move.l  a0,d0
-        move.l  a1,d1
-        move.l  a0,d2                   ; x2 = x  (vertical)
         move.l  d7,d3
-        jsr     _Line
+        subq.l  #2,d3                   ; d3 = h-2 (side height, valid for both calls)
 
-        ; ── Right: Line(x2, y, x2, y2) ───────────────────────────────────────
-        move.l  a2,d0                   ; x1 = x2
+        ; ── Left edge: Box(x, y+1, 1, h-2) ──────────────────────────────────
+        move.l  a0,d0                   ; d0 = x
         move.l  a1,d1
-        move.l  a2,d2                   ; x2 = x2
-        move.l  d7,d3
-        jsr     _Line
+        addq.l  #1,d1                   ; d1 = y+1
+        moveq   #1,d2                   ; d2 = width 1
+        jsr     _Box                    ; d3 = h-2 preserved by _Box
 
+        ; ── Right edge: Box(x+w-1, y+1, 1, h-2) ─────────────────────────────
+        move.l  a0,d0
+        add.l   a2,d0
+        subq.l  #1,d0                   ; d0 = x+w-1
+        move.l  a1,d1
+        addq.l  #1,d1                   ; d1 = y+1
+        moveq   #1,d2                   ; d2 = width 1
+        ; d3 = h-2 (preserved by the previous jsr _Box)
+        jsr     _Box
+
+.rect_done:
         movem.l (sp)+,d0-d7/a0-a2
         rts

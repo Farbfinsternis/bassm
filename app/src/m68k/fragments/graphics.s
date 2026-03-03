@@ -197,6 +197,5 @@ _InstallCopper:
         swap    d0              ; d0.w = low 16 bits again
         move.w  d0,COP1LCL(a5) ; write low word
 
-        move.w  d0,COPJMP1(a5) ; strobe: copper restarts immediately
-                                ; (value written is irrelevant — any write works)
+        ; COPJMP1 removed to prevent mid-frame restart glitches.
         rts

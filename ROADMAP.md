@@ -62,6 +62,7 @@ Voraussetzung für fast alle weiteren Features.
 ### 3.1 While / Wend
 - `[x]` Parser: `While <expr>` … `Wend`
 - `[x]` CodeGen: Sprung zurück zum Schleifenkopf, Bedingung am Kopf prüfen
+- `[x]` CodeGen: Konstante-wahre Bedingung (`While 1`) → kein `moveq/tst/beq`, nur Label + `bra`
 
 ### 3.2 For / To / Step / Next
 - `[x]` Parser: `For <var> = <expr> To <expr> [Step <expr>]` … `Next [<var>]`
@@ -124,15 +125,17 @@ Blitter ist ~4× schneller als CPU-Move.l und gibt der CPU Zeit für Spiellogik.
   - `BLTSIZE = (h<<6) | word_count` startet den Blit
   - Prologue berechnet alles einmal; Plane-Loop hat klare Register-Zuordnung
 
-### B4 — Blitter-`_Rect` (Umriss)
-- `[ ]` 4 horizontale Blitter-Streifen (oben, unten, links, rechts)
-  - Oben/Unten: volle Breite, 1 Zeile
-  - Links/Rechts: 1 Wort breit, h-2 Zeilen (je Plane)
-- `[ ]` `_Rect` in `rect.s` umschreiben
+### B4 — Blitter-`_Rect` (Umriss) ✅
+- `[x]` `_Rect` via 4× `_Box`-Aufrufe (je 1 Blitter-Operation):
+  - Top:    `_Box(x,     y,     w,   1  )`
+  - Bottom: `_Box(x,     y+h-1, w,   1  )` (nur wenn h > 1)
+  - Left:   `_Box(x,     y+1,   1,   h-2)` (nur wenn h > 2)
+  - Right:  `_Box(x+w-1, y+1,   1,   h-2)` (nur wenn h > 2)
+  - `_Box` speichert/restauriert alle Register → Arbeitsregister (a0=x, a1=y, a2=w, d7=h) überleben alle jsr-Calls
 
 ### B5 — Defer: Blitter-`_Line` und Blitter-`_Plot`
 - `[ ]` Blitter Line-Mode für `_Line` (Amiga Blitter hat dedizierten Linienzieh-Mode)
-- `[ ]` `_Plot` kann CPU-basiert bleiben (1 Pixel = vernachlässigbar)
+- `[x]` `_Plot` bleibt CPU-basiert (1 Pixel = vernachlässigbar)
 
 ---
 
@@ -145,58 +148,41 @@ ausschließlich in den Back-Buffer. `ScreenFlip` synchronisiert den Tausch mit d
 > **Abhängigkeit:** Setzt M5b voraus (Blitter muss in `_back_planes_ptr` schreiben,
 > nicht in `_gfx_planes` direkt).
 
-### C1 — Zweiten Bitplane-Satz allozieren
-- `[ ]` `codegen.js`: BSS_C-Sektion auf `GFXPSIZE * GFXDEPTH * 2` Byte verdoppeln
-  - `_gfx_planes` = Buffer A (Bytes 0 … GFXPSIZE×GFXDEPTH−1)
-  - `_gfx_planes_b` = Buffer B (EQU `_gfx_planes + GFXPSIZE*GFXDEPTH`)
-  - Chip-RAM-Bedarf für 320×256×5: 2 × 51 200 = 102 400 Byte ≈ 100 KB
-    (OCS hat 512 KB Chip-RAM → ausreichend)
+### C1 — Zweiten Bitplane-Satz allozieren ✅
+- `[x]` `codegen.js`: BSS_C-Sektion verdoppelt: `_gfx_planes` + `_gfx_planes_b`
+  (beide `ds.b GFXPSIZE*GFXDEPTH` direkt hintereinander in `SECTION gfx_planes,BSS_C`)
 
-### C2 — Zwei Copper-Listen generieren
-- `[ ]` `codegen.js`: emittiert `_gfx_copper_a` (Planes → Buffer A) und
-  `_gfx_copper_b` (Planes → Buffer B) als separate DATA_C-Sektionen
-- `[ ]` `_setup_graphics` ruft `_PatchBitplanePtrs` zweimal auf:
-  - Einmal mit `_gfx_planes` → `_gfx_copper_a`
-  - Einmal mit `_gfx_planes_b` → `_gfx_copper_b`
-- `[ ]` `_InstallCopper` wird initial mit `_gfx_copper_a` aufgerufen (Front = A)
+### C2 — Zwei Copper-Listen generieren ✅
+- `[x]` `codegen.js`: emittiert `_gfx_copper_a` (→ Buffer A) und `_gfx_copper_b` (→ Buffer B)
+  mit separaten `_gfx_cop_a_bpl_table` / `_gfx_cop_b_bpl_table` Einstiegspunkten
+- `[x]` `_setup_graphics` ruft `_PatchBitplanePtrs` zweimal auf (einmal pro Copper-Liste)
+- `[x]` `_InstallCopper` initial mit `_gfx_copper_a` (Front = A)
 
-### C3 — Buffer-Tracking-Variablen
-- `[ ]` Neue BSS-Variable in `startup.s` (oder separatem Fragment):
-  - `_back_planes_ptr: ds.l 1` — Adresse des Back-Buffers (aktuell Buffer B)
-  - `_front_is_a: ds.b 1` — Flag: 0 = Front ist A, 1 = Front ist B
-- `[ ]` `_setup_graphics` initialisiert `_back_planes_ptr = _gfx_planes_b`
-  und `_front_is_a = 0`
+### C3 — Buffer-Tracking-Variablen ✅
+- `[x]` `startup.s` BSS: `_back_planes_ptr: ds.l 1` und `_front_is_a: ds.b 1` ergänzt (XDEF'd)
+- `[x]` `_setup_graphics` initialisiert beide Variablen: back = B, front_is_a = 0
 
-### C4 — `_ScreenFlip` Routine (`flip.s`)
-- `[ ]` Neues Fragment `app/src/m68k/fragments/flip.s`
-- `[ ]` Ablauf:
-  1. `jsr _WaitVBL` — VBL abwarten (Tausch nur am Strahlaustast-Intervall)
-  2. `_front_is_a` prüfen:
-     - War Front = A → `_InstallCopper(_gfx_copper_b)`, `_back_planes_ptr = _gfx_planes`
-     - War Front = B → `_InstallCopper(_gfx_copper_a)`, `_back_planes_ptr = _gfx_planes_b`
-  3. Flag toggeln
-- `[ ]` `XDEF _ScreenFlip`
+### C4 — `_ScreenFlip` Routine (`flip.s`) ✅
+- `[x]` Neues Fragment `app/src/m68k/fragments/flip.s`
+- `[x]` Ablauf: `_WaitVBL` → Flag prüfen → `_InstallCopper` Gegenliste → `_back_planes_ptr` tauschen → Flag toggeln
+- `[x]` `XDEF _ScreenFlip`
 
-### C5 — Zeichenbefehle auf Back-Buffer umstellen
-- `[ ]` Alle Zeichenbefehle ersetzen `lea _gfx_planes,a0`
-  durch `move.l _back_planes_ptr,a0`
-  - `cls.s` (Blitter-BLTDPT bzw. CPU-Basisadresse)
-  - `box.s` (Blitter-BLTDPT)
-  - `plot.s` (Pixel-Adressberechnung)
-  - `rect.s` (4 Streifen)
-  - `line.s` (nutzt `_Plot` — wird automatisch korrekt wenn plot.s umgestellt)
+### C5 — Zeichenbefehle auf Back-Buffer umstellen ✅
+- `[x]` `cls.s`: `lea _gfx_planes,a0` → `move.l _back_planes_ptr,a0`
+- `[x]` `box.s`: dto.
+- `[x]` `plot.s`: dto. (rect.s und line.s delegieren an _Plot → automatisch korrekt)
 
-### C6 — CodeGen + commands-map.json
-- `[ ]` `commands-map.json`: Eintrag `{ "name": "ScreenFlip", "args": 0 }` ergänzen
-- `[ ]` `codegen.js`: `case 'ScreenFlip': emit('jsr _ScreenFlip')`
-- `[ ]` `bassm.js`: `flip.s` in die Fragment-Inklusionsliste aufnehmen
-  (nach `waitkey.s`, vor `_main_program`)
+### C6 — CodeGen + commands-map.json ✅
+- `[x]` `commands-map.json`: `{ "name": "ScreenFlip", "args": 0 }` ergänzt
+- `[x]` `codegen.js`: `case 'screenflip': jsr _ScreenFlip`
+- `[x]` `codegen.js`: `INCLUDE "flip.s"` nach `waitkey.s` eingefügt
 
-### C7 — Demo updaten
-- `[ ]` `app/index.html`: Bouncing-Box-Demo umstellen:
+### C7 — Demo updaten ✅
+- `[x]` `app/index.html`: Bouncing-Box-Demo umgestellt:
   - `WaitVbl` → `ScreenFlip`
-  - Dirty-Erase (Color 0 / Box) entfernen — stattdessen am Frameanfang `Cls`
-  - Ergebnis: sauberes, tearingfreies Bild mit vollem Screen-Clear pro Frame
+  - Dirty-Erase (Color 0 / Box) entfernt
+  - `Cls` am Frameanfang (löscht Back-Buffer mit Blitter)
+  - Initiales `Cls` vor der Schleife entfernt (nicht mehr nötig)
 
 ---
 

@@ -479,6 +479,8 @@ _null_copper:
         XDEF    _frame_count
         XDEF    _vblank_hook
         XDEF    _kbd_pending
+        XDEF    _back_planes_ptr
+        XDEF    _front_is_a
 
 _saved_sp:          ds.l    1   ; stack pointer on entry — restored by offload.s
 _saved_intena:      ds.w    1   ; INTENAR snapshot   — restored by offload.s
@@ -490,3 +492,6 @@ _saved_view:        ds.l    1   ; GfxBase->ActiView on entry — restored by off
 _frame_count:       ds.l    1   ; VBlank counter, incremented 50×/sec
 _vblank_hook:       ds.l    1   ; optional callback address (0 = none)
 _kbd_pending:       ds.b    1   ; raw CIA key byte from _lev2_kbd_handler (0 = none)
+        EVEN                        ; pad to even address — required before longword access
+_back_planes_ptr:   ds.l    1   ; chip-RAM address of back bitplane buffer (set by _setup_graphics)
+_front_is_a:        ds.b    1   ; 0 = copper A is front (buffer A displayed), 1 = copper B is front

@@ -83,7 +83,7 @@ _Plot:
         ; ── Loop over bitplanes ───────────────────────────────────────────────
         moveq   #GFXDEPTH-1,d6         ; d6 = outer loop counter
         move.w  _draw_color,d7          ; d7.w = current draw colour index
-        lea     _gfx_planes,a0          ; a0 = base of bitplane 0
+        move.l  _back_planes_ptr,a0     ; a0 = back buffer base (double-buffering)
 
 .plot_plane:
         lea     (a0,d2.l),a1            ; a1 = byte addr for this pixel in plane
