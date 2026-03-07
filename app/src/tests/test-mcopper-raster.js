@@ -26,7 +26,7 @@ test('CopperColor: GFXRASTER EQU emitted when CopperColor is used', () => {
 
 test('CopperColor: GFXRASTER EQU is min(H, 212) = 212 for 320x256', () => {
     const asm = compileWith('CopperColor 0,15,0,0');
-    assertContains(asm, 'GFXRASTER     EQU 212');
+    assertContains(asm, 'GFXRASTER    EQU 212');
 });
 
 test('CopperColor: copper_raster.s included when CopperColor is used', () => {
