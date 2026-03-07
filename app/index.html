@@ -16,7 +16,7 @@
 		<div id="editor-pane">
 			<textarea id="editor" spellcheck="false">; Rasterbalken + 8 Bouncing Boxes
 ; M-COPPER: CopperColor setzt COLOR00 per Rasterzeile im Copper -- CPU-frei!
-; 212 Zeilen Farbverlauf, jede Zeile eine andere Farbe (voll Amiga).
+; Gradient durch Zaehlervariablen (addq/subq) -- kein muls.w/divs.w.
 ; 4 Bitplanes = 16 Farben. Kein Tearing dank ScreenFlip.
 Graphics 320,256,4
 
@@ -38,19 +38,17 @@ t = 0
 While 1
   Cls
 
-  ; Rasterbalken: animierter RGB-Farbverlauf ueber alle 212 sichtbaren Zeilen
-  ; CopperColor aendert COLOR00 im Copper -- kein CPU-Overhead waehrend Raster!
+  ; Rasterbalken: animierter Rot/Blau-Gradient ohne Division
+  ; rc/gc als Zaehler -- nur addq/subq pro Zeile, kein muls.w/divs.w
   t = t + 1
   If t > 15 : t = 0 : EndIf
 
+  rc = t
+  gc = 15 - t
   For line = 0 To 211
-    ; Phase-verschobener Gradient: R steigt, B faellt, G Sinus-aehnlich
-    rc = (line + t * 13) / 14
-    If rc > 15 : rc = 15 : EndIf
-    gc = (line * 2 + t * 7) / 28
-    If gc > 15 : gc = 15 : EndIf
-    bc = 15 - rc
-    CopperColor line, rc, gc, bc
+    CopperColor line, rc, 0, gc
+    rc = rc + 1 : If rc > 15 : rc = 0 : EndIf
+    gc = gc - 1 : If gc < 0  : gc = 15 : EndIf
   Next line
 
   ; Bouncing Boxes ueber dem Rasterbalken-Hintergrund
