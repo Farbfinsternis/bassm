@@ -56,8 +56,10 @@ export class CodeGen {
      * @returns {string}      Assembly source text
      */
     generate(ast) {
-        // Reset label counter for each compilation
-        this._labelCount = 0;
+        // Reset per-compilation state
+        this._labelCount  = 0;
+        this._arrays      = new Map();  // name → size Expr (populated by _collectVars)
+        this._usesRaster  = false;      // true if any CopperColor command present
 
         // ── Locate and validate the Graphics statement ────────────────────────
         const gfxStmt = ast.find(s => s && s.type === 'command' && s.name === 'graphics');
@@ -88,7 +90,7 @@ export class CodeGen {
         const ddfstrt = 0x003C;
         const ddfstop = 0x00D4;
 
-        // ── Collect all integer variable names ────────────────────────────────
+        // ── Collect scalar variable names and array declarations ─────────────
         const varNames = new Set();
         this._collectVars(ast, varNames);
 
@@ -113,6 +115,10 @@ export class CodeGen {
         out.push(`${pad('GFXDIWSTOP',12)} EQU $${hex(diwstop)}`);
         out.push(`${pad('GFXDDFSTRT',12)} EQU $${hex(ddfstrt)}`);
         out.push(`${pad('GFXDDFSTOP',12)} EQU $${hex(ddfstop)}`);
+        if (this._usesRaster) {
+            const maxLines = Math.min(H, 256 - vStart);
+            out.push(`${pad('GFXRASTER',12)} EQU ${maxLines}`);
+        }
         out.push('');
 
         // Fragment INCLUDEs
@@ -130,6 +136,9 @@ export class CodeGen {
         out.push('        INCLUDE "box.s"');
         out.push('        INCLUDE "waitkey.s"');
         out.push('        INCLUDE "flip.s"');
+        if (this._usesRaster) {
+            out.push('        INCLUDE "copper_raster.s"');
+        }
         out.push('');
         out.push('        even');
         out.push('');
@@ -171,11 +180,18 @@ export class CodeGen {
 
         // ── DATA & BSS SECTIONS (Must come after CODE for WinUAE compatibility) ──
 
-        // User variable BSS — one longword per integer variable
-        if (varNames.size > 0) {
+        // User variable BSS — one longword per scalar integer variable
+        if (varNames.size > 0 || this._arrays.size > 0) {
             out.push('        SECTION user_vars,BSS');
             for (const name of varNames) {
                 out.push(`_var_${name}:    ds.l    1`);
+            }
+            // Arrays: Dim arr(n) → n+1 longwords (indices 0..n, Blitz2D-compatible)
+            for (const [name, sizeExpr] of this._arrays) {
+                if (sizeExpr.type !== 'int') {
+                    throw new Error(`Dim ${name}: array size must be an integer literal`);
+                }
+                out.push(`_arr_${name}:    ds.l    ${sizeExpr.value + 1}`);
             }
             out.push('');
         }
@@ -209,6 +225,16 @@ export class CodeGen {
             out.push(copMove(pth, 0, `BPL${i+1}PTH`));
             out.push(copMove(ptl, 0, `BPL${i+1}PTL`));
         }
+        if (this._usesRaster) {
+            const maxLines = Math.min(H, 256 - vStart);
+            out.push('        XDEF    _gfx_raster_a');
+            out.push('_gfx_raster_a:');
+            for (let y = 0; y < maxLines; y++) {
+                const vpos = vStart + y;
+                out.push(`        dc.w    $${hex((vpos << 8) | 0x01)},$FF00`);
+                out.push(`        dc.w    $0180,$0000`);
+            }
+        }
         out.push('        dc.w    $FFFF,$FFFE             ; END of copper list A');
         out.push('');
 
@@ -220,6 +246,16 @@ export class CodeGen {
             const [pth, ptl] = BPL_PTR_REGS[i];
             out.push(copMove(pth, 0, `BPL${i+1}PTH`));
             out.push(copMove(ptl, 0, `BPL${i+1}PTL`));
+        }
+        if (this._usesRaster) {
+            const maxLines = Math.min(H, 256 - vStart);
+            out.push('        XDEF    _gfx_raster_b');
+            out.push('_gfx_raster_b:');
+            for (let y = 0; y < maxLines; y++) {
+                const vpos = vStart + y;
+                out.push(`        dc.w    $${hex((vpos << 8) | 0x01)},$FF00`);
+                out.push(`        dc.w    $0180,$0000`);
+            }
         }
         out.push('        dc.w    $FFFF,$FFFE             ; END of copper list B');
         out.push('');
@@ -238,7 +274,13 @@ export class CodeGen {
             if (stmt.type === 'assign') {
                 varSet.add(stmt.target);
                 this._collectVarsInExpr(stmt.expr, varSet);
+            } else if (stmt.type === 'dim') {
+                this._arrays.set(stmt.name, stmt.size);
+            } else if (stmt.type === 'array_assign') {
+                this._collectVarsInExpr(stmt.index, varSet);
+                this._collectVarsInExpr(stmt.expr,  varSet);
             } else if (stmt.type === 'command') {
+                if (stmt.name === 'coppercolor') this._usesRaster = true;
                 for (const arg of stmt.args) {
                     this._collectVarsInExpr(arg, varSet);
                 }
@@ -276,6 +318,10 @@ export class CodeGen {
             case 'ident':
                 varSet.add(expr.name);
                 break;
+            case 'array_read':
+                // array name is NOT a scalar — only collect vars used in the index
+                this._collectVarsInExpr(expr.index, varSet);
+                break;
             case 'binop':
                 this._collectVarsInExpr(expr.left,    varSet);
                 this._collectVarsInExpr(expr.right,   varSet);
@@ -295,6 +341,24 @@ export class CodeGen {
         if (stmt.type === 'assign') {
             this._genExpr(stmt.expr, lines);
             lines.push(`        move.l  d0,_var_${stmt.target}`);
+            return lines;
+        }
+
+        // ── Dim — declaration only, no code emitted ───────────────────────────
+        if (stmt.type === 'dim') {
+            return lines;
+        }
+
+        // ── Array assignment: arr(index) = expr ──────────────────────────────
+        // Evaluate expr → push; evaluate index → d0; compute address; store.
+        if (stmt.type === 'array_assign') {
+            this._genExpr(stmt.expr, lines);
+            lines.push(`        move.l  d0,-(sp)`);
+            this._genExpr(stmt.index, lines);
+            lines.push(`        asl.l   #2,d0`);
+            lines.push(`        lea     _arr_${stmt.name},a0`);
+            lines.push(`        add.l   d0,a0`);
+            lines.push(`        move.l  (sp)+,(a0)`);
             return lines;
         }
 
@@ -349,16 +413,33 @@ export class CodeGen {
             }
 
             case 'palettecolor': {
-                // Compile-time only — palette index and r,g,b must be literals.
-                // (Runtime PaletteColor will be added in a later milestone.)
-                const n   = this._intArg(stmt, 0, 'PaletteColor n');
-                const r   = this._intArg(stmt, 1, 'PaletteColor r') & 0xF;
-                const g   = this._intArg(stmt, 2, 'PaletteColor g') & 0xF;
-                const b   = this._intArg(stmt, 3, 'PaletteColor b') & 0xF;
-                const rgb = (r << 8) | (g << 4) | b;
-                lines.push(`        moveq   #${n},d0`);
-                lines.push(`        move.w  #$${hex(rgb)},d1`);
-                lines.push('        jsr     _SetPaletteColor');
+                // If all 4 args are compile-time literals, build the OCS word in the
+                // assembler and call the lighter _SetPaletteColor directly (no subroutine
+                // overhead for r/g/b assembly).
+                // If any arg is a runtime expression, push b/g/r, evaluate n, pop into
+                // d1-d3, then call _SetPaletteColorRGB which builds the OCS word at runtime.
+                if (stmt.args.every(a => a.type === 'int')) {
+                    const n   = stmt.args[0].value;
+                    const r   = stmt.args[1].value & 0xF;
+                    const g   = stmt.args[2].value & 0xF;
+                    const b   = stmt.args[3].value & 0xF;
+                    const rgb = (r << 8) | (g << 4) | b;
+                    lines.push(`        moveq   #${n},d0`);
+                    lines.push(`        move.w  #$${hex(rgb)},d1`);
+                    lines.push('        jsr     _SetPaletteColor');
+                } else {
+                    // Evaluate b, g, r and push; evaluate n last (d0=n after push/pop).
+                    // movem.l (sp)+,d1-d3 pops in register order: d1=r, d2=g, d3=b.
+                    this._genExprArg(stmt, 3, 'PaletteColor b', lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExprArg(stmt, 2, 'PaletteColor g', lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExprArg(stmt, 1, 'PaletteColor r', lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExprArg(stmt, 0, 'PaletteColor n', lines);  // d0 = n
+                    lines.push('        movem.l (sp)+,d1-d3');            // d1=r, d2=g, d3=b
+                    lines.push('        jsr     _SetPaletteColorRGB');
+                }
                 break;
             }
 
@@ -394,6 +475,35 @@ export class CodeGen {
             case 'screenflip':
                 lines.push('        jsr     _ScreenFlip');
                 break;
+
+            case 'coppercolor': {
+                // CopperColor y,r,g,b — patch COLOR00 MOVE entry at scanline y
+                // in the back copper list (visible after next ScreenFlip).
+                // Compile-time path: all 4 args are integer literals.
+                // Runtime path: any arg is a variable/expression.
+                if (stmt.args.every(a => a.type === 'int')) {
+                    const y   = stmt.args[0].value;
+                    const r   = stmt.args[1].value & 0xF;
+                    const g   = stmt.args[2].value & 0xF;
+                    const b   = stmt.args[3].value & 0xF;
+                    const rgb = (r << 8) | (g << 4) | b;
+                    lines.push(`        moveq   #${y},d0`);
+                    lines.push(`        move.w  #$${hex(rgb)},d1`);
+                    lines.push('        jsr     _SetRasterColor');
+                } else {
+                    // Push b, g, r; eval y → d0; movem pops d1=r, d2=g, d3=b
+                    this._genExprArg(stmt, 3, 'CopperColor b', lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExprArg(stmt, 2, 'CopperColor g', lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExprArg(stmt, 1, 'CopperColor r', lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExprArg(stmt, 0, 'CopperColor y', lines);  // d0 = y
+                    lines.push('        movem.l (sp)+,d1-d3');           // d1=r, d2=g, d3=b
+                    lines.push('        jsr     _SetRasterColorRGB');
+                }
+                break;
+            }
 
             case 'text': {
                 const str     = this._strArg(stmt, 2, 'Text string');
@@ -505,13 +615,10 @@ export class CodeGen {
         const hasElse   = stmt.else.length > 0;
         const endLbl    = this._nextLabel();
 
-        // Evaluate condition → d0
-        this._genExpr(stmt.cond, lines);
-        lines.push('        tst.l   d0');
-
         if (hasElseIf || hasElse) {
             const firstAltLbl = this._nextLabel();
-            lines.push(`        beq.w   ${firstAltLbl}`);
+            // PERF-A: emit cmp+Bcc directly for comparison conditions
+            this._genCondBranch(stmt.cond, firstAltLbl, lines);
 
             // Then body
             for (const s of stmt.then) lines.push(...this._genStatement(s));
@@ -521,9 +628,7 @@ export class CodeGen {
             // ElseIf chain — each produces its own branch-to-endif
             for (const ei of stmt.elseIfs) {
                 const nextAltLbl = this._nextLabel();
-                this._genExpr(ei.cond, lines);
-                lines.push('        tst.l   d0');
-                lines.push(`        beq.w   ${nextAltLbl}`);
+                this._genCondBranch(ei.cond, nextAltLbl, lines);
                 for (const s of ei.body) lines.push(...this._genStatement(s));
                 lines.push(`        bra.w   ${endLbl}`);
                 lines.push(`${nextAltLbl}:`);
@@ -533,7 +638,7 @@ export class CodeGen {
             for (const s of stmt.else) lines.push(...this._genStatement(s));
         } else {
             // Simple If without any alternate branch
-            lines.push(`        beq.w   ${endLbl}`);
+            this._genCondBranch(stmt.cond, endLbl, lines);
             for (const s of stmt.then) lines.push(...this._genStatement(s));
         }
 
@@ -561,9 +666,8 @@ export class CodeGen {
         const endLbl = this._nextLabel();
 
         lines.push(`${topLbl}:`);
-        this._genExpr(stmt.cond, lines);
-        lines.push('        tst.l   d0');
-        lines.push(`        beq.w   ${endLbl}`);
+        // PERF-A: emit cmp+Bcc directly for comparison conditions
+        this._genCondBranch(stmt.cond, endLbl, lines);
 
         for (const s of stmt.body) lines.push(...this._genStatement(s));
 
@@ -756,6 +860,15 @@ export class CodeGen {
                 lines.push(`        move.l  _var_${expr.name},d0`);
                 break;
 
+            case 'array_read':
+                // Evaluate index → d0; multiply by 4; offset from array base.
+                this._genExpr(expr.index, lines);
+                lines.push(`        asl.l   #2,d0`);
+                lines.push(`        lea     _arr_${expr.name},a0`);
+                lines.push(`        add.l   d0,a0`);
+                lines.push(`        move.l  (a0),d0`);
+                break;
+
             case 'unary':
                 if (expr.op === '-') {
                     this._genExpr(expr.operand, lines);
@@ -779,45 +892,110 @@ export class CodeGen {
         }
     }
 
+    // ── PERF-B helpers ────────────────────────────────────────────────────────
+
+    /** True when expr is a compile-time constant or a single variable reference.
+     *  These can be used directly as m68k immediate/memory operands — no push/pop needed. */
+    _isSimpleExpr(expr) {
+        return expr.type === 'int' || expr.type === 'ident';
+    }
+
+    /** Return the m68k source operand string for a simple expression. */
+    _simpleOperand(expr) {
+        if (expr.type === 'int')   return `#${expr.value}`;
+        if (expr.type === 'ident') return `_var_${expr.name}`;
+        throw new Error('[CodeGen] _simpleOperand called on non-simple expr');
+    }
+
+    // ── PERF-A: direct conditional branch ────────────────────────────────────
+    //
+    // When the condition is a direct comparison (binop = <> < > <= >=) this
+    // emits a CMP + Bcc pair instead of the Scc + ext.w + ext.l + tst.l + beq.w
+    // sequence, saving 4 instructions per conditional every iteration.
+    //
+    // falseLbl: label to branch to when the condition is FALSE (i.e. the
+    //           inverse branch: if `a < b` → jump when a >= b → bge).
+    //
+    // Only call this for conditions inside If/While, NOT when a comparison
+    // result is used as a value (e.g. `x = a < b`).
+
+    _genCondBranch(expr, falseLbl, lines) {
+        // Map each operator to the Bcc that branches on the OPPOSITE condition.
+        const bccFalseMap = {
+            '=':  'bne', '<>': 'beq',
+            '<':  'bge', '>':  'ble',
+            '<=': 'bgt', '>=': 'blt',
+        };
+
+        if (expr.type === 'binop' && bccFalseMap[expr.op]) {
+            if (this._isSimpleExpr(expr.right)) {
+                // PERF-A + PERF-B: load left → d0, cmp immediate/memory, branch
+                this._genExpr(expr.left, lines);
+                lines.push(`        cmp.l   ${this._simpleOperand(expr.right)},d0`);
+            } else {
+                // PERF-A only: generic eval — push right, load left, pop d1, cmp
+                this._genExpr(expr.right, lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExpr(expr.left, lines);
+                lines.push('        move.l  (sp)+,d1');
+                lines.push('        cmp.l   d1,d0');
+            }
+            lines.push(`        ${bccFalseMap[expr.op]}.w   ${falseLbl}`);
+            return;
+        }
+
+        // Fallback: evaluate expression as boolean value, test, branch
+        this._genExpr(expr, lines);
+        lines.push('        tst.l   d0');
+        lines.push(`        beq.w   ${falseLbl}`);
+    }
+
     _genBinop(expr, lines) {
         const op = expr.op;
 
-        // ── Arithmetic: + - * / ───────────────────────────────────────────────
-        if (op === '+' || op === '-' || op === '*' || op === '/') {
-            // Evaluate right → d0, save on stack.
-            // Evaluate left  → d0.
-            // Pop right into d1.
-            // Apply operation: result in d0.
+        // ── Arithmetic: + - ───────────────────────────────────────────────────
+        // PERF-B: if right is a literal or single ident, skip push/pop entirely.
+        if (op === '+' || op === '-') {
+            if (this._isSimpleExpr(expr.right)) {
+                this._genExpr(expr.left, lines);
+                const v = expr.right;
+                if (v.type === 'int' && v.value >= 1 && v.value <= 8) {
+                    // addq/subq: 1-word instruction for 1..8
+                    lines.push(`        ${op === '+' ? 'addq' : 'subq'}.l  #${v.value},d0`);
+                } else {
+                    lines.push(`        ${op === '+' ? 'add' : 'sub'}.l   ${this._simpleOperand(v)},d0`);
+                }
+            } else {
+                this._genExpr(expr.right, lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExpr(expr.left, lines);
+                lines.push('        move.l  (sp)+,d1');
+                lines.push(`        ${op === '+' ? 'add' : 'sub'}.l   d1,d0`);
+            }
+            return;
+        }
+
+        // ── Arithmetic: * / ───────────────────────────────────────────────────
+        // muls.w / divs.w require a register source — keep generic push/pop path.
+        if (op === '*' || op === '/') {
             this._genExpr(expr.right, lines);
             lines.push('        move.l  d0,-(sp)');
             this._genExpr(expr.left, lines);
             lines.push('        move.l  (sp)+,d1');   // d0=left, d1=right
-
-            switch (op) {
-                case '+':
-                    lines.push('        add.l   d1,d0');
-                    break;
-                case '-':
-                    lines.push('        sub.l   d1,d0');
-                    break;
-                case '*':
-                    // muls.w: d0.w × d1.w → d0.l (signed, 16×16→32)
-                    // Operands must fit in 16 bits for correct results.
-                    lines.push('        muls.w  d1,d0');
-                    break;
-                case '/':
-                    // divs.w: d0.l ÷ d1.w → d0.w quotient (signed)
-                    // ext.l sign-extends quotient from 16 to 32 bits.
-                    lines.push('        divs.w  d1,d0');
-                    lines.push('        ext.l   d0');
-                    break;
+            if (op === '*') {
+                // muls.w: d0.w × d1.w → d0.l (signed, 16×16→32)
+                lines.push('        muls.w  d1,d0');
+            } else {
+                // divs.w: d0.l ÷ d1.w → d0.w quotient; ext.l to 32 bits
+                lines.push('        divs.w  d1,d0');
+                lines.push('        ext.l   d0');
             }
             return;
         }
 
         // ── Comparison: = <> < > <= >= ────────────────────────────────────────
         // Produces Blitz2D boolean: -1 (true) or 0 (false).
-        // Uses Scc (Set According to Condition) + sign extension.
+        // PERF-B: skip push/pop when right is a literal or single ident.
         const sccMap = {
             '=':  'seq',
             '<>': 'sne',
@@ -827,11 +1005,16 @@ export class CodeGen {
             '>=': 'sge',
         };
         if (sccMap[op]) {
-            this._genExpr(expr.right, lines);
-            lines.push('        move.l  d0,-(sp)');
-            this._genExpr(expr.left, lines);
-            lines.push('        move.l  (sp)+,d1');   // d0=left, d1=right
-            lines.push('        cmp.l   d1,d0');       // flags: d0 - d1 (left - right)
+            if (this._isSimpleExpr(expr.right)) {
+                this._genExpr(expr.left, lines);
+                lines.push(`        cmp.l   ${this._simpleOperand(expr.right)},d0`);
+            } else {
+                this._genExpr(expr.right, lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExpr(expr.left, lines);
+                lines.push('        move.l  (sp)+,d1');   // d0=left, d1=right
+                lines.push('        cmp.l   d1,d0');       // flags: d0 - d1 (left - right)
+            }
             lines.push(`        ${sccMap[op]}     d0`); // d0.b = $FF (true) or $00 (false)
             lines.push('        ext.w   d0');           // sign-extend to word
             lines.push('        ext.l   d0');           // sign-extend to long (-1 or 0)

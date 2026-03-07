@@ -141,13 +141,33 @@ test('Load variable into d0', () => {
     assertContains(asm, 'move.l  _var_x,d0');
 });
 
-test('Addition emits add.l d1,d0', () => {
+test('Addition: small literal uses addq (PERF-B)', () => {
     const asm = compile(HDR + 'x = 3\ny = x + 1');
+    assertContains(asm, 'addq.l  #1,d0');
+});
+
+test('Addition: variable right operand uses add.l direct mem (PERF-B)', () => {
+    const asm = compile(HDR + 'x = 3\nz = 2\ny = x + z');
+    assertContains(asm, 'add.l   _var_z,d0');
+});
+
+test('Addition: complex right operand falls back to add.l d1,d0', () => {
+    const asm = compile(HDR + 'x = 3\na = 1\nb = 2\ny = x + (a + b)');
     assertContains(asm, 'add.l   d1,d0');
 });
 
-test('Subtraction emits sub.l d1,d0', () => {
+test('Subtraction: small literal uses subq (PERF-B)', () => {
     const asm = compile(HDR + 'x = 10\ny = x - 3');
+    assertContains(asm, 'subq.l  #3,d0');
+});
+
+test('Subtraction: variable right operand uses sub.l direct mem (PERF-B)', () => {
+    const asm = compile(HDR + 'x = 10\nz = 3\ny = x - z');
+    assertContains(asm, 'sub.l   _var_z,d0');
+});
+
+test('Subtraction: complex right operand falls back to sub.l d1,d0', () => {
+    const asm = compile(HDR + 'x = 10\na = 1\nb = 2\ny = x - (a + b)');
     assertContains(asm, 'sub.l   d1,d0');
 });
 
@@ -187,6 +207,33 @@ test('">" comparison emits sgt', () => {
 test('Unary minus emits neg.l d0 for variable operand', () => {
     const asm = compile(HDR + 'x = 5\ny = -x');
     assertContains(asm, 'neg.l   d0');
+});
+
+// ── Regression: command-name variables ────────────────────────────────────────
+// Variables whose names match built-in commands (line, box, plot, color, …)
+// must not be silently swallowed by the lexer/parser.
+
+console.log('\nRegression: command-named variables');
+
+test('Variable named "line" can be assigned (line = 5)', () => {
+    const asm = compile(HDR + 'line = 5');
+    assertContains(asm, '_var_line:');
+    assertContains(asm, 'moveq   #5,d0');
+});
+
+test('Variable named "line" can be used in expression (x = line + 1)', () => {
+    const asm = compile(HDR + 'x = line + 1');
+    assertContains(asm, 'move.l  _var_line,d0');
+});
+
+test('For loop with "line" as counter variable', () => {
+    const asm = compile(HDR + 'For line = 0 To 10\nNext line');
+    assertContains(asm, '_var_line:');
+});
+
+test('Variable named "box" can be assigned', () => {
+    const asm = compile(HDR + 'box = 99');
+    assertContains(asm, '_var_box:');
 });
 
 // ── Summary ───────────────────────────────────────────────────────────────────

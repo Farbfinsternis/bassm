@@ -1,5 +1,8 @@
 # Performance-Optimierungspotenzial für BASSM (m68k)
 
+> **Hinweis:** Diese Datei ist in ROADMAP.md (PERF-A, PERF-B, PERF-low) konsolidiert.
+> Hier als detaillierte Referenz mit Implementierungshinweisen erhalten.
+
 Basierend auf der Analyse des generierten Assembler-Codes für die Bouncing-Box-Demo wurden folgende Bereiche identifiziert, in denen die Performance signifikant gesteigert werden kann.
 
 ---

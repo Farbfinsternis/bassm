@@ -156,6 +156,35 @@ _SetPaletteColor:
         rts
 
 
+; ── _SetPaletteColorRGB ───────────────────────────────────────────────────────
+;
+; Runtime variant of _SetPaletteColor — accepts separate R, G, B components
+; and builds the OCS colour word at runtime.  Use this when r/g/b are not
+; compile-time constants (e.g. palette animation driven by variables).
+;
+; Args:   d0.l = colour register index (0..31)
+;         d1.l = red   component (0..15, only low nibble used)
+;         d2.l = green component (0..15, only low nibble used)
+;         d3.l = blue  component (0..15, only low nibble used)
+; Result: calls _SetPaletteColor with d0=index, d1=OCS word ($0RGB)
+; Trashes: d1 (rebuilt as OCS word; restored to original by caller if needed)
+; Preserves: d0, d2, d3, all address registers
+
+        XDEF    _SetPaletteColorRGB
+_SetPaletteColorRGB:
+        movem.l d2-d3,-(sp)
+        andi.w  #$F,d1          ; clamp r to one nibble
+        lsl.w   #8,d1           ; r → bits 8-11
+        andi.w  #$F,d2          ; clamp g to one nibble
+        lsl.w   #4,d2           ; g → bits 4-7
+        or.w    d2,d1           ; combine R and G
+        andi.w  #$F,d3          ; clamp b to one nibble
+        or.w    d3,d1           ; d1 = $0RGB OCS colour word
+        movem.l (sp)+,d2-d3
+        jsr     _SetPaletteColor ; d0=index, d1=OCS word
+        rts
+
+
 ; ── BSS — current drawing colour index ───────────────────────────────────────
 
         SECTION palette_bss,BSS

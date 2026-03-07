@@ -23,12 +23,12 @@
 ;     C = D (the destination bitplane — read first, then written)
 ;
 ;     Ones-fill (colour bit = 1):
-;       BLTCON0 = $0B32  (USEA+USEC+USED, minterm $32 = D = A OR C)
+;       BLTCON0 = $0BC8  (USEA+USEC+USED, minterm $C8 = D = A OR C)
 ;         inside box (A=1): D = 1  (set)
 ;         outside box (A=0): D = C (preserve — no corruption of adjacent pixels)
 ;
 ;     Zeros-fill (colour bit = 0):
-;       BLTCON0 = $0B02  (USEA+USEC+USED, minterm $02 = D = !A AND C)
+;       BLTCON0 = $0B08  (USEA+USEC+USED, minterm $08 = D = !A AND C)
 ;         inside box (A=1): D = 0  (clear)
 ;         outside box (A=0): D = C (preserve — no corruption of adjacent pixels)
 ;
@@ -252,19 +252,20 @@ _Box:
         ; C reads the current destination data so pixels outside the box are
         ; preserved (not overwritten) regardless of fill direction.
         ;
-        ; Ones-fill (colour bit = 1): minterm $32 = D = A OR C
-        ;   inside (A=1): D=1 (set)     outside (A=0): D=C (preserve)
-        ; Zeros-fill (colour bit = 0): minterm $02 = D = !A AND C
-        ;   inside (A=1): D=0 (clear)   outside (A=0): D=C (preserve)
+        ; USEB=0 forces B=1 internally, so minterms must be computed with B=1:
+        ;   Ones-fill  (colour bit = 1): minterm $C8 = D = A OR C
+        ;     A=0,C=0→D=0  A=0,C=1→D=1  A=1,C=0→D=1  A=1,C=1→D=1
+        ;   Zeros-fill (colour bit = 0): minterm $08 = D = !A AND C
+        ;     A=0,C=0→D=0  A=0,C=1→D=1  A=1,C=0→D=0  A=1,C=1→D=0
         lea     _blt_ones_row,a1
 
         ; ── Choose minterm based on colour bit ────────────────────────────────
         btst    #0,d4
         bne.s   .box_set_ones
-        move.w  #$0B02,BLTCON0(a5)      ; USEA+USEC+USED, minterm $02 (D=!A AND C)
+        move.w  #$0B08,BLTCON0(a5)      ; USEA+USEC+USED, minterm $08 (D=!A AND C)
         bra.s   .box_blit
 .box_set_ones:
-        move.w  #$0B32,BLTCON0(a5)      ; USEA+USEC+USED, minterm $32 (D=A OR C)
+        move.w  #$0BC8,BLTCON0(a5)      ; USEA+USEC+USED, minterm $C8 (D=A OR C)
 
 .box_blit:
         ; ── Program Blitter ──────────────────────────────────────────────────

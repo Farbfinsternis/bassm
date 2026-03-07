@@ -133,5 +133,16 @@
         "type": "global",
         "return": "void",
         "args": []
+    },
+    {
+        "name": "CopperColor",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "y", "type": "integer" },
+            { "name": "r", "type": "integer" },
+            { "name": "g", "type": "integer" },
+            { "name": "b", "type": "integer" }
+        ]
     }
 ]

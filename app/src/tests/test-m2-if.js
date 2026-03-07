@@ -115,14 +115,15 @@ test('If body may contain assignments', () => {
 
 console.log('\nCodeGen');
 
-test('Simple If emits tst.l + beq.w + endif label', () => {
+test('Simple If emits cmp+Bcc + endif label (PERF-A)', () => {
+    // x = 1, If x = 1 → PERF-A emits: cmp.l #1,d0 / bne.w endLbl
     const asm = compile(HDR + 'x = 1\nIf x = 1\nCls\nEndIf');
-    assertContains(asm, 'tst.l   d0');
-    assertContains(asm, 'beq.w');
+    assertContains(asm, 'cmp.l   #1,d0');
+    assertContains(asm, 'bne.w');
     assertContains(asm, 'jsr     _Cls');
 });
 
-test('If/Else emits beq.w, then body, bra.w, else body', () => {
+test('If/Else emits conditional branch, then body, bra.w, else body (PERF-A)', () => {
     const asm = compile([
         HDR,
         'x = 1',
@@ -132,20 +133,23 @@ test('If/Else emits beq.w, then body, bra.w, else body', () => {
         'WaitVbl',
         'EndIf',
     ].join('\n'));
-    assertContains(asm, 'beq.w');
+    // PERF-A: x = 1 condition → cmp.l #1,d0 / bne.w
+    assertContains(asm, 'cmp.l   #1,d0');
+    assertContains(asm, 'bne.w');
     assertContains(asm, 'bra.w');
     assertContains(asm, 'jsr     _Cls');
     assertContains(asm, 'jsr     _WaitVBL');
 });
 
-test('Single-line If Then produces valid tst + branch', () => {
+test('Single-line If Then emits cmp+Bcc (PERF-A)', () => {
+    // x > 3 → PERF-A emits: cmp.l #3,d0 / ble.w (branch when NOT greater)
     const asm = compile(HDR + 'x = 5\nIf x > 3 Then Cls');
-    assertContains(asm, 'tst.l   d0');
-    assertContains(asm, 'beq.w');
+    assertContains(asm, 'cmp.l   #3,d0');
+    assertContains(asm, 'ble.w');
     assertContains(asm, 'jsr     _Cls');
 });
 
-test('If/ElseIf/Else — correct branch count', () => {
+test('If/ElseIf/Else — correct branch count (PERF-A)', () => {
     const asm = compile([
         HDR,
         'x = 1',
@@ -154,10 +158,10 @@ test('If/ElseIf/Else — correct branch count', () => {
         'Else',         'ClsColor 0',
         'EndIf',
     ].join('\n'));
-    const beqCount = (asm.match(/beq\.w/g)  ?? []).length;
-    const braCount = (asm.match(/bra\.w/g)  ?? []).length;
-    // if-cond: 1 beq.w; elseif-cond: 1 beq.w → total 2
-    assert(beqCount >= 2, `Expected >=2 beq.w, got ${beqCount}`);
+    // PERF-A: x=1 → bne.w; x=2 → bne.w (two conditional branches total)
+    const condBranchCount = (asm.match(/b(?:ne|eq|lt|gt|le|ge)\.w/g) ?? []).length;
+    const braCount        = (asm.match(/bra\.w/g) ?? []).length;
+    assert(condBranchCount >= 2, `Expected >=2 conditional branches, got ${condBranchCount}`);
     // then→endif: 1 bra.w; elseif→endif: 1 bra.w → total 2
     assert(braCount >= 2, `Expected >=2 bra.w, got ${braCount}`);
 });
@@ -167,7 +171,7 @@ test('Variables inside If body appear in BSS', () => {
     assertContains(asm, '_var_y:');
 });
 
-test('Nested If generates two sets of labels', () => {
+test('Nested If generates two sets of labels (PERF-A)', () => {
     const asm = compile([
         HDR,
         'x = 1',
@@ -177,8 +181,9 @@ test('Nested If generates two sets of labels', () => {
         '  EndIf',
         'EndIf',
     ].join('\n'));
-    const beqCount = (asm.match(/beq\.w/g) ?? []).length;
-    assert(beqCount >= 2, `Expected >=2 beq.w for nested If, got ${beqCount}`);
+    // PERF-A: x=1→bne.w, x=2→bne.w — two conditional branches
+    const condBranchCount = (asm.match(/b(?:ne|eq|lt|gt|le|ge)\.w/g) ?? []).length;
+    assert(condBranchCount >= 2, `Expected >=2 conditional branches for nested If, got ${condBranchCount}`);
 });
 
 // ── Summary ───────────────────────────────────────────────────────────────────

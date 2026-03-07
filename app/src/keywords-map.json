@@ -1,4 +1,5 @@
 [
     "If", "Then", "Else", "ElseIf", "EndIf", "While", "Wend",
-    "For", "To", "Step", "Next", "Select", "Case", "Default", "EndSelect"
+    "For", "To", "Step", "Next", "Select", "Case", "Default", "EndSelect",
+    "Dim"
 ]

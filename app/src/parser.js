@@ -68,15 +68,18 @@ export class Parser {
         const tok = this._peek();
 
         if (tok.type === TT.COMMAND) {
+            // COMMAND + '=' means the user is using a command name as a variable
+            // (e.g. `line = 5`).  Treat as variable assignment rather than command.
+            const next = this._peekAt(1);
+            if (next && next.type === TT.EQ) return this._parseAssignment();
             return this._parseCommand();
         }
 
-        // Variable assignment: IDENT = expr
+        // Variable assignment or array assignment
         if (tok.type === TT.IDENT) {
             const next = this._peekAt(1);
-            if (next && next.type === TT.EQ) {
-                return this._parseAssignment();
-            }
+            if (next && next.type === TT.EQ)     return this._parseAssignment();
+            if (next && next.type === TT.LPAREN) return this._parseArrayAssign();
         }
 
         // Control-flow keywords
@@ -85,6 +88,7 @@ export class Parser {
             if (tok.value === 'while')  return this._parseWhile();
             if (tok.value === 'for')    return this._parseFor();
             if (tok.value === 'select') return this._parseSelect();
+            if (tok.value === 'dim')    return this._parseDim();
         }
 
         // Unknown — skip tokens until next NEWLINE
@@ -105,6 +109,46 @@ export class Parser {
             expr,
             line:   nameTok.line,
         };
+    }
+
+    // ── Array assignment: <ident>(<index>) = <expr> ──────────────────────────
+
+    _parseArrayAssign() {
+        const nameTok = this._advance();            // consume IDENT
+        this._advance();                             // consume LPAREN
+        const index = this._parseExpr();
+        if (this._peek().type === TT.RPAREN) this._advance();   // consume RPAREN
+        this._advance();                             // consume EQ
+        const expr = this._parseExpr();
+        return {
+            type:  'array_assign',
+            name:  nameTok.value.toLowerCase(),
+            index,
+            expr,
+            line:  nameTok.line,
+        };
+    }
+
+    // ── Dim statement: Dim <ident>(<size>) ───────────────────────────────────
+
+    _parseDim() {
+        const dimTok = this._advance();             // consume 'dim'
+        if (this._peek().type !== TT.IDENT) {
+            console.warn(`[Parser] Dim: expected array name on line ${dimTok.line}`);
+            this._skipToNewline();
+            return null;
+        }
+        const nameTok = this._advance();            // consume IDENT
+        if (this._peek().type !== TT.LPAREN) {
+            console.warn(`[Parser] Dim: expected '(' on line ${dimTok.line}`);
+            this._skipToNewline();
+            return null;
+        }
+        this._advance();                             // consume LPAREN
+        const size = this._parseExpr();
+        if (this._peek().type === TT.RPAREN) this._advance();   // consume RPAREN
+        this._skipToNewline();
+        return { type: 'dim', name: nameTok.value.toLowerCase(), size, line: dimTok.line };
     }
 
     // ── Command statement ────────────────────────────────────────────────────
@@ -226,8 +270,20 @@ export class Parser {
                 return { type: 'string', value: tok.value };
 
             case TT.IDENT:
+            case TT.COMMAND: {
+                // COMMAND tokens in expression context are treated as variable
+                // references — command names are only meaningful at statement-start.
                 this._advance();
-                return { type: 'ident', name: tok.value.toLowerCase() };
+                const name = tok.value.toLowerCase();
+                // Array read: name(index)
+                if (this._peek().type === TT.LPAREN) {
+                    this._advance();                        // consume LPAREN
+                    const index = this._parseExpr();
+                    if (this._peek().type === TT.RPAREN) this._advance();  // consume RPAREN
+                    return { type: 'array_read', name, index };
+                }
+                return { type: 'ident', name };
+            }
 
             case TT.LPAREN: {
                 this._advance();
@@ -339,12 +395,12 @@ export class Parser {
     _parseFor() {
         const forTok = this._advance();             // consume 'for'
 
-        if (this._peek().type !== TT.IDENT) {
+        if (this._peek().type !== TT.IDENT && this._peek().type !== TT.COMMAND) {
             console.warn(`[Parser] For: expected variable name on line ${forTok.line}`);
             this._skipToNewline();
             return null;
         }
-        const nameTok = this._advance();            // consume IDENT
+        const nameTok = this._advance();            // consume IDENT (or COMMAND used as variable)
 
         if (this._peek().type !== TT.EQ) {
             console.warn(`[Parser] For: expected '=' on line ${forTok.line}`);
@@ -375,7 +431,9 @@ export class Parser {
 
         if (this._peek().type === TT.KEYWORD && this._peek().value === 'next') {
             this._advance();                        // consume 'next'
-            if (this._peek().type === TT.IDENT) this._advance(); // optional: Next i
+            // Optional: Next i  (variable name may be IDENT or COMMAND)
+            const nt = this._peek().type;
+            if (nt === TT.IDENT || nt === TT.COMMAND) this._advance();
         } else {
             const t = this._peek();
             console.warn(`[Parser] For: expected 'Next' but got '${t?.value}' on line ${t?.line}`);

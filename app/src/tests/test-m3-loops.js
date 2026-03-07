@@ -116,10 +116,11 @@ test('For loop variable added to variable set', () => {
 
 console.log('\nCodeGen — While');
 
-test('While: emits loop label, tst.l, beq.w, bra.w', () => {
+test('While: emits loop label, cmp+Bcc, bra.w (PERF-A)', () => {
+    // x < 10 → PERF-A: cmp.l #10,d0 / bge.w endLbl (branch when NOT less-than)
     const asm = compile(HDR + 'x = 0\nWhile x < 10\nx = x + 1\nWend');
-    assertContains(asm, 'tst.l   d0');
-    assertContains(asm, 'beq.w');
+    assertContains(asm, 'cmp.l   #10,d0');
+    assertContains(asm, 'bge.w');
     assertContains(asm, 'bra.w');
 });
 

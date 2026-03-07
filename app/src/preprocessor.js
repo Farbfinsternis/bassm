@@ -20,11 +20,32 @@ export class PreProcessor {
         // Normalise line endings so we only deal with \n
         const normalised = source.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
-        // Process line by line so stripping is cheap and unambiguous
+        // Process line by line: strip comments, then split on ':' (statement separator)
         return normalised
             .split('\n')
             .map(line => this._stripComment(line))
+            .flatMap(line => this._splitColons(line))
             .join('\n');
+    }
+
+    // -------------------------------------------------------------------------
+    // Split a line on ':' statement separators, ignoring ':' inside "…" strings.
+    // Returns an array of sub-lines (at least one element).
+    // -------------------------------------------------------------------------
+    _splitColons(line) {
+        const parts = [];
+        let current = '';
+        let inString = false;
+
+        for (let i = 0; i < line.length; i++) {
+            const c = line[i];
+            if (c === '"') { inString = !inString; current += c; continue; }
+            if (inString)  { current += c; continue; }
+            if (c === ':') { parts.push(current); current = ''; continue; }
+            current += c;
+        }
+        parts.push(current);
+        return parts;
     }
 
     // -------------------------------------------------------------------------
