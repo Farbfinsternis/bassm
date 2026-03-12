@@ -2,6 +2,9 @@ const {
   app, BrowserWindow, WebContentsView,
   ipcMain, protocol, net
 } = require('electron/main');
+
+// Allow AudioContext without user gesture (needed for Paula audio in the emulator view)
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 const path = require('node:path');
 const fs   = require('node:fs');
 const os   = require('node:os');
@@ -14,6 +17,7 @@ const FRAGMENTS = path.join(__dirname, 'app', 'src', 'm68k', 'fragments');
 const ROM_MAIN  = path.join(__dirname, 'emulator', 'vAmigaWeb', 'roms', 'aros.bin');
 const ROM_EXT   = path.join(__dirname, 'emulator', 'vAmigaWeb', 'roms', 'aros_ext.bin');
 const OUT_DIR   = path.join(__dirname, 'out');
+const ASSETS    = path.join(__dirname, 'app', 'assets');
 
 // ── Protocol: serve emulator/preview/ with correct MIME types ─────────────
 // WASM files need application/wasm — Electron's file:// doesn't set this.
@@ -109,13 +113,27 @@ ipcMain.on('emulator:status', (_event, text) => {
 });
 
 // Renderer → main: assemble m68k source with vasmm68k_mot
+// Accepts { asm: string, assetFiles: string[] }
 // Returns { ok: true, data: Buffer } or { ok: false, error: string }
-ipcMain.handle('bassm:assemble', (_event, asmText) => {
+ipcMain.handle('bassm:assemble', (_event, payload) => {
   return new Promise((resolve) => {
+    const { asm: asmText, assetFiles = [] } = payload;
     const tmpDir = os.tmpdir();
     const srcFile = path.join(tmpDir, 'bassm_src.s');
     const objFile = path.join(tmpDir, 'bassm_out.o');
     const outFile = path.join(tmpDir, 'bassm_out.exe');
+
+    // Copy referenced asset files from app/assets/ into tmpDir so INCBIN can find them
+    for (const filename of assetFiles) {
+      const src = path.join(ASSETS, filename);
+      const dst = path.join(tmpDir, filename);
+      try {
+        fs.copyFileSync(src, dst);
+      } catch (e) {
+        resolve({ ok: false, error: `Asset not found: ${filename} (expected at ${src})` });
+        return;
+      }
+    }
 
     fs.writeFileSync(srcFile, asmText, 'utf8');
 

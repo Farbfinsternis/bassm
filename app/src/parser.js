@@ -75,11 +75,12 @@ export class Parser {
             return this._parseCommand();
         }
 
-        // Variable assignment or array assignment
+        // Variable assignment, array assignment, or type field write
         if (tok.type === TT.IDENT) {
             const next = this._peekAt(1);
-            if (next && next.type === TT.EQ)     return this._parseAssignment();
-            if (next && next.type === TT.LPAREN) return this._parseArrayAssign();
+            if (next && next.type === TT.EQ)        return this._parseAssignment();
+            if (next && next.type === TT.BACKSLASH) return this._parseFieldWrite();
+            if (next && next.type === TT.LPAREN)    return this._parseArrayAssignOrFieldWrite();
         }
 
         // Control-flow keywords
@@ -89,6 +90,7 @@ export class Parser {
             if (tok.value === 'for')    return this._parseFor();
             if (tok.value === 'select') return this._parseSelect();
             if (tok.value === 'dim')    return this._parseDim();
+            if (tok.value === 'type')   return this._parseTypeDef();
         }
 
         // Unknown — skip tokens until next NEWLINE
@@ -111,13 +113,41 @@ export class Parser {
         };
     }
 
-    // ── Array assignment: <ident>(<index>) = <expr> ──────────────────────────
+    // ── Array assign or typed-array field write: <ident>(<index>)['\' field] = <expr> ──
 
-    _parseArrayAssign() {
+    _parseArrayAssignOrFieldWrite() {
         const nameTok = this._advance();            // consume IDENT
         this._advance();                             // consume LPAREN
         const index = this._parseExpr();
         if (this._peek().type === TT.RPAREN) this._advance();   // consume RPAREN
+
+        if (this._peek().type === TT.BACKSLASH) {
+            // name(index)\field = expr — typed array field write
+            this._advance();                         // consume BACKSLASH
+            if (this._peek().type !== TT.IDENT) {
+                console.warn(`[Parser] Field write: expected field name on line ${nameTok.line}`);
+                this._skipToNewline();
+                return null;
+            }
+            const fieldTok = this._advance();        // consume field IDENT
+            if (this._peek().type !== TT.EQ) {
+                console.warn(`[Parser] Field write: expected '=' on line ${nameTok.line}`);
+                this._skipToNewline();
+                return null;
+            }
+            this._advance();                         // consume EQ
+            const expr = this._parseExpr();
+            return {
+                type:     'type_field_write',
+                instance: nameTok.value.toLowerCase(),
+                field:    fieldTok.value.toLowerCase(),
+                index,
+                expr,
+                line:     nameTok.line,
+            };
+        }
+
+        // name(index) = expr — plain array assign
         this._advance();                             // consume EQ
         const expr = this._parseExpr();
         return {
@@ -129,16 +159,119 @@ export class Parser {
         };
     }
 
+    // ── Scalar type field write: <ident> '\' <field> = <expr> ─────────────────
+
+    _parseFieldWrite() {
+        const nameTok = this._advance();            // consume IDENT
+        this._advance();                             // consume BACKSLASH
+        if (this._peek().type !== TT.IDENT) {
+            console.warn(`[Parser] Field write: expected field name on line ${nameTok.line}`);
+            this._skipToNewline();
+            return null;
+        }
+        const fieldTok = this._advance();           // consume field IDENT
+        if (this._peek().type !== TT.EQ) {
+            console.warn(`[Parser] Field write: expected '=' on line ${nameTok.line}`);
+            this._skipToNewline();
+            return null;
+        }
+        this._advance();                             // consume EQ
+        const expr = this._parseExpr();
+        return {
+            type:     'type_field_write',
+            instance: nameTok.value.toLowerCase(),
+            field:    fieldTok.value.toLowerCase(),
+            index:    null,
+            expr,
+            line:     nameTok.line,
+        };
+    }
+
+    // ── Type definition: Type <name> NEWLINE (Field …)* EndType ──────────────
+
+    _parseTypeDef() {
+        const typeTok = this._advance();            // consume 'type' keyword
+        const nt0 = this._peek().type;
+        if (nt0 !== TT.IDENT && nt0 !== TT.COMMAND) {
+            console.warn(`[Parser] Type: expected name on line ${typeTok.line}`);
+            this._skipToNewline();
+            return null;
+        }
+        const nameTok = this._advance();            // consume type name
+        this._skipToNewline();
+
+        const fields = [];
+        while (!this._atEnd()) {
+            if (this._peek().type === TT.NEWLINE) { this._advance(); continue; }
+            if (this._peek().type === TT.EOF) break;
+            const tok = this._peek();
+            if (tok.type === TT.KEYWORD && tok.value === 'endtype') break;
+            if (tok.type === TT.KEYWORD && tok.value === 'field') {
+                this._advance();                    // consume 'field'
+                while (!this._atEnd() &&
+                       this._peek().type !== TT.NEWLINE &&
+                       this._peek().type !== TT.EOF) {
+                    if (this._peek().type === TT.COMMA) { this._advance(); continue; }
+                    if (this._peek().type === TT.IDENT) {
+                        fields.push(this._advance().value.toLowerCase());
+                    } else {
+                        this._advance();            // skip unexpected
+                    }
+                }
+            }
+            this._skipToNewline();
+        }
+
+        if (this._peek().type === TT.KEYWORD && this._peek().value === 'endtype') {
+            this._advance();                        // consume 'endtype'
+        } else {
+            const t = this._peek();
+            console.warn(`[Parser] Expected EndType but got '${t?.value}' on line ${t?.line}`);
+        }
+        this._skipToNewline();
+
+        return {
+            type:   'type_def',
+            name:   nameTok.value.toLowerCase(),
+            fields,
+            line:   typeTok.line,
+        };
+    }
+
     // ── Dim statement: Dim <ident>(<size>) ───────────────────────────────────
 
     _parseDim() {
         const dimTok = this._advance();             // consume 'dim'
         if (this._peek().type !== TT.IDENT) {
-            console.warn(`[Parser] Dim: expected array name on line ${dimTok.line}`);
+            console.warn(`[Parser] Dim: expected name on line ${dimTok.line}`);
             this._skipToNewline();
             return null;
         }
         const nameTok = this._advance();            // consume IDENT
+
+        // Typed variable: Dim name.TypeName  or  Dim name.TypeName(size)
+        if (this._peek().type === TT.DOT) {
+            this._advance();                        // consume DOT
+            const nt1 = this._peek().type;
+            if (nt1 !== TT.IDENT && nt1 !== TT.COMMAND) {
+                console.warn(`[Parser] Dim: expected type name after '.' on line ${dimTok.line}`);
+                this._skipToNewline();
+                return null;
+            }
+            const typeTok  = this._advance();       // consume TypeName IDENT/COMMAND
+            const typeName = typeTok.value.toLowerCase();
+            if (this._peek().type === TT.LPAREN) {
+                this._advance();                    // consume LPAREN
+                const size = this._parseExpr();
+                if (this._peek().type === TT.RPAREN) this._advance();
+                this._skipToNewline();
+                return { type: 'dim_typed_array', name: nameTok.value.toLowerCase(), typeName, size, line: dimTok.line };
+            }
+            this._skipToNewline();
+            return { type: 'dim_typed', name: nameTok.value.toLowerCase(), typeName, line: dimTok.line };
+        }
+
+        // Plain array: Dim name(size)
         if (this._peek().type !== TT.LPAREN) {
             console.warn(`[Parser] Dim: expected '(' on line ${dimTok.line}`);
             this._skipToNewline();
@@ -275,12 +408,24 @@ export class Parser {
                 // references — command names are only meaningful at statement-start.
                 this._advance();
                 const name = tok.value.toLowerCase();
-                // Array read: name(index)
+                // Array or typed-array read: name(index)[\field]
                 if (this._peek().type === TT.LPAREN) {
                     this._advance();                        // consume LPAREN
                     const index = this._parseExpr();
                     if (this._peek().type === TT.RPAREN) this._advance();  // consume RPAREN
+                    // Typed array field read: name(index)\field
+                    if (this._peek().type === TT.BACKSLASH) {
+                        this._advance();                    // consume BACKSLASH
+                        const fTok = this._advance();       // consume field IDENT
+                        return { type: 'type_field_read', instance: name, field: fTok.value.toLowerCase(), index };
+                    }
                     return { type: 'array_read', name, index };
+                }
+                // Scalar typed field read: name\field
+                if (this._peek().type === TT.BACKSLASH) {
+                    this._advance();                        // consume BACKSLASH
+                    const fTok = this._advance();           // consume field IDENT
+                    return { type: 'type_field_read', instance: name, field: fTok.value.toLowerCase(), index: null };
                 }
                 return { type: 'ident', name };
             }

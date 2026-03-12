@@ -9,9 +9,8 @@
 //   1.  Header comment
 //   2.  Screen EQUs  (computed from the Graphics statement)
 //   3.  Fragment INCLUDEs
-//   4.  Chip-RAM BSS section  (_gfx_planes)
-//   5.  Chip-RAM DATA section (_gfx_copper)
-//   6.  User variable BSS section  (_var_*)  — one ds.l per integer variable
+//   4.  Chip-RAM DATA section (_gfx_copper) + user var BSS
+//   5.  User variable BSS section  (_var_*)  — one ds.l per integer variable
 //   7.  _setup_graphics CODE
 //   8.  _main_program CODE   (one instruction sequence per Blitz2D statement)
 //
@@ -57,9 +56,13 @@ export class CodeGen {
      */
     generate(ast) {
         // Reset per-compilation state
-        this._labelCount  = 0;
-        this._arrays      = new Map();  // name → size Expr (populated by _collectVars)
-        this._usesRaster  = false;      // true if any CopperColor command present
+        this._labelCount    = 0;
+        this._arrays        = new Map();  // name → size Expr (populated by _collectVars)
+        this._usesRaster    = false;      // true if any CopperColor command present
+        this._usesSound     = false;      // true if any LoadSample command present
+        this._audioSamples  = new Map();  // index (int) → { filename, label }
+        this._typeDefs      = new Map();  // typeName → { fields: string[] }
+        this._typeInstances = new Map();  // instanceName → { typeName, isArray, size: Expr|null }
 
         // ── Locate and validate the Graphics statement ────────────────────────
         const gfxStmt = ast.find(s => s && s.type === 'command' && s.name === 'graphics');
@@ -87,8 +90,8 @@ export class CodeGen {
         const hStop   = (hStart + W) & 0xFF;
         const vStop   = (vStart + H) & 0xFF;
         const diwstop = (vStop  << 8) | hStop;
-        const ddfstrt = 0x003C;
-        const ddfstop = 0x00D4;
+        const ddfstrt = 0x0038;
+        const ddfstop = 0x00D0;
 
         // ── Collect scalar variable names and array declarations ─────────────
         const varNames = new Set();
@@ -109,6 +112,7 @@ export class CodeGen {
         out.push(`${pad('GFXDEPTH',12)} EQU ${D}`);
         out.push(`${pad('GFXBPR',12)} EQU (GFXWIDTH/8)`);
         out.push(`${pad('GFXPSIZE',12)} EQU (GFXBPR*GFXHEIGHT)`);
+        out.push(`${pad('GFXBUFSIZE',12)} EQU (GFXPSIZE*GFXDEPTH)`);
         out.push(`${pad('GFXCOLORS',12)} EQU (1<<GFXDEPTH)`);
         out.push(`${pad('GFXBPLCON0',12)} EQU $${hex(bplcon0)}`);
         out.push(`${pad('GFXDIWSTRT',12)} EQU $${hex(diwstrt)}`);
@@ -139,6 +143,9 @@ export class CodeGen {
         if (this._usesRaster) {
             out.push('        INCLUDE "copper_raster.s"');
         }
+        if (this._usesSound) {
+            out.push('        INCLUDE "sound.s"');
+        }
         out.push('');
         out.push('        even');
         out.push('');
@@ -148,19 +155,19 @@ export class CodeGen {
         out.push('');
         out.push('_setup_graphics:');
         out.push('        lea     _gfx_cop_a_bpl_table,a0');
-        out.push('        lea     _gfx_planes,a1');
+        out.push('        move.l  _gfx_planes,a1');
         out.push('        moveq   #GFXDEPTH,d0');
         out.push('        move.l  #GFXPSIZE,d1');
         out.push('        jsr     _PatchBitplanePtrs');
         out.push('        lea     _gfx_cop_b_bpl_table,a0');
-        out.push('        lea     _gfx_planes_b,a1');
+        out.push('        move.l  _gfx_planes_b,a1');
         out.push('        moveq   #GFXDEPTH,d0');
         out.push('        move.l  #GFXPSIZE,d1');
         out.push('        jsr     _PatchBitplanePtrs');
         out.push('        lea     _gfx_copper_a,a0');
         out.push('        jsr     _InstallCopper');
         out.push('        jsr     _InitPalette');
-        out.push('        lea     _gfx_planes_b,a0');
+        out.push('        move.l  _gfx_planes_b,a0');
         out.push('        move.l  a0,_back_planes_ptr');
         out.push('        clr.b   _front_is_a');
         out.push('        rts');
@@ -181,7 +188,7 @@ export class CodeGen {
         // ── DATA & BSS SECTIONS (Must come after CODE for WinUAE compatibility) ──
 
         // User variable BSS — one longword per scalar integer variable
-        if (varNames.size > 0 || this._arrays.size > 0) {
+        if (varNames.size > 0 || this._arrays.size > 0 || this._typeInstances.size > 0) {
             out.push('        SECTION user_vars,BSS');
             for (const name of varNames) {
                 out.push(`_var_${name}:    ds.l    1`);
@@ -193,14 +200,24 @@ export class CodeGen {
                 }
                 out.push(`_arr_${name}:    ds.l    ${sizeExpr.value + 1}`);
             }
+            // Type instances: AoS layout — fieldCount longwords per instance
+            for (const [instName, inst] of this._typeInstances) {
+                const typeDef = this._typeDefs.get(inst.typeName);
+                if (!typeDef) throw new Error(`Undeclared type '${inst.typeName}' for Dim ${instName}`);
+                if (inst.isArray) {
+                    if (!inst.size || inst.size.type !== 'int')
+                        throw new Error(`Dim ${instName}: typed array size must be an integer literal`);
+                    const count = inst.size.value + 1;   // 0..n inclusive
+                    out.push(`_tinst_${instName}:    ds.l    ${count * typeDef.fields.length}`);
+                } else {
+                    out.push(`_tinst_${instName}:    ds.l    ${typeDef.fields.length}`);
+                }
+            }
             out.push('');
         }
 
-        // Chip-RAM BSS — two bitplane buffers (A = front, B = back initially)
-        out.push('        SECTION gfx_planes,BSS_C');
-        out.push('_gfx_planes:    ds.b  GFXPSIZE*GFXDEPTH');
-        out.push('_gfx_planes_b:  ds.b  GFXPSIZE*GFXDEPTH');
-        out.push('');
+        // Bitplane buffer pointer variables live in startup.s BSS (_gfx_planes / _gfx_planes_b).
+        // The actual chip RAM data (BSS_C) is emitted below; startup.s sets the pointers via lea.
 
         // Helper: emit display-setup copper moves (shared header for both lists)
         const emitCopHeader = () => {
@@ -260,7 +277,41 @@ export class CodeGen {
         out.push('        dc.w    $FFFF,$FFFE             ; END of copper list B');
         out.push('');
 
+        // Chip RAM bitplane buffers — static BSS_C, zeroed by OS loader.
+        // startup.s reads their addresses into _gfx_planes / _gfx_planes_b.
+        out.push('        SECTION gfx_planes_a,BSS_C');
+        out.push('_gfx_planes_data:');
+        out.push('        ds.b    GFXBUFSIZE');
+        out.push('');
+        out.push('        SECTION gfx_planes_b,BSS_C');
+        out.push('_gfx_planes_b_data:');
+        out.push('        ds.b    GFXBUFSIZE');
+        out.push('');
+
+        // ── Audio sample data (chip RAM, one DATA_C section per unique file) ──
+        // Each sample is INCBIN'd at assembly time; length computed by the
+        // assembler from label difference (_snd_N_end - _snd_N).
+        for (const [, { filename, label: lbl }] of this._audioSamples) {
+            out.push(`        SECTION ${lbl}_sec,DATA_C`);
+            out.push(`        XDEF    ${lbl}`);
+            out.push(`${lbl}:`);
+            out.push(`        INCBIN  "${filename}"`);
+            out.push(`        EVEN`);
+            out.push(`        XDEF    ${lbl}_end`);
+            out.push(`${lbl}_end:`);
+            out.push('');
+        }
+
         return out.join('\n');
+    }
+
+    /**
+     * Returns the list of asset filenames referenced by the last compile()
+     * (e.g. ["beep.raw", "music.raw"]).  Used by bassm.js to pass files to
+     * the main process for inclusion in the assembly temp directory.
+     */
+    getAssetRefs() {
+        return [...this._audioSamples.values()].map(e => e.filename);
     }
 
     // ── Variable collection (pre-pass) ────────────────────────────────────────
@@ -279,8 +330,28 @@ export class CodeGen {
             } else if (stmt.type === 'array_assign') {
                 this._collectVarsInExpr(stmt.index, varSet);
                 this._collectVarsInExpr(stmt.expr,  varSet);
+            } else if (stmt.type === 'type_def') {
+                this._typeDefs.set(stmt.name, { fields: stmt.fields });
+            } else if (stmt.type === 'dim_typed') {
+                this._typeInstances.set(stmt.name, { typeName: stmt.typeName, isArray: false, size: null });
+            } else if (stmt.type === 'dim_typed_array') {
+                this._typeInstances.set(stmt.name, { typeName: stmt.typeName, isArray: true, size: stmt.size });
+            } else if (stmt.type === 'type_field_write') {
+                if (stmt.index) this._collectVarsInExpr(stmt.index, varSet);
+                this._collectVarsInExpr(stmt.expr, varSet);
             } else if (stmt.type === 'command') {
                 if (stmt.name === 'coppercolor') this._usesRaster = true;
+                if (stmt.name === 'loadsample') {
+                    this._usesSound = true;
+                    const idxArg  = stmt.args[0];
+                    const fileArg = stmt.args[1];
+                    if (idxArg && idxArg.type === 'int' && fileArg && fileArg.type === 'string') {
+                        if (!this._audioSamples.has(idxArg.value)) {
+                            const lbl = `_snd_${this._audioSamples.size}`;
+                            this._audioSamples.set(idxArg.value, { filename: fileArg.value, label: lbl });
+                        }
+                    }
+                }
                 for (const arg of stmt.args) {
                     this._collectVarsInExpr(arg, varSet);
                 }
@@ -322,6 +393,9 @@ export class CodeGen {
                 // array name is NOT a scalar — only collect vars used in the index
                 this._collectVarsInExpr(expr.index, varSet);
                 break;
+            case 'type_field_read':
+                if (expr.index) this._collectVarsInExpr(expr.index, varSet);
+                break;
             case 'binop':
                 this._collectVarsInExpr(expr.left,    varSet);
                 this._collectVarsInExpr(expr.right,   varSet);
@@ -344,8 +418,15 @@ export class CodeGen {
             return lines;
         }
 
-        // ── Dim — declaration only, no code emitted ───────────────────────────
-        if (stmt.type === 'dim') {
+        // ── Dim / Type — declaration only, no code emitted ───────────────────
+        if (stmt.type === 'dim' || stmt.type === 'type_def' ||
+            stmt.type === 'dim_typed' || stmt.type === 'dim_typed_array') {
+            return lines;
+        }
+
+        // ── Type field write: instance\field = expr ───────────────────────────
+        if (stmt.type === 'type_field_write') {
+            this._genTypeFieldWrite(stmt, lines);
             return lines;
         }
 
@@ -472,6 +553,87 @@ export class CodeGen {
                 lines.push('        jsr     _WaitKey');
                 break;
 
+            case 'loadsample':
+                // LoadSample index, "file" — sample was pre-registered in _collectVars.
+                // No assembly code emitted; INCBIN sections appear at end of generate().
+                break;
+
+            case 'playsample': {
+                // PlaySample index, channel [, period [, volume]]
+                //   index   = compile-time integer literal (maps to _snd_N label)
+                //   channel = required expression (0–3)
+                //   period  = optional expression; default 428 (≈8287 Hz PAL)
+                //   volume  = optional expression; default 64  (Paula maximum)
+                //
+                // Calling convention for _PlaySample:
+                //   d0 = channel, a0 = ptr, d1 = len_words, d2 = period, d3 = volume
+                const idxArg = stmt.args[0];
+                if (!idxArg || idxArg.type !== 'int')
+                    throw new Error(`PlaySample: index must be an integer literal (line ${stmt.line})`);
+                const entry = this._audioSamples.get(idxArg.value);
+                if (!entry)
+                    throw new Error(`PlaySample: sample index ${idxArg.value} not loaded — use LoadSample first (line ${stmt.line})`);
+                const { label: lbl } = entry;
+
+                // Optional args: synthesise a literal int node when omitted
+                const volArg = stmt.args[3] ?? { type: 'int', value: 64 };
+                const perArg = stmt.args[2] ?? { type: 'int', value: 428 };
+
+                // Push: volume (deepest), period, channel (top)
+                this._genExpr(volArg, lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExpr(perArg, lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExprArg(stmt, 1, 'PlaySample channel', lines);
+                lines.push('        move.l  d0,-(sp)');
+
+                // Set a0 = sample pointer, d1 = length in words (assembler expression)
+                lines.push(`        lea     ${lbl},a0`);
+                lines.push(`        move.l  #(${lbl}_end-${lbl})/2,d1`);
+
+                // Pop: d0=channel, d2=period, d3=volume  (movem pops in reg-num order)
+                lines.push('        movem.l (sp)+,d0/d2-d3');
+                lines.push('        jsr     _PlaySample');
+                break;
+            }
+
+            case 'playsampleonce': {
+                // PlaySampleOnce index, channel [, period [, volume]]
+                // Identical calling convention to PlaySample; calls _PlaySampleOnce
+                // which uses Paula's double-buffering to play exactly once.
+                const idxArg = stmt.args[0];
+                if (!idxArg || idxArg.type !== 'int')
+                    throw new Error(`PlaySampleOnce: index must be an integer literal (line ${stmt.line})`);
+                const entry = this._audioSamples.get(idxArg.value);
+                if (!entry)
+                    throw new Error(`PlaySampleOnce: sample index ${idxArg.value} not loaded — use LoadSample first (line ${stmt.line})`);
+                const { label: lbl } = entry;
+
+                const volArg = stmt.args[3] ?? { type: 'int', value: 64 };
+                const perArg = stmt.args[2] ?? { type: 'int', value: 428 };
+
+                this._genExpr(volArg, lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExpr(perArg, lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExprArg(stmt, 1, 'PlaySampleOnce channel', lines);
+                lines.push('        move.l  d0,-(sp)');
+
+                lines.push(`        lea     ${lbl},a0`);
+                lines.push(`        move.l  #(${lbl}_end-${lbl})/2,d1`);
+
+                lines.push('        movem.l (sp)+,d0/d2-d3');
+                lines.push('        jsr     _PlaySampleOnce');
+                break;
+            }
+
+            case 'stopsample': {
+                // StopSample channel  →  d0=channel, jsr _StopSample
+                this._genExprArg(stmt, 0, 'StopSample channel', lines);
+                lines.push('        jsr     _StopSample');
+                break;
+            }
+
             case 'screenflip':
                 lines.push('        jsr     _ScreenFlip');
                 break;
@@ -479,28 +641,71 @@ export class CodeGen {
             case 'coppercolor': {
                 // CopperColor y,r,g,b — patch COLOR00 MOVE entry at scanline y
                 // in the back copper list (visible after next ScreenFlip).
-                // Compile-time path: all 4 args are integer literals.
-                // Runtime path: any arg is a variable/expression.
+                //
+                // PERF-C: Intrinsic Inline — both paths expand the bodies of
+                // _SetRasterColor/_SetRasterColorRGB directly, eliminating
+                // ~120 cycles of movem.l + JSR overhead per call (~3 ms/frame
+                // when called 212× for a full rasterbar).
+                //
+                // Register contract for the runtime path:
+                //   d2  — OCS word accumulator ($0RGB built up across three
+                //          _genExprArg calls).  Safe: _genExpr only uses d0/d1.
+                //   a0  — back raster base; overwritten by lea just before use.
                 if (stmt.args.every(a => a.type === 'int')) {
-                    const y   = stmt.args[0].value;
-                    const r   = stmt.args[1].value & 0xF;
-                    const g   = stmt.args[2].value & 0xF;
-                    const b   = stmt.args[3].value & 0xF;
-                    const rgb = (r << 8) | (g << 4) | b;
-                    lines.push(`        moveq   #${y},d0`);
-                    lines.push(`        move.w  #$${hex(rgb)},d1`);
-                    lines.push('        jsr     _SetRasterColor');
+                    // ── Compile-time path: all 4 args are integer literals ────
+                    // y*8+6 is known at compile time → direct absolute write,
+                    // no register setup needed.
+                    const y      = stmt.args[0].value;
+                    const r      = stmt.args[1].value & 0xF;
+                    const g      = stmt.args[2].value & 0xF;
+                    const b      = stmt.args[3].value & 0xF;
+                    const rgb    = (r << 8) | (g << 4) | b;
+                    const offset = y * 8 + 6;
+                    const lblA   = this._nextLabel();
+                    const lblEnd = this._nextLabel();
+                    lines.push(`        tst.b   _front_is_a`);
+                    lines.push(`        bne.s   ${lblA}`);
+                    lines.push(`        move.w  #$${hex(rgb)},_gfx_raster_b+${offset}`);
+                    lines.push(`        bra.s   ${lblEnd}`);
+                    lines.push(`${lblA}:`);
+                    lines.push(`        move.w  #$${hex(rgb)},_gfx_raster_a+${offset}`);
+                    lines.push(`${lblEnd}:`);
                 } else {
-                    // Push b, g, r; eval y → d0; movem pops d1=r, d2=g, d3=b
-                    this._genExprArg(stmt, 3, 'CopperColor b', lines);
-                    lines.push('        move.l  d0,-(sp)');
-                    this._genExprArg(stmt, 2, 'CopperColor g', lines);
-                    lines.push('        move.l  d0,-(sp)');
+                    // ── Runtime path: any arg is a variable/expression ────────
+                    // Inline _SetRasterColorRGB + _SetRasterColor bodies.
+                    const lblA = this._nextLabel();
+                    const lblW = this._nextLabel();
+
+                    // r → bits 11:8 of OCS word, stored in d2
                     this._genExprArg(stmt, 1, 'CopperColor r', lines);
-                    lines.push('        move.l  d0,-(sp)');
-                    this._genExprArg(stmt, 0, 'CopperColor y', lines);  // d0 = y
-                    lines.push('        movem.l (sp)+,d1-d3');           // d1=r, d2=g, d3=b
-                    lines.push('        jsr     _SetRasterColorRGB');
+                    lines.push('        andi.w  #$F,d0');
+                    lines.push('        lsl.w   #8,d0');
+                    lines.push('        move.w  d0,d2');
+
+                    // g → bits 7:4, OR into d2
+                    this._genExprArg(stmt, 2, 'CopperColor g', lines);
+                    lines.push('        andi.w  #$F,d0');
+                    lines.push('        lsl.w   #4,d0');
+                    lines.push('        or.w    d0,d2');
+
+                    // b → bits 3:0, OR into d2  →  d2 = $0RGB OCS word
+                    this._genExprArg(stmt, 3, 'CopperColor b', lines);
+                    lines.push('        andi.w  #$F,d0');
+                    lines.push('        or.w    d0,d2');
+
+                    // y → d0, byte offset = y * 8  (COLOR word is at +6)
+                    this._genExprArg(stmt, 0, 'CopperColor y', lines);
+                    lines.push('        lsl.l   #3,d0');
+
+                    // Select back raster table (_front_is_a: 0=B is back, 1=A is back)
+                    lines.push('        tst.b   _front_is_a');
+                    lines.push(`        bne.s   ${lblA}`);
+                    lines.push('        lea     _gfx_raster_b,a0');
+                    lines.push(`        bra.s   ${lblW}`);
+                    lines.push(`${lblA}:`);
+                    lines.push('        lea     _gfx_raster_a,a0');
+                    lines.push(`${lblW}:`);
+                    lines.push('        move.w  d2,6(a0,d0.l)');
                 }
                 break;
             }
@@ -835,6 +1040,49 @@ export class CodeGen {
         lines.push('        addq.l  #4,sp');
     }
 
+    // ── Type field write code generation ──────────────────────────────────────
+    //
+    // instance\field = expr  (scalar)
+    // instance(index)\field = expr  (array)
+    //
+    // AoS layout: fieldOffset = fieldIndex * 4
+    //             instanceOffset = instanceIndex * stride  (stride = fieldCount * 4)
+    //
+    // Variable index pattern: eval expr → push; eval index → d0; muls stride;
+    // lea base → a0; add d0 → a0; pop d0; store to fieldOff(a0).
+    // Stack safety: _genExpr is balanced (equal pushes and pops), so the value
+    // pushed before index evaluation is still at (sp) when we restore it.
+
+    _genTypeFieldWrite(stmt, lines) {
+        const inst = this._typeInstances.get(stmt.instance);
+        if (!inst) throw new Error(`Undeclared type instance '${stmt.instance}' (line ${stmt.line})`);
+        const typeDef = this._typeDefs.get(inst.typeName);
+        if (!typeDef) throw new Error(`Undeclared type '${inst.typeName}' (line ${stmt.line})`);
+        const fieldIdx = typeDef.fields.indexOf(stmt.field);
+        if (fieldIdx < 0) throw new Error(`Type '${inst.typeName}' has no field '${stmt.field}' (line ${stmt.line})`);
+        const fieldOff = fieldIdx * 4;
+        const stride   = typeDef.fields.length * 4;
+
+        if (!inst.isArray) {
+            // Scalar instance: direct absolute write
+            this._genExpr(stmt.expr, lines);
+            lines.push(`        move.l  d0,_tinst_${stmt.instance}+${fieldOff}`);
+        } else if (stmt.index && stmt.index.type === 'int') {
+            // Constant index: offset known at compile time
+            this._genExpr(stmt.expr, lines);
+            lines.push(`        move.l  d0,_tinst_${stmt.instance}+${stmt.index.value * stride + fieldOff}`);
+        } else {
+            // Variable index: push value, compute index offset, store
+            this._genExpr(stmt.expr, lines);
+            lines.push(`        move.l  d0,-(sp)`);
+            this._genExpr(stmt.index, lines);
+            lines.push(`        muls.w  #${stride},d0`);
+            lines.push(`        lea     _tinst_${stmt.instance},a0`);
+            lines.push(`        add.l   d0,a0`);
+            lines.push(`        move.l  (sp)+,${fieldOff}(a0)`);
+        }
+    }
+
     // ── Expression code generation ────────────────────────────────────────────
     //
     // Emits code that evaluates `expr` and leaves the result in d0.
@@ -868,6 +1116,32 @@ export class CodeGen {
                 lines.push(`        add.l   d0,a0`);
                 lines.push(`        move.l  (a0),d0`);
                 break;
+
+            case 'type_field_read': {
+                const inst    = this._typeInstances.get(expr.instance);
+                if (!inst) throw new Error(`Undeclared type instance '${expr.instance}'`);
+                const typeDef = this._typeDefs.get(inst.typeName);
+                if (!typeDef) throw new Error(`Undeclared type '${inst.typeName}'`);
+                const fieldIdx = typeDef.fields.indexOf(expr.field);
+                if (fieldIdx < 0) throw new Error(`Type '${inst.typeName}' has no field '${expr.field}'`);
+                const fieldOff = fieldIdx * 4;
+                const stride   = typeDef.fields.length * 4;
+                if (!inst.isArray) {
+                    // Scalar instance: direct absolute read
+                    lines.push(`        move.l  _tinst_${expr.instance}+${fieldOff},d0`);
+                } else if (expr.index && expr.index.type === 'int') {
+                    // Constant index: offset known at compile time
+                    lines.push(`        move.l  _tinst_${expr.instance}+${expr.index.value * stride + fieldOff},d0`);
+                } else {
+                    // Variable index: compute at runtime
+                    this._genExpr(expr.index, lines);
+                    lines.push(`        muls.w  #${stride},d0`);
+                    lines.push(`        lea     _tinst_${expr.instance},a0`);
+                    lines.push(`        add.l   d0,a0`);
+                    lines.push(`        move.l  ${fieldOff}(a0),d0`);
+                }
+                break;
+            }
 
             case 'unary':
                 if (expr.op === '-') {

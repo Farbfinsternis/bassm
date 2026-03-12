@@ -49,8 +49,10 @@ export const TT = Object.freeze({
     LTE     : 'LTE',
     GTE     : 'GTE',
     NEQ     : 'NEQ',
-    NEWLINE : 'NEWLINE',
-    EOF     : 'EOF',
+    NEWLINE   : 'NEWLINE',
+    EOF       : 'EOF',
+    DOT       : 'DOT',
+    BACKSLASH : 'BACKSLASH',
 });
 
 // ── Lexer class ──────────────────────────────────────────────────────────────
@@ -232,6 +234,8 @@ export class Lexer {
                 if (this._cur() === '=') { this._pos++; this._emit(TT.GTE, '>='); }
                 else this._emit(TT.GT, '>');
                 break;
+            case '.': this._emit(TT.DOT,       '.'); break;
+            case '\\': this._emit(TT.BACKSLASH, '\\'); break;
             default:
                 // Unknown character — skip with a console warning
                 console.warn(`[Lexer] Unexpected character '${c}' on line ${this._line}`);

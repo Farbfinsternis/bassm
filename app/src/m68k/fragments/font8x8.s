@@ -27,14 +27,14 @@
 ;     lea     (a1,d0.w),a1   ; a1 → glyph row 0
 ;
 ; PLACEMENT
-;   SECTION font_data,DATA_C — chip RAM so the Blitter can use it as a
-;   source channel.  The linker places DATA_C in Chip RAM automatically.
+;   SECTION font_data,DATA — fast/any RAM. _Text (M6) uses CPU-based rendering
+;   so the font does not need chip RAM. Kept out of DATA_C to preserve chip RAM
+;   for bitplanes and copper lists.
 ;
-; USAGE (text.s, once implemented — M6)
-;   _Text will iterate each character in the string, look up its glyph here,
-;   and blit it into the back buffer using Blitter channels A (mask row) and
-;   D (destination), minterm $CA = transparent OR:
-;     D = (A AND C) OR ((NOT A) AND D)
+; USAGE (text.s, M6)
+;   _Text iterates each character, loads 8 glyph bytes from _font8x8, and
+;   writes them per-plane into the back buffer using the shift trick (lsl/lsr).
+;   CPU-only — no Blitter involved.
 ;
 ; XDEF
 ;   _font8x8   — base address of font table
@@ -44,7 +44,7 @@
 ; ============================================================================
 
 
-        SECTION font_data,DATA_C
+        SECTION font_data,DATA
 
         XDEF    _font8x8
 

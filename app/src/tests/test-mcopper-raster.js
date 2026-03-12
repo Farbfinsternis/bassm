@@ -88,54 +88,64 @@ test('No CopperColor: raster labels NOT emitted in copper list', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  CodeGen — compile-time path (all args are integer literals)
+//  CodeGen — compile-time path (PERF-C: all args are integer literals → inline)
+//
+//  PERF-C eliminates JSR overhead by writing the OCS word directly into the
+//  back copper list at the pre-computed absolute offset (y*8+6).
+//  Pattern: tst.b _front_is_a + bne.s LblA + move.w #$RGB,_gfx_raster_b+off
+//           + bra.s LblEnd + LblA: move.w #$RGB,_gfx_raster_a+off + LblEnd:
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('CopperColor compile-time: emits moveq #y,d0', () => {
+test('CopperColor compile-time: emits tst.b _front_is_a (PERF-C inline dispatch)', () => {
     const asm = compileWith('CopperColor 10,15,8,0');
-    assertContains(asm, 'moveq   #10,d0');
+    assertContains(asm, 'tst.b   _front_is_a');
 });
 
-test('CopperColor compile-time: emits move.w #$0RGB,d1 (r=15=$F, g=8=$8, b=0=$0 → $0F80)', () => {
+test('CopperColor compile-time: writes #$RGB to _gfx_raster_b at y*8+6 (r=$F g=$8 b=$0 → $0F80, y=10 → offset 86)', () => {
     const asm = compileWith('CopperColor 10,15,8,0');
-    assertContains(asm, 'move.w  #$0F80,d1');
+    assertContains(asm, 'move.w  #$0F80,_gfx_raster_b+86');
+    assertContains(asm, 'move.w  #$0F80,_gfx_raster_a+86');
 });
 
-test('CopperColor compile-time: emits jsr _SetRasterColor', () => {
+test('CopperColor compile-time: no JSR to _SetRasterColor (PERF-C fully inline)', () => {
     const asm = compileWith('CopperColor 10,15,8,0');
-    assertContains(asm, 'jsr     _SetRasterColor');
+    assert(!asm.includes('jsr     _SetRasterColor'), 'PERF-C inlines instead of JSR');
 });
 
 test('CopperColor compile-time: r/g/b nibble clamp (values > 15 masked to low nibble)', () => {
-    // r=31 → &0xF = 15 = $F, g=16 → &0xF = 0 = $0, b=255 → &0xF = 15 = $F → $0F0F
+    // r=31 → &0xF = 15 = $F, g=16 → &0xF = 0 = $0, b=255 → &0xF = 15 = $F → $0F0F, y=0 → offset=6
     const asm = compileWith('CopperColor 0,31,16,255');
-    assertContains(asm, 'move.w  #$0F0F,d1');
+    assertContains(asm, 'move.w  #$0F0F,_gfx_raster_b+6');
 });
 
-test('CopperColor compile-time: y=0, all-black ($0000)', () => {
+test('CopperColor compile-time: y=0, all-black ($0000), offset=6', () => {
     const asm = compileWith('CopperColor 0,0,0,0');
-    assertContains(asm, 'moveq   #0,d0');
-    assertContains(asm, 'move.w  #$0000,d1');
-    assertContains(asm, 'jsr     _SetRasterColor');
+    assertContains(asm, 'tst.b   _front_is_a');
+    assertContains(asm, 'move.w  #$0000,_gfx_raster_b+6');
+    assertContains(asm, 'move.w  #$0000,_gfx_raster_a+6');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  CodeGen — runtime path (any arg is a variable or expression)
+//  CodeGen — runtime path (PERF-C: any arg is a variable → inline OCS build)
+//
+//  Builds the $0RGB word in d2 from r/g/b, computes y*8 in d0, then:
+//  tst.b _front_is_a + bne/lea + move.w d2,6(a0,d0.l)  — no JSR.
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('CopperColor runtime: emits jsr _SetRasterColorRGB when y is variable', () => {
+test('CopperColor runtime: emits move.w d2,6(a0,d0.l) when y is variable (PERF-C)', () => {
     const asm = compileWith('CopperColor y,15,8,0');
-    assertContains(asm, 'jsr     _SetRasterColorRGB');
+    assertContains(asm, 'move.w  d2,6(a0,d0.l)');
 });
 
-test('CopperColor runtime: emits jsr _SetRasterColorRGB when r is variable', () => {
+test('CopperColor runtime: emits move.w d2,6(a0,d0.l) when r is variable (PERF-C)', () => {
     const asm = compileWith('CopperColor 0,r,8,0');
-    assertContains(asm, 'jsr     _SetRasterColorRGB');
+    assertContains(asm, 'move.w  d2,6(a0,d0.l)');
 });
 
-test('CopperColor runtime: emits movem.l (sp)+,d1-d3', () => {
+test('CopperColor runtime: emits tst.b _front_is_a for back-buffer dispatch', () => {
     const asm = compileWith('CopperColor y,r,g,b');
-    assertContains(asm, 'movem.l (sp)+,d1-d3');
+    assertContains(asm, 'tst.b   _front_is_a');
+    assertContains(asm, 'move.w  d2,6(a0,d0.l)');
 });
 
 test('CopperColor runtime: variable y appears in BSS', () => {
@@ -164,11 +174,12 @@ test('Integration: CopperColor in For loop compiles without error', () => {
     ].join('\n');
     const asm = compileWith(src);
     assertContains(asm, '_gfx_raster_a:');
-    assertContains(asm, 'jsr     _SetRasterColorRGB');
+    assertContains(asm, 'move.w  d2,6(a0,d0.l)');
     assertContains(asm, 'jsr     _ScreenFlip');
 });
 
-test('Integration: CopperColor in While loop with compile-time colors', () => {
+test('Integration: CopperColor in While loop with compile-time colors (PERF-C offsets)', () => {
+    // y=50 → offset 50*8+6=406, rgb=$0F00; y=100 → 806, rgb=$00F0; y=150 → 1206, rgb=$000F
     const src = [
         'While 1',
         '  CopperColor 50, 15, 0, 0',
@@ -178,9 +189,9 @@ test('Integration: CopperColor in While loop with compile-time colors', () => {
         'Wend',
     ].join('\n');
     const asm = compileWith(src);
-    assertContains(asm, 'moveq   #50,d0');
-    assertContains(asm, 'moveq   #100,d0');
-    assertContains(asm, 'moveq   #150,d0');
+    assertContains(asm, 'move.w  #$0F00,_gfx_raster_b+406');
+    assertContains(asm, 'move.w  #$00F0,_gfx_raster_b+806');
+    assertContains(asm, 'move.w  #$000F,_gfx_raster_b+1206');
     assertContains(asm, 'jsr     _ScreenFlip');
 });
 
@@ -197,7 +208,7 @@ test('Regression: CopperColor with "line" as y-variable (command name conflict)'
     ].join('\n');
     const asm = compileWith(src);
     assertContains(asm, '_var_line:');
-    assertContains(asm, 'jsr     _SetRasterColorRGB');
+    assertContains(asm, 'move.w  d2,6(a0,d0.l)');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

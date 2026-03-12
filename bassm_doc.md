@@ -1,15 +1,13 @@
-# BASSM Language Reference
+# BASSM Sprachreferenz
 
-**BASSM** — *Blitz2D Amiga System Subset for m68k*
+**BASSM** — *Blitz2D Amiga System Subset*
 
-BASSM ist eine Compilersprache, die syntaktisch an Blitz2D (PC) angelehnt ist,
-aber ausschließlich für bare-metal Amiga OCS/ECS-Hardware entwickelt wurde.
-Der Compiler übersetzt BASSM-Quellcode in m68k-Assembler, der mit
-`vasmm68k_mot` + `vlink` zu einer Amiga-Executable kompiliert wird.
+BASSM ist eine einfache Programmiersprache für den Commodore Amiga, die sich an
+Blitz2D anlehnt. Du schreibst Basic-ähnlichen Code — BASSM übersetzt ihn in ein
+lauffähiges Amiga-Programm.
 
-> **Wichtig:** BASSM ist kein vollständiges Blitz2D. Viele Blitz2D-Befehle
-> fehlen oder verhalten sich anders. Diese Dokumentation beschreibt nur, was
-> tatsächlich implementiert ist.
+> **Wichtig:** BASSM ist kein vollständiges Blitz2D. Nur die hier dokumentierten
+> Befehle sind implementiert.
 
 ---
 
@@ -26,19 +24,20 @@ Der Compiler übersetzt BASSM-Quellcode in m68k-Assembler, der mit
 9. [Palette & Farben](#9-palette--farben)
 10. [Eingabe](#10-eingabe)
 11. [Text & Debug-Ausgabe](#11-text--debug-ausgabe)
-12. [Amiga-spezifisches Verhalten](#12-amiga-spezifisches-verhalten)
-13. [Bekannte Einschränkungen](#13-bekannte-einschränkungen)
-14. [Vollständiges Beispiel](#14-vollständiges-beispiel)
+12. [Sound](#12-sound)
+13. [Amiga-spezifisches Verhalten](#13-amiga-spezifisches-verhalten)
+14. [Bekannte Einschränkungen](#14-bekannte-einschränkungen)
+15. [Vollständiges Beispiel](#15-vollständiges-beispiel)
 
 ---
 
 ## 1. Programmstruktur
 
-Jedes BASSM-Programm muss mit `Graphics` beginnen. Danach folgen
-Initialisierungen und die Hauptschleife.
+Jedes BASSM-Programm beginnt mit `Graphics`. Danach folgen Initialisierungen
+und die Hauptschleife.
 
 ```blitz
-Graphics 320,256,4      ; Muss die erste Anweisung sein
+Graphics 320,256,4      ; Bildschirm einrichten — muss die erste Zeile sein
 
 ; Initialisierungen
 x = 10
@@ -55,13 +54,13 @@ Wend
 ### Kommentare
 
 ```blitz
-; Semikolon-Kommentar (Blitz2D-Stil)
+; Semikolon-Kommentar
 // C-Stil Kommentar
 ```
 
 ### Statement-Separator `:`
 
-Mehrere Anweisungen können durch `:` auf einer Zeile stehen:
+Mehrere Anweisungen können mit `:` auf einer Zeile stehen:
 
 ```blitz
 x = 0 : y = 0 : dx = 2 : dy = 3
@@ -70,25 +69,24 @@ If x < 0 : x = 0 : dx = -dx : EndIf
 
 ### Groß-/Kleinschreibung
 
-Keywords und Befehlsnamen sind **case-insensitiv**. Variablennamen werden intern
-immer kleingeschrieben (`MyVar` und `myvar` sind dieselbe Variable).
+Keywords und Befehlsnamen sind **nicht case-sensitiv** (`if` = `If` = `IF`).
+Variablennamen werden intern immer kleingeschrieben — `MyVar` und `myvar`
+sind dieselbe Variable.
 
-Variablennamen **dürfen** mit Befehlsnamen übereinstimmen — `line`, `box`,
-`plot`, `color` usw. sind gültige Variablennamen. Der Parser unterscheidet
-anhand des Kontexts: Befehlsname am Zeilenanfang ohne `=` → Befehl;
-sonst → Variable.
+Variablennamen dürfen mit Befehlsnamen übereinstimmen — `line`, `box`, `color`
+usw. sind gültige Variablennamen.
 
 ---
 
 ## 2. Datentypen & Variablen
 
-BASSM kennt nur einen Datentyp: **32-Bit vorzeichenbehafteter Integer**.
-Es gibt keine Floats, Strings als Variablen oder Zeiger.
+BASSM kennt nur einen Datentyp: **ganze Zahlen** (32-Bit, mit Vorzeichen).
+Es gibt keine Kommazahlen, keine Strings als Variablen.
 
 ### Deklaration & Zuweisung
 
-Variablen müssen nicht deklariert werden. Eine erste Zuweisung erzeugt die
-Variable im BSS-Bereich des Programms.
+Variablen müssen nicht vorher deklariert werden. Die erste Zuweisung legt
+die Variable an.
 
 ```blitz
 x = 42
@@ -105,22 +103,18 @@ z = -100
 | Binär | `%11111111` | 255 |
 | Negativ | `-1` | -1 |
 
-> **Intern:** Alle Variablen werden als `ds.l 1` (32-Bit Long) im BSS-Segment
-> abgelegt. Kurze Literale (−128 bis 127) nutzen `moveq` statt `move.l`
-> (PERF-Optimierung).
-
 ---
 
 ## 3. Arrays
 
-Arrays werden mit `Dim` deklariert. Der Index-Bereich ist immer **0 bis n**
-(d.h. n+1 Elemente).
+Arrays werden mit `Dim` deklariert. Der Index läuft immer von **0 bis n**,
+also gibt es n+1 Elemente.
 
 ### Deklaration
 
 ```blitz
-Dim arr(7)      ; 8 Elemente: arr(0) .. arr(7)
-Dim coords(31)  ; 32 Elemente: coords(0) .. coords(31)
+Dim arr(7)      ; 8 Elemente: arr(0) bis arr(7)
+Dim punkte(31)  ; 32 Elemente: punkte(0) bis punkte(31)
 ```
 
 ### Lesen & Schreiben
@@ -129,22 +123,14 @@ Dim coords(31)  ; 32 Elemente: coords(0) .. coords(31)
 arr(0) = 100
 arr(i) = arr(i) + 1
 x = arr(3)
-```
-
-Der Index kann ein beliebiger Ausdruck sein:
-
-```blitz
-arr(i * 2) = val     ; zusammengesetzter Index
-x = arr(base + i)
+x = arr(i * 2)   ; Index kann ein Ausdruck sein
 ```
 
 ### Eigenschaften
 
-- Arrays sind global (kein lokaler Scope)
-- Elementgröße: 32-Bit Long (4 Byte pro Element)
-- Kein Bounds-Checking zur Laufzeit
-- Arrays und skalare Variablen haben getrennte Namensräume
-  (`arr` als Array und `arr` als skalare Variable können nicht gleichzeitig existieren)
+- Arrays sind global (kein lokaler Gültigkeitsbereich)
+- Kein Bounds-Checking — ein Index außerhalb des Bereichs überschreibt anderen Speicher
+- Arrays und gleichnamige skalare Variablen können nicht gleichzeitig existieren
 
 ---
 
@@ -156,8 +142,11 @@ x = arr(base + i)
 |----------|-----------|---------|
 | `+` | Addition | |
 | `-` | Subtraktion / unäres Minus | |
-| `*` | Multiplikation | 16-Bit-Operanden (`muls.w`); Überlauf bei > 32767 |
-| `/` | Division (ganzzahlig) | 32-Bit ÷ 16-Bit (`divs.w`); Rest wird verworfen |
+| `*` | Multiplikation | Werte sollten −32768 bis 32767 sein |
+| `/` | Division (ganzzahlig, Rest wird verworfen) | |
+
+> **Multiplikation:** Bei Werten über 32767 kann es zu falschen Ergebnissen kommen.
+> Für Bildschirmkoordinaten ist das normalerweise kein Problem.
 
 ### Vergleiche
 
@@ -170,7 +159,7 @@ x = arr(base + i)
 | `<=` | kleiner oder gleich |
 | `>=` | größer oder gleich |
 
-Vergleiche liefern einen Blitz2D-Boolean: **−1** (wahr) oder **0** (falsch).
+Vergleiche liefern **−1** (wahr) oder **0** (falsch) — wie in Blitz2D.
 
 ### Operatorrangfolge
 
@@ -181,24 +170,16 @@ Von höchster zu niedrigster Priorität:
 3. `+` `-`
 4. `=` `<>` `<` `>` `<=` `>=`
 
-Klammern überschreiben die Rangfolge:
-
 ```blitz
-y = (x + 2) * 3
+y = (x + 2) * 3       ; Klammern überschreiben die Rangfolge
 If (a < b) = -1 Then Cls
 ```
 
-### Compiler-Optimierungen (PERF-A & PERF-B)
+### Kein Modulo-Operator
 
-Der Compiler optimiert automatisch:
-
-- **PERF-A:** `If`/`While`-Bedingungen mit direkten Vergleichen erzeugen
-  `cmp + Bcc` statt des langsamen `Scc + ext + tst + beq`-Musters (−4 Instruktionen
-  pro Bedingung).
-
-- **PERF-B:** Wenn der rechte Operand von `+`, `-` oder einem Vergleich ein
-  Literal oder eine einzelne Variable ist, entfällt Push/Pop komplett.
-  Literale 1–8 nutzen `addq`/`subq` (kompakteste m68k-Instruktion).
+```blitz
+rest = a - (a / b) * b    ; Workaround für Modulo (a Mod b)
+```
 
 ---
 
@@ -232,11 +213,11 @@ EndIf
 
 **If / ElseIf / Else:**
 ```blitz
-If score > 1000
+If punkte > 1000
   Color 5
-ElseIf score > 500
+ElseIf punkte > 500
   Color 3
-ElseIf score > 0
+ElseIf punkte > 0
   Color 1
 Else
   Color 0
@@ -253,14 +234,14 @@ While <bedingung>
 Wend
 ```
 
-**Endlosschleife** (kein Test-Overhead, direkt `bra.w` zurück):
+**Endlosschleife:**
 ```blitz
 While 1
   ; Hauptschleife
 Wend
 ```
 
-Beliebige Bedingung:
+**Mit Bedingung:**
 ```blitz
 i = 0
 While i < 10
@@ -273,32 +254,30 @@ Wend
 ### For
 
 ```blitz
-For <var> = <start> To <end> [Step <schritt>]
+For <variable> = <start> To <ende> [Step <schritt>]
   ; body
-Next [<var>]
+Next [<variable>]
 ```
 
-Beispiele:
 ```blitz
-; Aufwärts, impliziter Step 1
+; Aufwärts zählen
 For i = 0 To 7
   arr(i) = 0
 Next i
 
-; Expliziter Step
+; Mit Schrittweite
 For x = 0 To 319 Step 2
-  Plot x,100
+  Plot x, 100
 Next x
 
-; Abwärts
+; Rückwärts
 For i = 7 To 0 Step -1
   arr(i) = i * 2
 Next i
 ```
 
-- `Step` kann eine Variable oder ein Ausdruck sein.
-- Bei negativem `Step` prüft der Compiler das Abbruchkriterium mit `blt.w`.
 - `Next` kann ohne Variablenname geschrieben werden.
+- `Step` kann eine Variable oder ein Ausdruck sein.
 
 ---
 
@@ -315,9 +294,8 @@ Select <ausdruck>
 EndSelect
 ```
 
-- Mehrere Werte in einem `Case` durch Komma getrennt.
-- `Default` ist optional; wird ausgeführt wenn kein Case passt.
-- Der Selektor-Ausdruck wird einmal ausgewertet.
+- Mehrere Werte pro `Case` durch Komma trennen.
+- `Default` ist optional.
 
 ---
 
@@ -325,50 +303,51 @@ EndSelect
 
 ### Graphics
 ```blitz
-Graphics width, height, depth
+Graphics breite, höhe, tiefe
 ```
-**Muss die erste Anweisung jedes Programms sein.**
+**Muss die allererste Anweisung sein.**
 
-| Parameter | Typ | Einschränkung |
-|-----------|-----|---------------|
-| `width` | Integer-Literal | Nur `320` (PAL Lores OCS) |
-| `height` | Integer-Literal | Üblicherweise `256` (PAL) oder `200` |
-| `depth` | Integer-Literal | 1–6 Bitplanes → 2–64 Farben |
+| Parameter | Beschreibung |
+|-----------|--------------|
+| `breite` | Nur `320` (PAL Lores) |
+| `höhe` | z.B. `256` (PAL) oder `200` |
+| `tiefe` | 1–6 Bitplanes → 2–64 Farben |
 
 ```blitz
-Graphics 320,256,4   ; 320×256, 4 Bitplanes = 16 Farben
-Graphics 320,200,5   ; 320×200, 5 Bitplanes = 32 Farben
+Graphics 320,256,4   ; 320×256 Pixel, 16 Farben
+Graphics 320,200,5   ; 320×200 Pixel, 32 Farben
 ```
 
 ### ScreenFlip
 ```blitz
 ScreenFlip
 ```
-Tauscht Front- und Back-Buffer (Double Buffering). Warten auf den nächsten
-VBlank ist implizit enthalten. **Alle Zeichenbefehle arbeiten immer auf dem
-Back-Buffer.** Ohne `ScreenFlip` ist kein Bild sichtbar (außer nach `Cls`).
+Zeigt das gezeichnete Bild auf dem Bildschirm. BASSM verwendet immer
+**Double Buffering**: du zeichnest unsichtbar im Hintergrund, `ScreenFlip`
+tauscht Vorder- und Hinterbild. Wartet automatisch auf den nächsten
+Bildschirm-Refresh (50 mal pro Sekunde).
 
 ### WaitVbl
 ```blitz
 WaitVbl
 ```
-Wartet auf den vertikalen Rücklauf (VBlank, ca. 50 Hz bei PAL).
+Wartet auf den nächsten Bildschirm-Refresh (ca. 50 mal pro Sekunde, PAL).
 
 ### Delay
 ```blitz
 Delay n
 ```
-Wartet `n` VBlanks. `n` kann eine Variable oder ein Ausdruck sein.
+Wartet `n` Bildschirm-Refreshes lang.
 ```blitz
 Delay 50     ; ca. 1 Sekunde warten
-Delay speed  ; variable Pause
+Delay tempo  ; variable Pause
 ```
 
 ### End
 ```blitz
 End
 ```
-Beendet das Programm und kehrt zum AmigaOS zurück.
+Beendet das Programm und kehrt zum Amiga-Betriebssystem zurück.
 
 ---
 
@@ -377,20 +356,19 @@ Beendet das Programm und kehrt zum AmigaOS zurück.
 ### Koordinatensystem
 
 - Ursprung `(0,0)` ist **oben links**.
-- X wächst nach rechts (0 bis Breite−1).
-- Y wächst nach unten (0 bis Höhe−1).
+- X wächst nach rechts.
+- Y wächst nach unten.
 
 ### Double Buffering
 
-BASSM verwendet immer **Double Buffering**: es gibt einen Front-Buffer
-(sichtbar) und einen Back-Buffer (zum Zeichnen). `ScreenFlip` tauscht die
-beiden. Typische Hauptschleife:
+BASSM zeichnet immer im unsichtbaren Hinterbild. Erst `ScreenFlip` macht
+das Gezeichnete sichtbar. Typische Hauptschleife:
 
 ```blitz
 While 1
-  Cls                  ; Back-Buffer löschen
-  ; ... zeichnen ...   ; alles geht in den Back-Buffer
-  ScreenFlip           ; Back-Buffer zeigen, tauschen
+  Cls                  ; Hinterbild löschen
+  ; ... zeichnen ...
+  ScreenFlip           ; Hinterbild zeigen
 Wend
 ```
 
@@ -398,15 +376,15 @@ Wend
 ```blitz
 Cls
 ```
-Löscht den Back-Buffer mit der durch `ClsColor` gesetzten Farbe (Standard: 0 = schwarz).
-Verwendet den **Amiga-Blitter** (sehr schnell, ca. 1–2 Rasterlines für 320×256).
+Löscht den gesamten Hintergrund mit der durch `ClsColor` gesetzten Farbe
+(Standard: 0 = schwarz). Sehr schnell.
 
 ---
 
 ## 8. Grafik — Zeichenbefehle
 
-Alle Zeichenbefehle verwenden die aktuell mit `Color` gesetzte Farbe
-und zeichnen in den Back-Buffer.
+Alle Zeichenbefehle verwenden die mit `Color` gesetzte Farbe und zeichnen
+ins Hinterbild.
 
 ### Plot
 ```blitz
@@ -418,162 +396,128 @@ Setzt einen einzelnen Pixel.
 ```blitz
 Line x1, y1, x2, y2
 ```
-Zeichnet eine Linie von `(x1,y1)` nach `(x2,y2)`. Implementierung: CPU-Bresenham.
+Zeichnet eine Linie von `(x1,y1)` nach `(x2,y2)`.
 
 ### Rect
 ```blitz
-Rect x, y, w, h
+Rect x, y, breite, höhe
 ```
-Zeichnet einen **Rechteck-Umriss** (4 Seiten, nicht gefüllt).
-- `(x,y)` = obere linke Ecke
-- `w` = Breite, `h` = Höhe
+Zeichnet einen **Rechteck-Umriss** (nicht gefüllt).
+`(x,y)` ist die obere linke Ecke.
 
 ### Box
 ```blitz
-Box x, y, w, h
+Box x, y, breite, höhe
 ```
-Zeichnet ein **gefülltes Rechteck**.
-- Implementierung: **Amiga Blitter** (A-Kanal als Kantenmaske, C-Kanal für Read-Modify-Write)
-- `(x,y)` = obere linke Ecke
-- `w` = Breite, `h` = Höhe
-
-> **Amiga-spezifisch:** `Box` nutzt den Blitter mit korrekten Minterms
-> für randgenaues Füllen ohne Pixel-Artefakte an den Wortgrenzen.
+Zeichnet ein **gefülltes Rechteck**. `(x,y)` ist die obere linke Ecke.
+Verwendet den Hardware-Zeichnungsbeschleuniger des Amiga — sehr schnell.
 
 ---
 
 ## 9. Palette & Farben
 
-Der Amiga OCS unterstützt eine Palette von **32 Farben** (Indizes 0–31).
-Jede Farbe ist ein OCS-Farbwort: `$0RGB` mit je 4 Bit pro Kanal (0–15).
+Der Amiga hat eine Palette mit **32 Farben** (Indizes 0–31). Jede Farbe
+hat einen Rot-, Grün- und Blauanteil von je **0 bis 15** (4-Bit, nicht 0–255
+wie am PC).
 
 ### Color
 ```blitz
 Color index
 ```
-Setzt die aktuelle Zeichenfarbe auf Palette-Index `index` (0–31).
-`index` kann eine Variable oder ein Ausdruck sein.
+Setzt die aktuelle Zeichenfarbe (Palette-Index 0–31).
 
 ```blitz
 Color 1          ; feste Farbe
-Color bcol(i)    ; Array-Element als Farbe
 Color i + 1      ; Ausdruck als Farbe
+Color farbe(i)   ; Array-Element als Farbe
 ```
 
 ### PaletteColor
 ```blitz
 PaletteColor n, r, g, b
 ```
-Setzt Palette-Eintrag `n` auf den RGB-Wert `(r, g, b)`.
-Jeder Kanal: 0–15 (4-Bit OCS-Auflösung).
-
-Alle vier Argumente können **Variablen oder Ausdrücke** sein (Runtime):
+Ändert Palette-Eintrag `n` zur Farbe `(r, g, b)`.
+Jeder Kanal: **0–15** (nicht 0–255!).
 
 ```blitz
-PaletteColor 1, 15, 0, 0      ; Compile-Time: reines Rot (schneller Pfad)
-PaletteColor 2, r, g, b       ; Runtime: Variablen als RGB
-PaletteColor 1, t, 15-t, 0    ; Runtime: Palette-Animation
+PaletteColor 1, 15, 0, 0      ; Rot
+PaletteColor 2, 0, 15, 0      ; Grün
+PaletteColor 3, 0, 0, 15      ; Blau
+PaletteColor 4, 15, 8, 0      ; Orange
+PaletteColor 1, r, g, b       ; aus Variablen
+PaletteColor 1, t, 15-t, 0    ; Palette-Animation
 ```
-
-**Compile-Time-Optimierung:** Wenn alle vier Argumente Literale sind, berechnet
-der Compiler das OCS-Farbwort (`$0RGB`) zur Compile-Zeit und ruft
-`_SetPaletteColor` direkt auf (kein Subroutine-Overhead für RGB-Aufbau).
 
 ### ClsColor
 ```blitz
 ClsColor n
 ```
-Setzt die Hintergrundfarbe für `Cls`. `n` ist ein **Bitfeld**, kein
-Palette-Index direkt: Bit `k` in `n` entspricht dem Bit-k-Plane-Füllwert.
+Setzt die Hintergrundfarbe für `Cls`. Für schwarzen Hintergrund: `ClsColor 0`
+(das ist auch der Standard).
 
-Typische Verwendung:
 ```blitz
-ClsColor 0    ; Schwarz (alle Planes mit 0 füllen)
-ClsColor 1    ; Color-Bit 0 gesetzt = Palette-Farbe 1 (auf 1-Bitplane-Systemen)
+ClsColor 0    ; Hintergrund schwarz (Standard)
 ```
 
-> **Hinweis:** `ClsColor` steuert den Blitter-Minterm für `Cls`. Für den
-> einfachen Fall (Hintergrundfarbe = 0 = schwarz) ist `ClsColor 0` oder
-> weglassen korrekt.
-
-### CopperColor *(Amiga-spezifisch — M-COPPER)*
+### CopperColor
 ```blitz
-CopperColor y, r, g, b
+CopperColor zeile, r, g, b
 ```
-Setzt die Hintergrundfarbe (`COLOR00`) an Rasterzeile `y` im Copper-Programm.
+Setzt die Hintergrundfarbe an einer bestimmten Bildschirmzeile.
+Damit lassen sich **Farbverläufe** über den Bildschirm erzeugen — ein
+klassischer Amiga-Effekt (Rasterbalken).
 
 | Parameter | Beschreibung |
 |-----------|--------------|
-| `y` | Bildschirm-Rasterzeile (0 = oben, max `GFXRASTER-1`) |
-| `r` | Rot-Komponente (0..15) |
-| `g` | Grün-Komponente (0..15) |
-| `b` | Blau-Komponente (0..15) |
+| `zeile` | Bildschirmzeile (0 = oben, maximal 211) |
+| `r` | Rot 0–15 |
+| `g` | Grün 0–15 |
+| `b` | Blau 0–15 |
 
-Der Copper ist ein eigenständiger Koprozessor im OCS-Chipsatz. Er läuft
-**parallel zur CPU** und erzeugt **null CPU-Overhead** während der Rasteranzeige.
-`CopperColor` patcht den Back-Buffer-Copper; die Änderung wird beim nächsten
-`ScreenFlip` sichtbar.
-
-**Maximale Rasterzeilen (`GFXRASTER`):** `min(H, 212)` für PAL-Lores
-(Zeilen 213..255 liegen im vertikalen Austastbereich und können nicht
-mit einem Standard-WAIT adressiert werden).
+Der Befehl verändert nur die Hintergrundfarbe (`Color 0`) — nicht die
+Farben von gezeichneten Objekten. Er kostet **keine Rechenzeit** während
+der Bildschirmausgabe.
 
 ```blitz
-; Statisch (Compile-Time-Pfad — kein Overhead):
-CopperColor 50, 15, 0, 0     ; Zeile 50 = reines Rot
+; Statisch: Zeile 50 in Rot
+CopperColor 50, 15, 0, 0
 
-; Dynamisch (Runtime-Pfad — Variablen/Ausdrücke):
-CopperColor line, rc, gc, bc
-
-; Klassischer Rasterbalken-Gradient (effizient: nur addq/subq, kein divs.w):
-rc = 0 : bc = 15
-For line = 0 To 211
-    CopperColor line, rc, 0, bc
-    rc = rc + 1 : If rc > 15 : rc = 0 : EndIf
-    bc = bc - 1 : If bc < 0  : bc = 15 : EndIf
-Next line
+; Farbverlauf über den ganzen Bildschirm
+r = 0 : b = 15
+For zeile = 0 To 211
+  CopperColor zeile, r, 0, b
+  r = r + 1 : If r > 15 : r = 0 : EndIf
+  b = b - 1 : If b < 0  : b = 15 : EndIf
+Next zeile
 ScreenFlip
 ```
 
-**Compile-Time-Optimierung:** Wenn alle vier Argumente Literale sind,
-berechnet der Compiler das OCS-Farbwort zur Compile-Zeit und ruft
-`_SetRasterColor` (2 Argumente) direkt auf. Andernfalls werden R, G, B
-via Stack übergeben und `_SetRasterColorRGB` aufgerufen.
-
-**Performance-Hinweis:** `CopperColor` wird typisch 200× pro Frame aufgerufen
-(eine Iteration pro Rasterzeile). Auf dem 68000 kostet `divs.w` 158 Zyklen —
-bei 141.800 Zyklen/Frame (PAL 50 Hz) sind Divisionen in der Raster-Schleife
-zu vermeiden. Farbverläufe mit Zähl-Variablen und `addq`/`subq` statt
-`(line * k) / n` halten den Overhead unter 10% des Frame-Budgets.
-
-> **Hinweis:** `CopperColor` ist ein rein BASSM/Amiga-spezifischer Befehl.
-> Er existiert in Blitz2D für Windows nicht. Er erzeugt automatisch die
-> nötigen Raster-Einträge in beiden Copper-Listen — das Programm muss
-> die Copper-Liste nicht manuell verwalten.
+> **Hinweis:** `CopperColor` existiert in Blitz2D für Windows nicht —
+> es ist ein reiner Amiga-Effekt.
 
 ### Standard-Palette
 
-Beim Programmstart wird die Standard-Palette aus dem Chip-RAM geladen:
+Beim Programmstart stehen diese Farben zur Verfügung:
 
-| Index | OCS-Wort | Farbe |
-|-------|----------|-------|
-| 0 | `$0000` | Schwarz (Hintergrund / Cls-Standard) |
-| 1 | `$0FFF` | Weiß |
-| 2 | `$0F00` | Rot |
-| 3 | `$00F0` | Grün |
-| 4 | `$000F` | Blau |
-| 5 | `$0FF0` | Gelb |
-| 6 | `$0F0F` | Magenta |
-| 7 | `$00FF` | Cyan |
-| 8 | `$0888` | Mittelgrau |
-| 9 | `$0444` | Dunkelgrau |
-| 10 | `$0CCC` | Hellgrau |
-| 11 | `$0F80` | Orange |
-| 12 | `$0840` | Braun |
-| 13 | `$08F8` | Hellgrün |
-| 14 | `$048F` | Himmelblau |
-| 15 | `$0F88` | Rosa |
-| 16–31 | `$0000` | Reserve (schwarz) |
+| Index | Farbe |
+|-------|-------|
+| 0 | Schwarz |
+| 1 | Weiß |
+| 2 | Rot |
+| 3 | Grün |
+| 4 | Blau |
+| 5 | Gelb |
+| 6 | Magenta |
+| 7 | Cyan |
+| 8 | Mittelgrau |
+| 9 | Dunkelgrau |
+| 10 | Hellgrau |
+| 11 | Orange |
+| 12 | Braun |
+| 13 | Hellgrün |
+| 14 | Himmelblau |
+| 15 | Rosa |
+| 16–31 | Schwarz (Reserve) |
 
 ---
 
@@ -583,144 +527,234 @@ Beim Programmstart wird die Standard-Palette aus dem Chip-RAM geladen:
 ```blitz
 WaitKey
 ```
-Blockiert bis eine Taste gedrückt **und losgelassen** wird.
-Implementierung: CIA-A Keyboard-Interrupt (Level-2), interrupt-driven.
-
-> **vAmiga-Hinweis:** `WaitKey` funktioniert nur, wenn `INTENA.PORTS` aktiv ist.
-> Dies wird vom Startup-Code korrekt initialisiert.
+Hält das Programm an, bis eine Taste gedrückt und losgelassen wird.
 
 ---
 
 ## 11. Text & Debug-Ausgabe
 
-### Text *(Stub — noch nicht funktional)*
+### Text
 ```blitz
 Text x, y, "string"
 ```
-Geplant: Rendert einen String mit dem eingebetteten 8×8-Bitmap-Font an
-Pixelposition `(x,y)`. **Aktuell als Stub implementiert (kein sichtbarer Output).**
+Schreibt Text auf den Bildschirm (ins Hinterbild) mit der aktuellen
+`Color`-Farbe. Der Text erscheint erst nach `ScreenFlip`.
 
-### NPrint *(Stub — kein sichtbarer Output)*
+| Parameter | Beschreibung |
+|-----------|--------------|
+| `x` | X-Position in Pixel |
+| `y` | Y-Position in Pixel |
+| `"string"` | Der anzuzeigende Text (muss ein festes String-Literal sein) |
+
+Der eingebaute Font ist 8×8 Pixel groß (monospaced).
+
+```blitz
+Color 15
+Text 10, 4, "HALLO AMIGA"
+
+Color 8
+Text 10, 230, "DRUECKE EINE TASTE"
+
+; Mehrere Zeilen — einfach mehrere Text-Aufrufe:
+Text 8, 100, "PUNKTE: 1000"
+Text 8, 110, "LEBEN:     3"
+```
+
+> **Einschränkung:** `Text` akzeptiert nur **feste Texte** (String-Literale).
+> Zahlen können nicht direkt angezeigt werden — es gibt kein `str$(n)`.
+
+### NPrint
 ```blitz
 NPrint "string"
 ```
-Geplant: Debug-Ausgabe. Auf bare-metal Amiga kein sichtbarer Effekt.
-**Aktuell als Stub implementiert.**
+Hat keinen sichtbaren Effekt. Nur für Blitz2D-Kompatibilität vorhanden.
 
 ---
 
-## 12. Amiga-spezifisches Verhalten
+## 12. Sound
 
-Diese Befehle und Konzepte existieren in Blitz2D für Windows **nicht**:
+Sound-Dateien müssen als **rohe 8-Bit-PCM-Mono-Daten** im Ordner `app/assets/`
+gespeichert sein. Geeignete Dateien lassen sich z.B. mit Audacity exportieren:
+Format „Raw Data", Encoding „Signed 8-bit PCM", Mono.
 
-### ScreenFlip
-Amiga-spezifisch. Auf dem PC hat Blitz2D automatisches Buffering.
-Im BASSM-Programm muss `ScreenFlip` manuell am Ende jedes Frames aufgerufen
-werden, sonst sieht man das Back-Buffer-Bild nicht.
+Der Amiga hat **4 unabhängige Sound-Kanäle** (0–3), die gleichzeitig
+laufen können. Das Abspielen eines Sounds belastet die CPU **nicht** —
+der Amiga erledigt das automatisch im Hintergrund.
 
-### Double Buffering ist immer aktiv
-BASSM erzeugt immer zwei Bitplane-Sets im Chip-RAM und zwei Copper-Listen.
-Es gibt keinen Modus ohne Double Buffering.
-
-### CopperColor und der Copper-Prozessor
-`CopperColor` patcht eine Copper-Liste, die vom **Copper-Coprozessor** (OCS)
-ausgeführt wird. Der Copper läuft **vollständig parallel zur CPU** und verursacht
-keinen Overhead im Hauptprogramm. Die CPU schreibt einen neuen Farbwert in den
-Back-Copper (8 Byte schreiben) — der Rest passiert automatisch durch DMA.
-
-### Blitter-Zeichnung
-`Cls` und `Box` nutzen den OCS-Blitter (DMA-gesteuerter Bitplane-Coprozessor).
-Andere Befehle (`Plot`, `Line`, `Rect`) arbeiten auf der CPU.
-
-### PAL-Bildschirm, bare-metal
-- Das Programm läuft **direkt auf der Hardware**, ohne AmigaOS während der Ausführung.
-- VBlank = ca. 50 Hz (PAL).
-- Kein multitasking, kein Speicherschutz.
-
-### OCS-Farbpalette
-4-Bit pro Kanal (16 Stufen) statt 8-Bit (wie PC-Blitz2D):
+### LoadSample
 ```blitz
-PaletteColor 1, 15, 8, 0    ; Orange: r=15, g=8, b=0  (OCS: $0F80)
-; NICHT: PaletteColor 1, 255, 128, 0  — Werte werden auf 0..15 geklemmt
+LoadSample index, "datei.raw"
+```
+Registriert eine Sound-Datei unter einer Nummer. Diese Anweisung muss
+**vor der Hauptschleife** stehen.
+
+```blitz
+LoadSample 0, "kick.raw"
+LoadSample 1, "bass.raw"
+LoadSample 2, "treffer.raw"
 ```
 
-### Multiplikation: 16-Bit-Operanden
-`*` nutzt `muls.w` (16×16→32 Bit). Wenn Operanden > 32767, kommt es zu
-falschen Ergebnissen (kein Überlauf-Fehler, stille Verfälschung).
+> **Hinweis:** `LoadSample` selbst spielt noch nichts ab — es lädt nur die
+> Datei in das Programm ein.
 
-### Division: ganzzahlig
-`/` liefert nur den Quotienten (Rest wird verworfen). Es gibt keine
-`Mod`-Operation. Workaround:
+### PlaySample
 ```blitz
-rest = a - (a / b) * b    ; manuelles Modulo
+PlaySample index, kanal [, period [, lautstärke]]
 ```
+Spielt ein Sample **als Endlos-Loop** auf dem angegebenen Kanal ab.
+
+| Parameter | Standard | Beschreibung |
+|-----------|----------|--------------|
+| `index` | — | Sample-Nummer (wie in `LoadSample`) |
+| `kanal` | — | Sound-Kanal 0–3 |
+| `period` | **428** | Tonhöhe: `3546895 / Hz`; 428 ≈ 8287 Hz, 214 ≈ 16574 Hz |
+| `lautstärke` | **64** | 0 (still) bis 64 (volle Lautstärke) |
+
+```blitz
+PlaySample 0, 0              ; Kanal 0, Standardwerte
+PlaySample 1, 1, 214         ; Kanal 1, doppelte Tonhöhe
+PlaySample 2, ch, per, vol   ; alle Werte aus Variablen
+```
+
+Für Hintergrundmusik oder Dauertöne geeignet. Mit `StopSample` anhalten.
+
+### PlaySampleOnce
+```blitz
+PlaySampleOnce index, kanal [, period [, lautstärke]]
+```
+Spielt ein Sample **genau einmal** ab. Danach wird der Kanal automatisch
+still — kein `StopSample` nötig, kein Klicken.
+
+Gleiche Parameter wie `PlaySample`.
+
+```blitz
+PlaySampleOnce 0, 0             ; Boing-Sound einmalig
+PlaySampleOnce 1, ch, 214, 48   ; einmalig, halbe Lautstärke
+```
+
+Ideal für **Soundeffekte**: Kollision, Schuss, Sprung, Münze.
+
+> Wenn zwei Boxen gleichzeitig kollidieren und beide `PlaySampleOnce` auf
+> demselben Kanal aufrufen, hört man nur einen Sound. Für parallele Effekte
+> verschiedene Kanäle verwenden.
+
+### StopSample
+```blitz
+StopSample kanal
+```
+Stoppt sofort die Wiedergabe auf dem angegebenen Kanal.
+
+```blitz
+StopSample 0        ; Kanal 0 stoppen
+StopSample ch       ; Kanal aus Variable
+```
+
+### Vier unabhängige Kanäle
+
+| Kanal | Typische Verwendung |
+|-------|---------------------|
+| 0 | Soundeffekte (links) |
+| 1 | Soundeffekte (rechts) |
+| 2 | Musik / Hintergrund (links) |
+| 3 | Musik / Hintergrund (rechts) |
 
 ---
 
-## 13. Bekannte Einschränkungen
+## 13. Amiga-spezifisches Verhalten
+
+### ScreenFlip ist Pflicht
+`ScreenFlip` muss am Ende jedes Frames aufgerufen werden — sonst sieht
+man das gezeichnete Bild nicht. Das ist anders als in PC-Blitz2D, das
+automatisch zeichnet.
+
+### Farben haben nur 16 Stufen
+Amiga OCS hat 4 Bit pro Farbkanal: Werte von **0 bis 15**, nicht 0–255.
+
+```blitz
+PaletteColor 1, 15, 8, 0    ; Orange — r=15, g=8, b=0
+; NICHT:       255, 128, 0  — das wäre PC-Blitz2D
+```
+
+### CopperColor und der Bildschirm
+`CopperColor` setzt die Hintergrundfarbe (`Color 0`) an bestimmten Zeilen.
+Es betrifft ausschließlich den Hintergrund, nicht die darauf gezeichneten
+Objekte. Die Änderung wird beim nächsten `ScreenFlip` sichtbar.
+
+### Sound kostet keine Rechenzeit
+Sobald `PlaySample` oder `PlaySampleOnce` aufgerufen wurde, läuft der
+Sound vollständig automatisch im Hintergrund. Die Hauptschleife wird
+dadurch nicht verlangsamt.
+
+### Multiplikation: Vorsicht bei großen Zahlen
+`*` funktioniert korrekt für Werte bis **32767**. Größere Werte können
+zu falschen Ergebnissen führen. Für Bildschirmkoordinaten ist das
+normalerweise kein Problem.
+
+---
+
+## 14. Bekannte Einschränkungen
 
 | Einschränkung | Erklärung |
 |---------------|-----------|
 | Nur 320px Breite | `Graphics` akzeptiert nur `width=320` |
-| Nur Integer | Keine Floats, keine Strings als Variablen |
-| Keine Funktionen | `Function`/`Procedure` noch nicht implementiert (geplant: M7) |
-| Text ist ein Stub | `Text`/`NPrint` erzeugen noch keinen sichtbaren Output |
-| `*` max. 16-Bit | Multiplikation mit `muls.w`; Operanden müssen −32768..32767 sein |
-| Kein Mod-Operator | Workaround: `a - (a/b)*b` |
-| Keine Strings als Variablen | Stringliterale nur als Argumente für `Text`/`NPrint` |
-| Keine Rekursion | Ohne Funktionsstack kein Rekursionsunterstützung |
+| Nur ganze Zahlen | Keine Kommazahlen, keine Strings als Variablen |
+| Keine Funktionen | `Function`/`Procedure` nicht implementiert |
+| Text: nur feste Texte | `Text` zeigt keine Zahlen oder Variableninhalte |
+| Kein Modulo | Workaround: `a - (a/b)*b` |
 | Kein Bounds-Checking | Array-Überläufe korrumpieren Speicher stillschweigend |
-| OS-Restore (vAmiga) | Nach `End` erscheint unter AROS/vAmiga kein Workbench-Fenster wieder (bekannter offener Bug) |
+| `*` bis 32767 | Multiplikation mit größeren Zahlen liefert falsche Ergebnisse |
+| OS-Restore (vAmiga) | Nach `End` erscheint unter AROS/vAmiga kein Workbench-Fenster wieder |
 
 ---
 
-## 14. Vollständiges Beispiel
+## 15. Vollständiges Beispiel
 
-Das folgende Programm zeigt Copper-Rasterbalken + 8 springende Boxen —
-es nutzt Arrays, `For`-Schleifen, `:` als Statement-Separator,
-`CopperColor` und `ScreenFlip`. Läuft stabil bei 50 fps auf dem A500.
+Copper-Rasterbalken + 8 springende Boxen + Text + Sound.
+Läuft stabil mit 50 fps auf dem Amiga 500.
 
 ```blitz
-; Rasterbalken + 8 Bouncing Boxes
-; CopperColor: Farbverlauf per Copper, CPU-frei waehrend Raster.
-; Gradient durch Zaehler-Variablen (addq/subq), kein divs.w.
+; Rasterbalken + 8 Bouncing Boxes + Text + Sound
 Graphics 320,256,4
 
-ClsColor 0
+LoadSample 0, "boing.raw"
 
 Dim bx(7) : Dim by(7) : Dim bdx(7) : Dim bdy(7)
 
 bx(0)=10  : by(0)=20  : bdx(0)=3  : bdy(0)=2
 bx(1)=100 : by(1)=50  : bdx(1)=-4 : bdy(1)=3
-bx(2)=200 : by(2)=10  : bdx(2)=2  : bdy(2)=-3
+bx(2)=200 : by(2)=30  : bdx(2)=2  : bdy(2)=-3
 bx(3)=50  : by(3)=150 : bdx(3)=-3 : bdy(3)=-2
 bx(4)=250 : by(4)=100 : bdx(4)=4  : bdy(4)=2
 bx(5)=130 : by(5)=200 : bdx(5)=-2 : bdy(5)=4
 bx(6)=80  : by(6)=120 : bdx(6)=5  : bdy(6)=-3
 bx(7)=280 : by(7)=180 : bdx(7)=-3 : bdy(7)=5
 
+; Text einmalig in beide Bildschirm-Buffer zeichnen
+Color 15 : Text 8, 4,   "BASSM DEMO  * AMIGA OCS *"
+Color 8  : Text 8, 236, "CODE: BASSM COMPILER  FONT: 8X8"
+ScreenFlip
+Color 15 : Text 8, 4,   "BASSM DEMO  * AMIGA OCS *"
+Color 8  : Text 8, 236, "CODE: BASSM COMPILER  FONT: 8X8"
+
 t = 0
 
 While 1
-  Cls
-
-  ; Rasterbalken: animierter Rot/Blau-Gradient, 212 Zeilen
+  ; Animierter Farbverlauf über den Bildschirm (Rasterbalken)
   t = t + 1 : If t > 15 : t = 0 : EndIf
   rc = t : gc = 15 - t
-  For line = 0 To 211
-    CopperColor line, rc, 0, gc
+  For zeile = 0 To 211
+    CopperColor zeile, rc, 0, gc
     rc = rc + 1 : If rc > 15 : rc = 0 : EndIf
     gc = gc - 1 : If gc < 0  : gc = 15 : EndIf
-  Next line
+  Next zeile
 
-  ; 8 Bouncing Boxes
+  ; 8 Boxen bewegen und bei Wandkontakt abprallen + Sound
   For i = 0 To 7
-    bx(i) = bx(i) + bdx(i)
-    by(i) = by(i) + bdy(i)
-    If bx(i) < 0   : bx(i) = 0   : bdx(i) = -bdx(i) : EndIf
-    If bx(i) > 304 : bx(i) = 304 : bdx(i) = -bdx(i) : EndIf
-    If by(i) < 0   : by(i) = 0   : bdy(i) = -bdy(i) : EndIf
-    If by(i) > 240 : by(i) = 240 : bdy(i) = -bdy(i) : EndIf
+    bx(i) = bx(i) + bdx(i) : by(i) = by(i) + bdy(i)
+    If bx(i) < 0   : bx(i) = 0   : bdx(i) = -bdx(i) : PlaySampleOnce 0, 0 : EndIf
+    If bx(i) > 304 : bx(i) = 304 : bdx(i) = -bdx(i) : PlaySampleOnce 0, 0 : EndIf
+    If by(i) < 16  : by(i) = 16  : bdy(i) = -bdy(i) : PlaySampleOnce 0, 0 : EndIf
+    If by(i) > 220 : by(i) = 220 : bdy(i) = -bdy(i) : PlaySampleOnce 0, 0 : EndIf
     Color i + 1
     Box bx(i),by(i),16,16
   Next i
@@ -748,8 +782,9 @@ Graphics   Cls       ClsColor    Color       PaletteColor  CopperColor
 WaitVbl    WaitKey   Delay       ScreenFlip  End
 Plot       Line      Rect        Box
 Text       NPrint
+LoadSample PlaySample  PlaySampleOnce  StopSample
 ```
 
 ---
 
-*Dokumentation generiert für BASSM — Compiler-Stand: 2026-03-07*
+*Dokumentation für BASSM — Stand: 2026-03-12*

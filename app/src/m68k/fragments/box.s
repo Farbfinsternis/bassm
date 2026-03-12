@@ -23,14 +23,18 @@
 ;     C = D (the destination bitplane — read first, then written)
 ;
 ;     Ones-fill (colour bit = 1):
-;       BLTCON0 = $0BC8  (USEA+USEC+USED, minterm $C8 = D = A OR C)
+;       BLTCON0 = $0BFA  (USEA+USEC+USED, minterm $FA = D = A OR C)
 ;         inside box (A=1): D = 1  (set)
 ;         outside box (A=0): D = C (preserve — no corruption of adjacent pixels)
 ;
 ;     Zeros-fill (colour bit = 0):
-;       BLTCON0 = $0B08  (USEA+USEC+USED, minterm $08 = D = !A AND C)
+;       BLTCON0 = $0B0A  (USEA+USEC+USED, minterm $0A = D = !A AND C)
 ;         inside box (A=1): D = 0  (clear)
 ;         outside box (A=0): D = C (preserve — no corruption of adjacent pixels)
+;
+;     Note: USEB=0 does NOT force B=1. BLTBDAT is uninitialized (hardware-
+;     dependent: $FFFF from AROS, $0000 after cold boot on KS 1.3).
+;     Minterms $FA and $0A give the correct result for ANY value of B.
 ;
 ;     BLTCON1 = $0000
 ;     BLTAFWM = $FFFF >> (x % 16)                     left-edge mask
@@ -252,20 +256,20 @@ _Box:
         ; C reads the current destination data so pixels outside the box are
         ; preserved (not overwritten) regardless of fill direction.
         ;
-        ; USEB=0 forces B=1 internally, so minterms must be computed with B=1:
-        ;   Ones-fill  (colour bit = 1): minterm $C8 = D = A OR C
+        ; Minterms $FA and $0A are B-independent (correct for any BLTBDAT value):
+        ;   Ones-fill  (colour bit = 1): minterm $FA = D = A OR C
         ;     A=0,C=0→D=0  A=0,C=1→D=1  A=1,C=0→D=1  A=1,C=1→D=1
-        ;   Zeros-fill (colour bit = 0): minterm $08 = D = !A AND C
+        ;   Zeros-fill (colour bit = 0): minterm $0A = D = !A AND C
         ;     A=0,C=0→D=0  A=0,C=1→D=1  A=1,C=0→D=0  A=1,C=1→D=0
         lea     _blt_ones_row,a1
 
         ; ── Choose minterm based on colour bit ────────────────────────────────
         btst    #0,d4
         bne.s   .box_set_ones
-        move.w  #$0B08,BLTCON0(a5)      ; USEA+USEC+USED, minterm $08 (D=!A AND C)
+        move.w  #$0B0A,BLTCON0(a5)      ; USEA+USEC+USED, minterm $0A (D=!A AND C)
         bra.s   .box_blit
 .box_set_ones:
-        move.w  #$0BC8,BLTCON0(a5)      ; USEA+USEC+USED, minterm $C8 (D=A OR C)
+        move.w  #$0BFA,BLTCON0(a5)      ; USEA+USEC+USED, minterm $FA (D=A OR C)
 
 .box_blit:
         ; ── Program Blitter ──────────────────────────────────────────────────

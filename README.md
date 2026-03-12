@@ -99,13 +99,15 @@ cls.s          Blitter screen clear (_Cls, writes to back buffer)
 clscolor.s     _ClsColor (sets background fill colour)
 color.s        _SetColor
 palette.s      32-entry OCS palette (_InitPalette, _SetPaletteColor, _draw_color)
-text.s         stub (bitmap font not yet implemented)
+text.s         _Text (8×8 bitmap font, CPU per-plane per-row rendering, newline support)
 plot.s         _Plot (single pixel, CPU, writes to back buffer)
 line.s         _Line (Bresenham, CPU)
 rect.s         _Rect (outline rectangle, 4× _Box calls)
 box.s          _Box (filled rectangle, Blitter A→D, writes to back buffer)
 waitkey.s      _WaitKey (interrupt-driven CIA-A keyboard)
 flip.s         _ScreenFlip (VBL-synchronised front/back buffer swap)
+copper_raster.s  _SetRasterColor (only if CopperColor is used)
+sound.s        _PlaySample, _StopSample — Paula DMA (only if LoadSample is used)
 [_main_program]  generated user code
 offload.s      OS restoration (LoadView, RethinkDisplay, return to CLI)
 ```
@@ -134,6 +136,7 @@ offload.s      OS restoration (LoadView, RethinkDisplay, return to CLI)
 | `Line x1,y1,x2,y2` | Bresenham line |
 | `Rect x,y,w,h` | Rectangle outline |
 | `Box x,y,w,h` | Filled rectangle (Blitter A→D, per-plane word masks) |
+| `Text x,y,"str"` | Render string with 8×8 bitmap font (CPU, per-plane, newline `$0A` supported) |
 
 ### Control Flow
 | Construct | Description |
@@ -158,6 +161,19 @@ offload.s      OS restoration (LoadView, RethinkDisplay, return to CLI)
 | `Delay n` | Wait n VBlanks |
 | `WaitKey` | Halt until any key is pressed (interrupt-driven CIA-A) |
 | `ScreenFlip` | VBL-synchronised front/back buffer swap (no screen tearing) |
+
+### Sound (Paula DMA)
+| Command | Description |
+|---------|-------------|
+| `LoadSample n,"file.raw"` | Register raw 8-bit PCM sample at index n (INCBIN into chip RAM) |
+| `PlaySample n,ch[,per[,vol]]` | Start Paula DMA channel ch looping; period default 428 (≈8287 Hz), volume default 64 |
+| `PlaySampleOnce n,ch[,per[,vol]]` | Play sample once, then fall silent (Paula double-buffer trick) |
+| `StopSample ch` | Stop Paula DMA channel (immediate silence) |
+
+### Copper Effects
+| Command | Description |
+|---------|-------------|
+| `CopperColor y,r,g,b` | Set background colour (COLOR00) at raster line y via copper list |
 
 ---
 
@@ -194,9 +210,9 @@ npm test
 
 See [ROADMAP.md](ROADMAP.md) for the full implementation plan.
 
-**Next milestone:** M6 (Text-Rendering) · M7 (Functions) · M9 (full Input: Joystick, KeyDown).
+**Next milestone:** M-ASSET A1 (Bitmaps: BlitImage) · M10 (Hardware Scrolling) · M9b (Joystick/KeyDown).
 
-Completed milestones: M0 (core pipeline), M1 (integer variables), M2 (If/Else), M3 (While/For), M4 (Select/Case), M5 (drawing commands), M5b (Blitter fill), M5c (Double-Buffering / `ScreenFlip`), M9-partial (WaitKey).
+Completed milestones: M0 (core pipeline), M1 (integer variables), M2 (If/Else), M3 (While/For), M4 (Select/Case), M5 (drawing commands), M5b (Blitter fill), M5c (Double-Buffering / `ScreenFlip`), M6 (Text / 8×8 font), M8 (Arrays), M9a (WaitKey), M-COPPER (CopperColor raster effects), PERF-A+B+C (optimised codegen), M-ASSET A2 (Sound: Paula DMA looping + one-shot, vAmiga Web Audio).
 
 ---
 

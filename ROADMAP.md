@@ -23,6 +23,9 @@
 | **PERF-B** Stack-Eliminierung | `_isSimpleExpr`: `x+1`, `x+dx`, `x<320` ohne Push/Pop; `addq`/`subq` für 1..8 |
 | **Runtime PaletteColor** | `_SetPaletteColorRGB(d0,d1,d2,d3)` in `palette.s`; alle 4 Args als Ausdrücke |
 | **M-COPPER** Rasterbalken | `CopperColor y,r,g,b`; `_gfx_raster_a/b` in Copper-Listen; `copper_raster.s`; GFXRASTER EQU |
+| **M6** Text | `Text x,y,"str"` → CPU 8×8 Font, per-Plane per-Row, Shift-Trick, Newline-Support |
+| **PERF-C** CopperColor-Inlining | `CopperColor` inline expandiert; kein JSR-Overhead; ~120 Zyklen/Aufruf gespart |
+| **M-ASSET A2** Sound | `PlaySample "f.raw",ch,per,vol` + `StopSample ch`; Paula DMA; `sound.s`; Asset-Pipeline |
 
 ---
 
@@ -57,14 +60,14 @@
 
 ---
 
-### M6 — Text & Palette-Animation
-> **Jede Demo braucht Titel, Credits und Farbeffekte.**
-> `font8x8.s` (8×8 Bitmap-Font) ist bereits vorhanden.
+### ✅ M6 — Text & Palette-Animation
 
-- `[ ]` `text.s`: `_Text(a0=str, d0=x, d1=y)` — Blitter oder CPU, 1 Bit/Pixel aus Font
-- `[ ]` `text.s`: `_NPrint(a0=str)` — an Cursor-Position ausgeben, Cursor-X vorrücken
-- `[ ]` BSS: `_text_x`, `_text_y` Cursor-Variablen
-- `[ ]` CodeGen: `Text x,y,"string"` → Literalstring einbetten + `jsr _Text`
+- `[x]` `text.s`: `_Text(a0=str, d0=x, d1=y)` — CPU-Rendering, 8×8 Font, per-Plane per-Row
+  - Shift-Trick: `lsl.w #8 / lsr.w d6` → hi/lo-part ohne Extra-Register
+  - SET: `or.b`; CLR: `not.w + and.b`; Newline `$0A`: x=0, y+=8; Bounds-Check
+  - `INCLUDE "font8x8.s"` am Anfang — 768 Byte Fontdaten in DATA_C Chip-RAM
+- `[x]` `_NPrint` — no-op (Blitz2D-Kompatibilität)
+- `[x]` CodeGen: `Text x,y,"string"` → String inline eingebettet + `jsr _Text`
 - `[x]` **Runtime `PaletteColor n,r,g,b`** mit Variablen/Ausdrücken als Argumente
   (`_SetPaletteColorRGB` in `palette.s`; CodeGen fällt auf Compile-Time-Pfad zurück wenn alle Literal)
 - `[ ]` **`LoadPalette arr`** — alle 32 Palette-Einträge aus einem Integer-Array setzen;
@@ -98,12 +101,26 @@ und per Blitter in den Back-Buffer kopieren.
 - `[ ]` IFF ILBM Parser (optional, spätere Phase) — für Standard-Amiga-Bildformat
 - `[ ]` **`GetImage x,y,w,h, arr`** — Screenbereich in Array kopieren (Blitter-Quelle)
 
-#### A2 — Sound-Wiedergabe 🟡 Mittel
+#### ✅ A2 — Sound-Wiedergabe 🟡 Mittel
 Amiga hat 4 DMA-Audiokanäle (Paula). Einfachste Ebene: rohe 8-Bit-Samples.
-- `[ ]` **`PlaySample "datei.raw", channel, period, volume`**
-  - CodeGen: INCBIN + `AUD0LCH`/`AUD0LCL`/`AUD0LEN`/`AUD0PER`/`AUD0VOL` per Kanal
-  - DMACON: Audio-DMA für den Kanal einschalten
-- `[ ]` **`StopSample channel`** — Audio-DMA des Kanals ausschalten
+- `[x]` **`LoadSample index, "datei.raw"`** — Deklaration; bettet Sample per `INCBIN` als `DATA_C`-Sektion ein
+- `[x]` **`PlaySample index, channel [, period [, volume]]`**
+  - `period` + `volume` optional (Defaults: 428 ≈ 8287 Hz, 64 = Max)
+  - `sound.s`: `_PlaySample(d0=ch, a0=ptr, d1=len_words, d2=period, d3=vol)` via Paula-Register
+  - CodeGen: Index → `_snd_N`-Label; Länge als Assembler-Ausdruck `(end-start)/2`
+  - Asset-Pipeline: Dateien aus `app/assets/` → tmpDir kopiert vor vasm-Aufruf
+  - DMACON: Audio-DMA per Kanal einschalten (Bit 15=1 SET | 1<<channel)
+- `[x]` **`StopSample channel`** — Audio-DMA des Kanals ausschalten (Bit 15=0 CLR | 1<<channel)
+- `[x]` **`PlaySampleOnce index, channel [, period [, volume]]`** — Echte One-Shot-Wiedergabe:
+  Paula Double-Buffering: echte Sample-Daten in AUDx schreiben, DMA aktivieren, Fixed-Delay
+  (200× dbra ≈ 2000 Zyklen ≥ 4× maximale Latch-Zeit von 456 Zyklen), dann AUDxLCH/LCL/LEN
+  auf `_null_snd` (1 stilles Wort, Chip-RAM) umschreiben → stilles Looping nach Sampleende.
+  DMA-Stop + doppelter INTREQ-Clear vor Neustart verhindert veraltete INTREQ-Bits.
+- `[x]` **vAmiga Web Audio Pipeline** — `setupAudio()` in `preview.html`:
+  `ScriptProcessorNode(1024)` + `_wasm_set_sample_rate` + `_wasm_leftChannelBuffer`/
+  `_wasm_rightChannelBuffer` + `_wasm_update_audio(offset)` Ping-Pong;
+  `--autoplay-policy=no-user-gesture-required` in `main.js`; `Module.HEAPU32.buffer`
+  statt `Module.HEAPF32.buffer` (letzteres in diesem vAmiga-Build nicht exportiert).
 - `[ ]` **ProTracker-Modul** (spätere Phase) — `PlayModule "song.mod"` startet den PT-Player
   - Erfordert: eingebetteten PT-Player (ca. 1 KB), VBlank-Hook für Player-Update
   - Praktisch: fertigen PT-Player aus `startup.s` heraus aufrufen
@@ -208,12 +225,10 @@ Dim bx.w(7)    ; Word-Array statt Long-Array
 ✅ PERF-A + PERF-B        schneller Code — Bcc+Stack-Elim. fertig
 ✅ Runtime-PaletteColor   Palette-Animation mit Variablen fertig
 ✅ M-COPPER               CopperColor y,r,g,b — Rasterbalken CPU-frei fertig
+✅ M6 Text                Text x,y,"str" — 8×8 Bitmap-Font, CPU-Rendering fertig
+✅ M-ASSET Sound          PlaySample + PlaySampleOnce + StopSample + vAmiga Audio fertig
        ↓
 ⬅ NÄCHSTER SCHRITT
-M6 Text                  Titel, Gruppen-Name, Credits
-       ↓
-M-ASSET Sound (Audio)      Chiptune/MOD — Demo ohne Musik ist keine Demo
-       ↓
 M-ASSET Bitmaps            Hintergründe, Titelscreen-Grafik
        ↓
 M10 Hardware-Scrolling     Scrolltext für Greetings/Credits-Part

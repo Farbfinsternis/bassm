@@ -204,12 +204,86 @@ Beim Aufruf von `_Box` werden alle Argumente einzeln berechnet und gepusht, nur 
 
 ---
 
+## 9. PERF-C: CopperColor Intrinsic Inlining
+
+`CopperColor` wird in der Demo 212× pro Frame gerufen. Jeder Aufruf geht durch
+`_SetRasterColorRGB` → `_SetRasterColor` mit zweifachem `movem.l` Overhead.
+
+**Overhead pro Aufruf (gemessen):**
+
+```
+movem.l d2-d3,-(sp) + movem.l (sp)+,d2-d3   32 Zyklen
+2× JSR/RTS                                    32 Zyklen
+movem.l d0/a0,-(sp) + movem.l (sp)+,d0/a0   32 Zyklen
+codegen arg-setup movem.l (sp)+,d1-d3        24 Zyklen
+────────────────────────────────────────────────────────
+                                  gesamt: ~120 Zyklen
+× 212 = 25.440 Zyklen ≈ 3,6 ms von 20 ms (18 % des Frames!)
+```
+
+**Lösung: Inline-Expansion als Intrinsic**
+
+Statt JSR wird der Funktionskörper direkt in den generierten Code emittiert.
+`d2` dient als OCS-Wort-Akkumulator (sicher: `_genExpr` nutzt nur `d0`/`d1`).
+
+### Compile-time path (alle 4 args Literale):
+
+```asm
+; Kein moveq, kein JSR — direkte Speicherschreibung mit Compile-Zeit-Offset
+tst.b   _front_is_a
+bne.s   .LN
+move.w  #$0RGB,_gfx_raster_b+(y*8+6)   ; y*8+6 ist Compile-Zeit-Konstante
+bra.s   .LM
+.LN:
+move.w  #$0RGB,_gfx_raster_a+(y*8+6)
+.LM:
+; ~20 Zyklen statt ~60 Zyklen
+```
+
+### Runtime path (mind. 1 arg ist Variable/Ausdruck):
+
+```asm
+; r → d2 (bits 11:8)
+<eval r> → d0 : andi.w #$F,d0 : lsl.w #8,d0 : move.w d0,d2
+; g → d2 (bits 7:4)
+<eval g> → d0 : andi.w #$F,d0 : lsl.w #4,d0 : or.w d0,d2
+; b → d2 (bits 3:0) → d2 = $0RGB
+<eval b> → d0 : andi.w #$F,d0 : or.w d0,d2
+; y → d0, offset = y*8
+<eval y> → d0 : lsl.l #3,d0
+; Back-Raster wählen und schreiben (1 Branch statt 2× movem)
+tst.b   _front_is_a
+bne.s   .LA
+lea     _gfx_raster_b,a0
+bra.s   .LW
+.LA:    lea     _gfx_raster_a,a0
+.LW:    move.w  d2,6(a0,d0.l)
+; ~22 Zyklen Overhead statt ~120 Zyklen
+```
+
+**Ersparnis Phase 1:** ~98 Zyklen × 212 = **20.776 Zyklen ≈ 3,0 ms** zurückgewonnen.
+
+**Phase 2 (PERF-D, spätere Idee):** Schleifenkontext-Erkennung im Codegen — einmaliges
+`tst.b _front_is_a; lea _gfx_raster_X,a4` *vor* der For-Schleife hissen, im Body
+dann nur noch `move.w d2,6(a4,d0.l)`. Spart weitere ~10 Zyklen × 212.
+
+### 🟢 Aufwand: Niedrig (ca. 25 Zeilen, isoliert in `case 'coppercolor'`)
+
+**Was sich ändert:**
+- `codegen.js`, `case 'coppercolor'`: Compile-time-Pfad und Runtime-Pfad ersetzen
+  `jsr _SetRasterColor` / `jsr _SetRasterColorRGB` durch Inline-Code.
+- `copper_raster.s` bleibt unverändert (Funktionen bleiben für ggf. direkten ASM-Aufruf).
+- Keine Änderung an Parser, Fragment-Architektur oder Calling Convention.
+
+---
+
 ## Empfohlene Implementierungsreihenfolge
 
 | # | Optimierung | Aufwand | Status | Begründung |
 |---|-------------|---------|--------|------------|
 | 4 | `While 1` ohne Test | 🟢 | ✅ Erledigt | 5 Zeilen, null Risiko |
 | 7a | `moveq` für Konstanten | 🟢 | ✅ Erledigt | War schon implementiert |
+| 9 | CopperColor Intrinsic Inline | 🟢 | ✅ Erledigt | ~3 ms/Frame zurückgewonnen |
 | 3 | Bcc statt Scc (If/While) | 🟡 | Offen | Jede Condition spart 4 Instr. |
 | 2+7b | Stack-Elim. + cmpi | 🟡 | Offen | Häufigster Ausdruck-Fall |
 | 8 | Args direkt in Register | 🟡 | Offen | Lohnt für viele Grafik-Calls |

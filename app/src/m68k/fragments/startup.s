@@ -188,6 +188,15 @@ start:
         move.l  gb_ActiView(a0),_saved_view  ; save active OS View pointer
 .no_view_save:
 
+; ── 1b. Point _gfx_planes / _gfx_planes_b at BSS_C bitplane buffers ──────────
+; Both buffers are defined as BSS_C sections in the generated assembly.
+; The OS loader (LoadSeg) allocates zeroed chip RAM for them before calling us.
+
+        lea     _gfx_planes_data,a0
+        move.l  a0,_gfx_planes
+        lea     _gfx_planes_b_data,a0
+        move.l  a0,_gfx_planes_b
+
         jsr     _LVOForbid(a6)          ; freeze OS scheduler
 
 ; ── 2. Snapshot current hardware masks ───────────────────────────────────────
@@ -481,6 +490,8 @@ _null_copper:
         XDEF    _kbd_pending
         XDEF    _back_planes_ptr
         XDEF    _front_is_a
+        XDEF    _gfx_planes
+        XDEF    _gfx_planes_b
 
 _saved_sp:          ds.l    1   ; stack pointer on entry — restored by offload.s
 _saved_intena:      ds.w    1   ; INTENAR snapshot   — restored by offload.s
@@ -495,3 +506,6 @@ _kbd_pending:       ds.b    1   ; raw CIA key byte from _lev2_kbd_handler (0 = n
         EVEN                        ; pad to even address — required before longword access
 _back_planes_ptr:   ds.l    1   ; chip-RAM address of back bitplane buffer (set by _setup_graphics)
 _front_is_a:        ds.b    1   ; 0 = copper A is front (buffer A displayed), 1 = copper B is front
+        EVEN
+_gfx_planes:        ds.l    1   ; chip-RAM ptr — buffer A (AllocMem'd at startup)
+_gfx_planes_b:      ds.l    1   ; chip-RAM ptr — buffer B (AllocMem'd at startup)

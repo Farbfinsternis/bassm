@@ -12,7 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   // Assemble m68k source with vasmm68k_mot
   // Returns { ok: true, data: number[] } | { ok: false, error: string }
-  assemble: (asmText) => ipcRenderer.invoke('bassm:assemble', asmText),
+  assemble: (payload) => ipcRenderer.invoke('bassm:assemble', payload),
   // Load AROS ROM bytes from disk
   // Returns { main: number[], ext: number[] }
   loadRom: () => ipcRenderer.invoke('bassm:rom'),

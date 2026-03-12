@@ -15,13 +15,14 @@ const COMMANDS = [
     'WaitVbl', 'Text', 'NPrint', 'End', 'Delay',
     'Plot', 'Line', 'Rect', 'Box',
     'WaitKey', 'ScreenFlip', 'CopperColor',
+    'LoadSample', 'PlaySample', 'PlaySampleOnce', 'StopSample',
 ];
 
 const KEYWORDS = [
     'If', 'Then', 'Else', 'ElseIf', 'EndIf',
     'While', 'Wend', 'For', 'To', 'Step', 'Next',
     'Select', 'Case', 'Default', 'EndSelect',
-    'Dim',
+    'Dim', 'Type', 'Field', 'EndType',
 ];
 
 /**

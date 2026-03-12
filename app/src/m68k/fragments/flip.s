@@ -83,7 +83,7 @@ _ScreenFlip:
         ; ── Front = A, Back = B → install B as new front ─────────────────────
         lea     _gfx_copper_b,a0
         jsr     _InstallCopper
-        lea     _gfx_planes,a0
+        move.l  _gfx_planes,a0
         move.l  a0,_back_planes_ptr     ; A is now the back buffer
         move.b  #1,_front_is_a         ; B is now front
         bra.s   .flip_done
@@ -92,7 +92,7 @@ _ScreenFlip:
 .flip_b_is_front:
         lea     _gfx_copper_a,a0
         jsr     _InstallCopper
-        lea     _gfx_planes_b,a0
+        move.l  _gfx_planes_b,a0
         move.l  a0,_back_planes_ptr     ; B is now the back buffer
         clr.b   _front_is_a            ; A is now front
 

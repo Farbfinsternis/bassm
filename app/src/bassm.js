@@ -64,9 +64,10 @@ class BASSM {
     async run(source) {
         // 1. Blitz2D → m68k assembly
         const asm = this.compile(source);
+        const assetFiles = this._codegen.getAssetRefs();
 
         // 2. Assemble with vasmm68k_mot via Electron IPC
-        const result = await window.electronAPI.assemble(asm);
+        const result = await window.electronAPI.assemble({ asm, assetFiles });
         if (!result.ok) throw new Error(result.error);
 
         // 3. Send HUNK binary to emulator — triggers reset + boot from virtual disk

@@ -144,5 +144,44 @@
             { "name": "g", "type": "integer" },
             { "name": "b", "type": "integer" }
         ]
+    },
+    {
+        "name": "LoadSample",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "index", "type": "integer" },
+            { "name": "file",  "type": "string"  }
+        ]
+    },
+    {
+        "name": "PlaySample",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "index",   "type": "integer" },
+            { "name": "channel", "type": "integer" },
+            { "name": "period",  "type": "integer" },
+            { "name": "volume",  "type": "integer" }
+        ]
+    },
+    {
+        "name": "PlaySampleOnce",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "index",   "type": "integer" },
+            { "name": "channel", "type": "integer" },
+            { "name": "period",  "type": "integer" },
+            { "name": "volume",  "type": "integer" }
+        ]
+    },
+    {
+        "name": "StopSample",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "channel", "type": "integer" }
+        ]
     }
 ]
