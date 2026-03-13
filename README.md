@@ -1,3 +1,5 @@
+![BASSM](logo.png)
+
 # BASSM — Blitz2D to Amiga m68k Assembler
 
 A compiler and live-preview IDE that translates a subset of the **Blitz2D** BASIC dialect into native **Motorola 68000 assembly** for the Commodore Amiga, assembles and links it with **vasmm68k_mot + vlink**, and previews the result in the **vAmiga** WASM emulator — all inside a single Electron app.
