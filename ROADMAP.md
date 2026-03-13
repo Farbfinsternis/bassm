@@ -26,6 +26,7 @@
 | **M6** Text | `Text x,y,"str"` → CPU 8×8 Font, per-Plane per-Row, Shift-Trick, Newline-Support |
 | **PERF-C** CopperColor-Inlining | `CopperColor` inline expandiert; kein JSR-Overhead; ~120 Zyklen/Aufruf gespart |
 | **M-ASSET A2** Sound | `PlaySample "f.raw",ch,per,vol` + `StopSample ch`; Paula DMA; `sound.s`; Asset-Pipeline |
+| **M-ASSET A1** Bitmaps | `LoadImage n,"f.raw",w,h` + `DrawImage n,x,y`; Blitter A→D; `image.s`; 8-Byte-Header |
 
 ---
 
@@ -92,14 +93,18 @@
 ### M-ASSET — Asset-Loading *(Neuer Milestone)*
 > **Ohne Bitmap- und Sound-Loading ist keine vollständige Demo möglich.**
 
-#### A1 — Bitmaps einbetten und anzeigen 🟡 Mittel
-Einfachste Methode: Raw-Bitplane-Daten per `INCBIN` in die Executable einbetten
-und per Blitter in den Back-Buffer kopieren.
-- `[ ]` **`BlitImage "datei.raw", x, y, w, h, planes`** (BASSM-Befehl)
-  - CodeGen: emittiert `INCBIN "datei.raw"` als DATA_C-Label + Blitter-Copy-Code
-  - Blitter: A=Quelle (raw), D=Ziel (_back_planes_ptr + Offset), pro Plane
+#### ✅ A1 — Bitmaps einbetten und anzeigen 🟡 Mittel
+Raw-Bitplane-Daten per `INCBIN` in die Executable einbetten und per Blitter in den Back-Buffer kopieren.
+- `[x]` **`LoadImage index, "datei.raw", width, height`** — Deklaration; bettet Bild als `DATA_C`-Label ein
+  - CodeGen prepends 8-Byte-Header (`dc.w width, height, GFXDEPTH, rowbytes`) vor `INCBIN`
+  - `_DrawImage` liest Header zur Laufzeit — kein Pre-Pass, keine IPC-Roundtrip
+  - `rowbytes = ((width+15)/16)*2` (word-aligned)
+  - Asset-Pipeline: Datei aus Projektordner → tmpDir kopiert (analog zu `LoadSample`)
+- `[x]` **`DrawImage index, x, y`** — zeichnet Bild in Back-Buffer
+  - `image.s`: `_DrawImage(d0=x, d1=y, a0=img_ptr)` — Blitter A→D, Minterm `$09F0` (D=A), pro Plane
+  - BLTDMOD = GFXBPR − rowbytes; BLTSIZE = (height<<6) | (rowbytes/2); `x` muss byte-aligned sein
+  - Kein Clipping; kein Transparenz-Masking (full-replace)
 - `[ ]` IFF ILBM Parser (optional, spätere Phase) — für Standard-Amiga-Bildformat
-- `[ ]` **`GetImage x,y,w,h, arr`** — Screenbereich in Array kopieren (Blitter-Quelle)
 
 #### ✅ A2 — Sound-Wiedergabe 🟡 Mittel
 Amiga hat 4 DMA-Audiokanäle (Paula). Einfachste Ebene: rohe 8-Bit-Samples.
@@ -227,10 +232,9 @@ Dim bx.w(7)    ; Word-Array statt Long-Array
 ✅ M-COPPER               CopperColor y,r,g,b — Rasterbalken CPU-frei fertig
 ✅ M6 Text                Text x,y,"str" — 8×8 Bitmap-Font, CPU-Rendering fertig
 ✅ M-ASSET Sound          PlaySample + PlaySampleOnce + StopSample + vAmiga Audio fertig
+✅ M-ASSET Bitmaps         LoadImage + DrawImage; Blitter A→D; image.s fertig
        ↓
 ⬅ NÄCHSTER SCHRITT
-M-ASSET Bitmaps            Hintergründe, Titelscreen-Grafik
-       ↓
 M10 Hardware-Scrolling     Scrolltext für Greetings/Credits-Part
        ↓
 M9b Joydown/Joyfire        optional: Interaktivität

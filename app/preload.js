@@ -16,4 +16,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Load AROS ROM bytes from disk
   // Returns { main: number[], ext: number[] }
   loadRom: () => ipcRenderer.invoke('bassm:rom'),
+  // Open a project folder; returns { projectDir, projectName, source } or null
+  openProject: () => ipcRenderer.invoke('bassm:open-project'),
+  // Save source text to <projectDir>/main.bassm
+  saveSource: (payload) => ipcRenderer.invoke('bassm:save-source', payload),
 });

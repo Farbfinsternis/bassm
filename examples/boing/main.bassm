@@ -1,27 +1,9 @@
-<!DOCTYPE html>
-<html>
-	<head>
-		<meta charset="UTF-8" />
-		<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; worker-src 'self' file: blob:" />
-		<meta http-equiv="X-Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; worker-src 'self' file: blob:" />
-		<title>BASSM</title>
-		<link rel="stylesheet" href="style.css" />
-	</head>
-	<body>
-		<div id="toolbar">
-			<button id="btn-open">&#128193; Open Project</button>
-			<button id="btn-run">&#9654; Run</button>
-			<span id="project-name"></span>
-			<span id="status">Initialising...</span>
-		</div>
-
-		<script type="text/x-bassm" id="initial-source">
 ; BASSM Demo -- M-Types: Rasterbalken + 8 Bouncing Boxes + Sound
 ; Ball-Daten als Type (AoS): x,y,dx,dy + 2-Frame-History fuer Ghost-Erase
 ; Kein Cls -- Erase-before-Draw: Loeschen von ox2/oy2 (2 Frames alt)
 Graphics 320,256,4
 
-LoadSample 0, "boing.raw"
+LoadSample 0, "sounds/boing.raw"
 
 Type Ball
   Field x, y, dx, dy
@@ -115,15 +97,3 @@ While 1
 
   ScreenFlip
 Wend
-		</script>
-
-		<div id="editor-pane">
-			<div id="editor"></div>
-			<div id="console"></div>
-		</div>
-
-		<script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
-		<script src="src/editor-init.js"></script>
-		<script type="module" src="src/bassm.js"></script>
-	</body>
-</html>

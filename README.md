@@ -108,6 +108,7 @@ waitkey.s      _WaitKey (interrupt-driven CIA-A keyboard)
 flip.s         _ScreenFlip (VBL-synchronised front/back buffer swap)
 copper_raster.s  _SetRasterColor (only if CopperColor is used)
 sound.s        _PlaySample, _StopSample — Paula DMA (only if LoadSample is used)
+image.s        _DrawImage — Blitter A→D image blit (only if LoadImage is used)
 [_main_program]  generated user code
 offload.s      OS restoration (LoadView, RethinkDisplay, return to CLI)
 ```
@@ -170,6 +171,14 @@ offload.s      OS restoration (LoadView, RethinkDisplay, return to CLI)
 | `PlaySampleOnce n,ch[,per[,vol]]` | Play sample once, then fall silent (Paula double-buffer trick) |
 | `StopSample ch` | Stop Paula DMA channel (immediate silence) |
 
+### Images (Blitter)
+| Command | Description |
+|---------|-------------|
+| `LoadImage n,"file.raw",w,h` | Register raw planar image at index n (INCBIN into chip RAM; depth = screen depth) |
+| `DrawImage n,x,y` | Blit image n to back buffer at (x,y); x must be byte-aligned (x%8 == 0) |
+
+**Image file format:** planar bitplane data, no header — plane 0 rows, then plane 1, etc. Each row is `((w+15)/16)*2` bytes (word-aligned). The codegen prepends the 8-byte metadata header automatically.
+
 ### Copper Effects
 | Command | Description |
 |---------|-------------|
@@ -210,9 +219,9 @@ npm test
 
 See [ROADMAP.md](ROADMAP.md) for the full implementation plan.
 
-**Next milestone:** M-ASSET A1 (Bitmaps: BlitImage) · M10 (Hardware Scrolling) · M9b (Joystick/KeyDown).
+**Next milestone:** M10 (Hardware Scrolling) · M9b (Joystick/KeyDown) · M7 (Functions).
 
-Completed milestones: M0 (core pipeline), M1 (integer variables), M2 (If/Else), M3 (While/For), M4 (Select/Case), M5 (drawing commands), M5b (Blitter fill), M5c (Double-Buffering / `ScreenFlip`), M6 (Text / 8×8 font), M8 (Arrays), M9a (WaitKey), M-COPPER (CopperColor raster effects), PERF-A+B+C (optimised codegen), M-ASSET A2 (Sound: Paula DMA looping + one-shot, vAmiga Web Audio).
+Completed milestones: M0 (core pipeline), M1 (integer variables), M2 (If/Else), M3 (While/For), M4 (Select/Case), M5 (drawing commands), M5b (Blitter fill), M5c (Double-Buffering / `ScreenFlip`), M6 (Text / 8×8 font), M8 (Arrays), M9a (WaitKey), M-COPPER (CopperColor raster effects), PERF-A+B+C (optimised codegen), M-ASSET A2 (Sound: Paula DMA looping + one-shot, vAmiga Web Audio), M-ASSET A1 (Bitmaps: `LoadImage`/`DrawImage`, Blitter A→D).
 
 ---
 

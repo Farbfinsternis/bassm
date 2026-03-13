@@ -61,13 +61,13 @@ class BASSM {
      * @returns {{ asm: string }}   The generated assembly (for display)
      * @throws  {Error}             On compile or assemble error
      */
-    async run(source) {
+    async run(source, projectDir) {
         // 1. Blitz2D → m68k assembly
         const asm = this.compile(source);
         const assetFiles = this._codegen.getAssetRefs();
 
         // 2. Assemble with vasmm68k_mot via Electron IPC
-        const result = await window.electronAPI.assemble({ asm, assetFiles });
+        const result = await window.electronAPI.assemble({ asm, assetFiles, projectDir });
         if (!result.ok) throw new Error(result.error);
 
         // 3. Send HUNK binary to emulator — triggers reset + boot from virtual disk
@@ -81,13 +81,17 @@ class BASSM {
 
 const bassm = new BASSM();
 
+let _projectDir = null;
+
 bassm.init()
     .then(() => {
         window.bassm = bassm;
 
-        const btnRun  = document.getElementById('btn-run');
-        const status  = document.getElementById('status');
-        const console_ = document.getElementById('console');
+        const btnRun     = document.getElementById('btn-run');
+        const btnOpen    = document.getElementById('btn-open');
+        const status     = document.getElementById('status');
+        const projectName = document.getElementById('project-name');
+        const console_   = document.getElementById('console');
 
         status.textContent = 'Ready';
 
@@ -99,14 +103,29 @@ bassm.init()
             console_.scrollTop = console_.scrollHeight;
         }
 
+        btnOpen.addEventListener('click', async () => {
+            const result = await window.electronAPI.openProject();
+            if (!result) return;
+            _projectDir = result.projectDir;
+            projectName.textContent = result.projectName;
+            window._monacoEditor.setValue(result.source);
+            status.textContent = 'Ready';
+            console_.innerHTML = '';
+        });
+
         btnRun.addEventListener('click', async () => {
-            const source = document.getElementById('editor').value;
+            const source = window._monacoEditor.getValue();
             console_.innerHTML = '';
             btnRun.disabled = true;
             status.textContent = 'Compiling…';
 
+            // Auto-save to project file before building
+            if (_projectDir) {
+                await window.electronAPI.saveSource({ projectDir: _projectDir, source });
+            }
+
             try {
-                const { asm } = await bassm.run(source);
+                const { asm } = await bassm.run(source, _projectDir);
                 log('── Generated assembly ──────────────────', 'info');
                 log(asm);
                 status.textContent = 'Running';

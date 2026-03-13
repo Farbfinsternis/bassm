@@ -1,6 +1,6 @@
 const {
   app, BrowserWindow, WebContentsView,
-  ipcMain, protocol, net
+  ipcMain, protocol, net, dialog
 } = require('electron/main');
 
 // Allow AudioContext without user gesture (needed for Paula audio in the emulator view)
@@ -113,21 +113,25 @@ ipcMain.on('emulator:status', (_event, text) => {
 });
 
 // Renderer → main: assemble m68k source with vasmm68k_mot
-// Accepts { asm: string, assetFiles: string[] }
+// Accepts { asm: string, assetFiles: string[], projectDir?: string }
 // Returns { ok: true, data: Buffer } or { ok: false, error: string }
 ipcMain.handle('bassm:assemble', (_event, payload) => {
   return new Promise((resolve) => {
-    const { asm: asmText, assetFiles = [] } = payload;
+    const { asm: asmText, assetFiles = [], projectDir } = payload;
+    // Asset root: project folder when open, app/assets/ for the built-in demo.
+    // Filenames may be relative paths (e.g. "sounds/boing.raw") — directory
+    // structure is mirrored into tmpDir so INCBIN resolves them correctly.
+    const assetSrcDir = projectDir || ASSETS;
     const tmpDir = os.tmpdir();
     const srcFile = path.join(tmpDir, 'bassm_src.s');
     const objFile = path.join(tmpDir, 'bassm_out.o');
     const outFile = path.join(tmpDir, 'bassm_out.exe');
 
-    // Copy referenced asset files from app/assets/ into tmpDir so INCBIN can find them
     for (const filename of assetFiles) {
-      const src = path.join(ASSETS, filename);
+      const src = path.join(assetSrcDir, filename);
       const dst = path.join(tmpDir, filename);
       try {
+        fs.mkdirSync(path.dirname(dst), { recursive: true });
         fs.copyFileSync(src, dst);
       } catch (e) {
         resolve({ ok: false, error: `Asset not found: ${filename} (expected at ${src})` });
@@ -173,6 +177,29 @@ ipcMain.handle('bassm:rom', () => {
     main: fs.readFileSync(ROM_MAIN),
     ext:  fs.readFileSync(ROM_EXT),
   };
+});
+
+// Renderer → main: open project folder dialog
+// Returns { projectDir, projectName, source } or null if cancelled
+ipcMain.handle('bassm:open-project', async (_event) => {
+  const result = await dialog.showOpenDialog({
+    title: 'Open BASSM Project Folder',
+    properties: ['openDirectory'],
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  const projectDir  = result.filePaths[0];
+  const projectName = path.basename(projectDir);
+  const sourceFile  = path.join(projectDir, 'main.bassm');
+  let source = '';
+  try { source = fs.readFileSync(sourceFile, 'utf8'); } catch (_) { /* new project — empty editor */ }
+  return { projectDir, projectName, source };
+});
+
+// Renderer → main: save source file back to project
+// Accepts { projectDir: string, source: string }
+ipcMain.handle('bassm:save-source', (_event, { projectDir, source }) => {
+  const sourceFile = path.join(projectDir, 'main.bassm');
+  fs.writeFileSync(sourceFile, source, 'utf8');
 });
 
 // ── Main window ────────────────────────────────────────────────────────────

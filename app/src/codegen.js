@@ -61,6 +61,8 @@ export class CodeGen {
         this._usesRaster    = false;      // true if any CopperColor command present
         this._usesSound     = false;      // true if any LoadSample command present
         this._audioSamples  = new Map();  // index (int) → { filename, label }
+        this._usesImage     = false;      // true if any LoadImage command present
+        this._imageAssets   = new Map();  // index (int) → { filename, label, width, height, rowbytes }
         this._typeDefs      = new Map();  // typeName → { fields: string[] }
         this._typeInstances = new Map();  // instanceName → { typeName, isArray, size: Expr|null }
         this._ptrCacheCtx   = null;       // PERF-2: active pointer cache { instName, regName }
@@ -146,6 +148,9 @@ export class CodeGen {
         }
         if (this._usesSound) {
             out.push('        INCLUDE "sound.s"');
+        }
+        if (this._usesImage) {
+            out.push('        INCLUDE "image.s"');
         }
         out.push('');
         out.push('        even');
@@ -304,6 +309,20 @@ export class CodeGen {
             out.push('');
         }
 
+        // ── Image data (chip RAM, one DATA_C section per unique file) ──────────
+        // An 8-byte header (width, height, GFXDEPTH, rowbytes) is prepended
+        // before the INCBIN so _DrawImage can read metadata at runtime.
+        // The raw file contains only planar bitplane data (no header).
+        for (const [, { filename, label: lbl, width, height, rowbytes }] of this._imageAssets) {
+            out.push(`        SECTION ${lbl}_sec,DATA_C`);
+            out.push(`        XDEF    ${lbl}`);
+            out.push(`${lbl}:`);
+            out.push(`        dc.w    ${width},${height},GFXDEPTH,${rowbytes}`);
+            out.push(`        INCBIN  "${filename}"`);
+            out.push(`        EVEN`);
+            out.push('');
+        }
+
         return out.join('\n');
     }
 
@@ -313,7 +332,10 @@ export class CodeGen {
      * the main process for inclusion in the assembly temp directory.
      */
     getAssetRefs() {
-        return [...this._audioSamples.values()].map(e => e.filename);
+        return [
+            ...[...this._audioSamples.values()].map(e => e.filename),
+            ...[...this._imageAssets.values()].map(e => e.filename),
+        ];
     }
 
     // ── Variable collection (pre-pass) ────────────────────────────────────────
@@ -351,6 +373,26 @@ export class CodeGen {
                         if (!this._audioSamples.has(idxArg.value)) {
                             const lbl = `_snd_${this._audioSamples.size}`;
                             this._audioSamples.set(idxArg.value, { filename: fileArg.value, label: lbl });
+                        }
+                    }
+                }
+                if (stmt.name === 'loadimage') {
+                    this._usesImage = true;
+                    const idxArg  = stmt.args[0];
+                    const fileArg = stmt.args[1];
+                    const wArg    = stmt.args[2];
+                    const hArg    = stmt.args[3];
+                    if (idxArg?.type === 'int' && fileArg?.type === 'string' &&
+                        wArg?.type === 'int'   && hArg?.type  === 'int') {
+                        if (!this._imageAssets.has(idxArg.value)) {
+                            const lbl      = `_img_${this._imageAssets.size}`;
+                            const width    = wArg.value;
+                            const height   = hArg.value;
+                            // rowbytes: bytes per row, word-aligned
+                            const rowbytes = Math.ceil(Math.ceil(width / 8) / 2) * 2;
+                            this._imageAssets.set(idxArg.value, {
+                                filename: fileArg.value, label: lbl, width, height, rowbytes
+                            });
                         }
                     }
                 }
@@ -559,6 +601,36 @@ export class CodeGen {
                 // LoadSample index, "file" — sample was pre-registered in _collectVars.
                 // No assembly code emitted; INCBIN sections appear at end of generate().
                 break;
+
+            case 'loadimage':
+                // LoadImage index, "file", w, h — image was pre-registered in _collectVars.
+                // No assembly code emitted; INCBIN sections with header appear at end of generate().
+                break;
+
+            case 'drawimage': {
+                // DrawImage index, x, y
+                //   index must be an integer literal (resolved at compile time)
+                //   x, y may be any expression
+                // Calling convention: a0=img_ptr, d0=x, d1=y → jsr _DrawImage
+                const imgIdxArg = stmt.args[0];
+                if (!imgIdxArg || imgIdxArg.type !== 'int')
+                    throw new Error(`DrawImage: index must be an integer literal (line ${stmt.line})`);
+                const imgEntry = this._imageAssets.get(imgIdxArg.value);
+                if (!imgEntry)
+                    throw new Error(`DrawImage: image index ${imgIdxArg.value} not loaded — use LoadImage first (line ${stmt.line})`);
+
+                const xExpr = stmt.args[1] ?? { type: 'int', value: 0 };
+                const yExpr = stmt.args[2] ?? { type: 'int', value: 0 };
+
+                // Evaluate y first, push, then evaluate x → d0, pop y → d1
+                this._genExpr(yExpr, lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExpr(xExpr, lines);
+                lines.push('        move.l  (sp)+,d1');
+                lines.push(`        lea     ${imgEntry.label},a0`);
+                lines.push('        jsr     _DrawImage');
+                break;
+            }
 
             case 'playsample': {
                 // PlaySample index, channel [, period [, volume]]

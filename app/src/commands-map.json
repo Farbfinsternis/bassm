@@ -183,5 +183,26 @@
         "args": [
             { "name": "channel", "type": "integer" }
         ]
+    },
+    {
+        "name": "LoadImage",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "index",  "type": "integer" },
+            { "name": "file",   "type": "string"  },
+            { "name": "width",  "type": "integer" },
+            { "name": "height", "type": "integer" }
+        ]
+    },
+    {
+        "name": "DrawImage",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "index", "type": "integer" },
+            { "name": "x",     "type": "integer" },
+            { "name": "y",     "type": "integer" }
+        ]
     }
 ]

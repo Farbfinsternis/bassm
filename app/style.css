@@ -36,7 +36,8 @@ body {
 #toolbar button:hover    { background: #3a3a3a; border-color: #666; }
 #toolbar button:disabled { opacity: .4; cursor: default; }
 
-#status { font-size: 11px; color: #666; margin-left: 4px; }
+#status       { font-size: 11px; color: #666; margin-left: auto; }
+#project-name { font-size: 11px; color: #59a; margin-left: 8px; }
 
 /* ── Editor pane (left half — emulator view occupies the right half) ── */
 #editor-pane {
@@ -49,16 +50,7 @@ body {
 
 #editor {
     flex: 1;
-    background: #111;
-    color: #eee;
-    border: none;
-    resize: none;
-    padding: 8px;
-    font-family: monospace;
-    font-size: 13px;
-    line-height: 1.5;
-    outline: none;
-    tab-size: 4;
+    min-height: 0;
 }
 
 /* ── Output console ── */
