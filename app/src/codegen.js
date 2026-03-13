@@ -63,6 +63,7 @@ export class CodeGen {
         this._audioSamples  = new Map();  // index (int) → { filename, label }
         this._typeDefs      = new Map();  // typeName → { fields: string[] }
         this._typeInstances = new Map();  // instanceName → { typeName, isArray, size: Expr|null }
+        this._ptrCacheCtx   = null;       // PERF-2: active pointer cache { instName, regName }
 
         // ── Locate and validate the Graphics statement ────────────────────────
         const gfxStmt = ast.find(s => s && s.type === 'command' && s.name === 'graphics');
@@ -181,6 +182,7 @@ export class CodeGen {
         for (const stmt of ast) {
             if (!stmt) continue;
             out.push(...this._genStatement(stmt));
+            this._peepholeRedundantReload(out);
         }
         out.push('        rts');
         out.push('');
@@ -673,25 +675,41 @@ export class CodeGen {
                 } else {
                     // ── Runtime path: any arg is a variable/expression ────────
                     // Inline _SetRasterColorRGB + _SetRasterColor bodies.
+                    // PERF-3: skip zero-literal channels entirely
                     const lblA = this._nextLabel();
                     const lblW = this._nextLabel();
 
+                    const rArg = stmt.args[1];
+                    const gArg = stmt.args[2];
+                    const bArg = stmt.args[3];
+                    const rIsZero = rArg.type === 'int' && rArg.value === 0;
+                    const gIsZero = gArg.type === 'int' && gArg.value === 0;
+                    const bIsZero = bArg.type === 'int' && bArg.value === 0;
+
                     // r → bits 11:8 of OCS word, stored in d2
-                    this._genExprArg(stmt, 1, 'CopperColor r', lines);
-                    lines.push('        andi.w  #$F,d0');
-                    lines.push('        lsl.w   #8,d0');
-                    lines.push('        move.w  d0,d2');
+                    if (rIsZero) {
+                        lines.push('        moveq   #0,d2');
+                    } else {
+                        this._genExprArg(stmt, 1, 'CopperColor r', lines);
+                        lines.push('        andi.w  #$F,d0');
+                        lines.push('        lsl.w   #8,d0');
+                        lines.push('        move.w  d0,d2');
+                    }
 
                     // g → bits 7:4, OR into d2
-                    this._genExprArg(stmt, 2, 'CopperColor g', lines);
-                    lines.push('        andi.w  #$F,d0');
-                    lines.push('        lsl.w   #4,d0');
-                    lines.push('        or.w    d0,d2');
+                    if (!gIsZero) {
+                        this._genExprArg(stmt, 2, 'CopperColor g', lines);
+                        lines.push('        andi.w  #$F,d0');
+                        lines.push('        lsl.w   #4,d0');
+                        lines.push('        or.w    d0,d2');
+                    }
 
                     // b → bits 3:0, OR into d2  →  d2 = $0RGB OCS word
-                    this._genExprArg(stmt, 3, 'CopperColor b', lines);
-                    lines.push('        andi.w  #$F,d0');
-                    lines.push('        or.w    d0,d2');
+                    if (!bIsZero) {
+                        this._genExprArg(stmt, 3, 'CopperColor b', lines);
+                        lines.push('        andi.w  #$F,d0');
+                        lines.push('        or.w    d0,d2');
+                    }
 
                     // y → d0, byte offset = y * 8  (COLOR word is at +6)
                     this._genExprArg(stmt, 0, 'CopperColor y', lines);
@@ -826,7 +844,7 @@ export class CodeGen {
             this._genCondBranch(stmt.cond, firstAltLbl, lines);
 
             // Then body
-            for (const s of stmt.then) lines.push(...this._genStatement(s));
+            for (const s of stmt.then) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
             lines.push(`        bra.w   ${endLbl}`);
             lines.push(`${firstAltLbl}:`);
 
@@ -834,17 +852,17 @@ export class CodeGen {
             for (const ei of stmt.elseIfs) {
                 const nextAltLbl = this._nextLabel();
                 this._genCondBranch(ei.cond, nextAltLbl, lines);
-                for (const s of ei.body) lines.push(...this._genStatement(s));
+                for (const s of ei.body) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
                 lines.push(`        bra.w   ${endLbl}`);
                 lines.push(`${nextAltLbl}:`);
             }
 
             // Else body (empty if none)
-            for (const s of stmt.else) lines.push(...this._genStatement(s));
+            for (const s of stmt.else) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
         } else {
             // Simple If without any alternate branch
             this._genCondBranch(stmt.cond, endLbl, lines);
-            for (const s of stmt.then) lines.push(...this._genStatement(s));
+            for (const s of stmt.then) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
         }
 
         lines.push(`${endLbl}:`);
@@ -863,7 +881,7 @@ export class CodeGen {
         // per iteration compared to the generic moveq/tst.l/beq.w sequence.
         if (stmt.cond.type === 'int' && stmt.cond.value !== 0) {
             lines.push(`${topLbl}:`);
-            for (const s of stmt.body) lines.push(...this._genStatement(s));
+            for (const s of stmt.body) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
             lines.push(`        bra.w   ${topLbl}`);
             return;
         }
@@ -874,7 +892,7 @@ export class CodeGen {
         // PERF-A: emit cmp+Bcc directly for comparison conditions
         this._genCondBranch(stmt.cond, endLbl, lines);
 
-        for (const s of stmt.body) lines.push(...this._genStatement(s));
+        for (const s of stmt.body) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
 
         lines.push(`        bra.w   ${topLbl}`);
         lines.push(`${endLbl}:`);
@@ -906,18 +924,44 @@ export class CodeGen {
 
         lines.push(`${topLbl}:`);
 
+        // PERF-2: detect if body exclusively accesses one typed array via loop var.
+        // Disabled when already inside an outer cached loop (no nested caching).
+        const cacheCandidate = this._ptrCacheCtx === null
+            ? this._detectPointerCacheCandidate(stmt.body, stmt.var)
+            : null;
+
         if (stepLit !== null) {
             // ── Literal step: direction known at compile time ─────────────────
-            this._genExpr(stmt.to, lines);
-            lines.push('        move.l  d0,-(sp)');
-            lines.push(`        move.l  _var_${stmt.var},d0`);
-            lines.push('        move.l  (sp)+,d1');        // d0=i, d1=limit
-            lines.push('        cmp.l   d1,d0');            // i - limit
+            // PERF-5: avoid stack round-trip when limit is known at compile time
+            if (stmt.to.type === 'int') {
+                lines.push(`        move.l  _var_${stmt.var},d0`);
+                lines.push(`        cmp.l   #${stmt.to.value},d0`);
+            } else if (this._isSimpleExpr(stmt.to)) {
+                lines.push(`        move.l  _var_${stmt.var},d0`);
+                lines.push(`        cmp.l   ${this._simpleOperand(stmt.to)},d0`);
+            } else {
+                this._genExpr(stmt.to, lines);
+                lines.push('        move.l  d0,-(sp)');
+                lines.push(`        move.l  _var_${stmt.var},d0`);
+                lines.push('        move.l  (sp)+,d1');
+                lines.push('        cmp.l   d1,d0');
+            }
             lines.push(stepLit >= 0
                 ? `        bgt.w   ${endLbl}`              // i > limit → exit
                 : `        blt.w   ${endLbl}`);            // i < limit → exit
 
-            for (const s of stmt.body) lines.push(...this._genStatement(s));
+            // PERF-2: emit pointer cache prologue — a1 = &instName[i]
+            if (cacheCandidate) {
+                lines.push(`        move.l  _var_${stmt.var},d0`);
+                this._emitMultiplyByConst(cacheCandidate.stride, lines);
+                lines.push(`        lea     _tinst_${cacheCandidate.instName},a1`);
+                lines.push(`        add.l   d0,a1`);
+                this._ptrCacheCtx = { instName: cacheCandidate.instName, regName: 'a1' };
+            }
+
+            for (const s of stmt.body) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
+
+            if (cacheCandidate) this._ptrCacheCtx = null;
 
             // Step increment / decrement
             const av = Math.abs(stepLit);
@@ -959,7 +1003,19 @@ export class CodeGen {
             lines.push(`        blt.w   ${endLbl}`);
 
             lines.push(`${bodyLbl}:`);
-            for (const s of stmt.body) lines.push(...this._genStatement(s));
+
+            // PERF-2: emit pointer cache prologue
+            if (cacheCandidate) {
+                lines.push(`        move.l  _var_${stmt.var},d0`);
+                this._emitMultiplyByConst(cacheCandidate.stride, lines);
+                lines.push(`        lea     _tinst_${cacheCandidate.instName},a1`);
+                lines.push(`        add.l   d0,a1`);
+                this._ptrCacheCtx = { instName: cacheCandidate.instName, regName: 'a1' };
+            }
+
+            for (const s of stmt.body) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
+
+            if (cacheCandidate) this._ptrCacheCtx = null;
 
             // Step: i += step (re-evaluate)
             this._genExpr(stmt.step, lines);
@@ -1025,14 +1081,14 @@ export class CodeGen {
         // ── Case bodies ───────────────────────────────────────────────────────
         for (let i = 0; i < stmt.cases.length; i++) {
             lines.push(`${caseLabels[i]}:`);
-            for (const s of stmt.cases[i].body) lines.push(...this._genStatement(s));
+            for (const s of stmt.cases[i].body) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
             lines.push(`        bra.w   ${endLbl}`);
         }
 
         // ── Default body ──────────────────────────────────────────────────────
         if (stmt.default.length > 0) {
             lines.push(`${defLbl}:`);
-            for (const s of stmt.default) lines.push(...this._genStatement(s));
+            for (const s of stmt.default) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
         }
 
         // ── Pop selector + end ────────────────────────────────────────────────
@@ -1071,12 +1127,17 @@ export class CodeGen {
             // Constant index: offset known at compile time
             this._genExpr(stmt.expr, lines);
             lines.push(`        move.l  d0,_tinst_${stmt.instance}+${stmt.index.value * stride + fieldOff}`);
+        } else if (this._ptrCacheCtx && this._ptrCacheCtx.instName === stmt.instance
+                   && stmt.index && stmt.index.type === 'ident') {
+            // PERF-2: pointer cache active — a1 already points to &inst[i]
+            this._genExpr(stmt.expr, lines);
+            lines.push(`        move.l  d0,${fieldOff}(${this._ptrCacheCtx.regName})`);
         } else {
             // Variable index: push value, compute index offset, store
             this._genExpr(stmt.expr, lines);
             lines.push(`        move.l  d0,-(sp)`);
             this._genExpr(stmt.index, lines);
-            lines.push(`        muls.w  #${stride},d0`);
+            this._emitMultiplyByConst(stride, lines);
             lines.push(`        lea     _tinst_${stmt.instance},a0`);
             lines.push(`        add.l   d0,a0`);
             lines.push(`        move.l  (sp)+,${fieldOff}(a0)`);
@@ -1132,10 +1193,14 @@ export class CodeGen {
                 } else if (expr.index && expr.index.type === 'int') {
                     // Constant index: offset known at compile time
                     lines.push(`        move.l  _tinst_${expr.instance}+${expr.index.value * stride + fieldOff},d0`);
+                } else if (this._ptrCacheCtx && this._ptrCacheCtx.instName === expr.instance
+                           && expr.index.type === 'ident') {
+                    // PERF-2: pointer cache active — a1 already points to &inst[i]
+                    lines.push(`        move.l  ${fieldOff}(${this._ptrCacheCtx.regName}),d0`);
                 } else {
                     // Variable index: compute at runtime
                     this._genExpr(expr.index, lines);
-                    lines.push(`        muls.w  #${stride},d0`);
+                    this._emitMultiplyByConst(stride, lines);
                     lines.push(`        lea     _tinst_${expr.instance},a0`);
                     lines.push(`        add.l   d0,a0`);
                     lines.push(`        move.l  ${fieldOff}(a0),d0`);
@@ -1179,6 +1244,125 @@ export class CodeGen {
         if (expr.type === 'int')   return `#${expr.value}`;
         if (expr.type === 'ident') return `_var_${expr.name}`;
         throw new Error('[CodeGen] _simpleOperand called on non-simple expr');
+    }
+
+    // ── PERF-1: lsl.l instead of muls.w for power-of-two constants ───────────
+    //
+    // muls.w costs 38–70 cycles on 68000 (depends on set bits in multiplier).
+    // For power-of-two strides (e.g. struct with 8 fields → stride=32 → lsl.l #5)
+    // lsl.l #n costs 8+2n cycles (max 18 for n=5) — up to 4× faster.
+    /** Emit `d0 *= n`. Uses lsl.l #shift if n is a power of two, else muls.w. */
+    _emitMultiplyByConst(n, lines) {
+        const shift = 31 - Math.clz32(n);
+        if (n > 0 && (1 << shift) === n) {
+            lines.push(`        lsl.l   #${shift},d0`);
+        } else {
+            lines.push(`        move.l  #${n},d1`);
+            lines.push(`        muls.w  d1,d0`);
+        }
+    }
+
+    /** PERF-4: Remove `move.l d0,_var_X` immediately followed by `move.l _var_X,d0`. */
+    _peepholeRedundantReload(lines) {
+        const n = lines.length;
+        if (n < 2) return;
+        const prev = lines[n - 2].trim();
+        const curr = lines[n - 1].trim();
+        if (curr.endsWith(':')) return;
+        const storeRe = /^move\.l\s+d0,(_var_\w+)$/;
+        const loadRe  = /^move\.l\s+(_var_\w+),d0$/;
+        const storeM  = storeRe.exec(prev);
+        const loadM   = loadRe.exec(curr);
+        if (storeM && loadM && storeM[1] === loadM[1]) lines.pop();
+    }
+
+
+    // ── PERF-2: struct pointer caching in For-loops ──────────────────────────
+    //
+    // When a For-loop body exclusively accesses one typed array via the loop
+    // variable (b(i)\field), the base pointer is computed once per iteration
+    // into a1, and all field reads/writes become OFFSET(a1) — 1 instruction
+    // instead of lsl + lea + add.l + move (4-5 instructions).
+    //
+    // Fragment safety: box.s saves/restores d0-d7/a0-a2 (movem.l); sound.s
+    // saves/restores d0-d5/a0-a1.  All BASSM subroutines preserve a1.
+    // Nested loops: outer _ptrCacheCtx blocks inner activation (no a1 clash).
+
+    /** Collect all variable-indexed type_field accesses in stmts.
+     *  Does NOT recurse into nested For/While bodies. */
+    _collectTypeFieldAccesses(stmts, accesses) {
+        for (const s of stmts) {
+            if (!s) continue;
+            if (s.type === 'for' || s.type === 'while') continue;
+            if (s.type === 'type_field_write') {
+                if (s.index) accesses.push({ instance: s.instance, index: s.index });
+                this._collectTypeFieldAccessesInExpr(s.expr, accesses);
+            } else if (s.type === 'assign') {
+                this._collectTypeFieldAccessesInExpr(s.expr, accesses);
+            } else if (s.type === 'array_assign') {
+                this._collectTypeFieldAccessesInExpr(s.index, accesses);
+                this._collectTypeFieldAccessesInExpr(s.expr, accesses);
+            } else if (s.type === 'command') {
+                for (const arg of s.args) this._collectTypeFieldAccessesInExpr(arg, accesses);
+            } else if (s.type === 'if') {
+                this._collectTypeFieldAccesses(s.then, accesses);
+                for (const ei of s.elseIfs) this._collectTypeFieldAccesses(ei.body, accesses);
+                this._collectTypeFieldAccesses(s.else, accesses);
+            }
+        }
+    }
+
+    _collectTypeFieldAccessesInExpr(expr, accesses) {
+        if (!expr) return;
+        switch (expr.type) {
+            case 'type_field_read':
+                if (expr.index) accesses.push({ instance: expr.instance, index: expr.index });
+                break;
+            case 'binop':
+                this._collectTypeFieldAccessesInExpr(expr.left,    accesses);
+                this._collectTypeFieldAccessesInExpr(expr.right,   accesses);
+                break;
+            case 'unary':
+                this._collectTypeFieldAccessesInExpr(expr.operand, accesses);
+                break;
+            case 'array_read':
+                this._collectTypeFieldAccessesInExpr(expr.index, accesses);
+                break;
+        }
+    }
+
+    /** Returns {instName, stride} when the loop body exclusively accesses one
+     *  typed array via the loop variable; null otherwise. */
+    _detectPointerCacheCandidate(body, loopVar) {
+        if (this._bodyAssignsVar(body, loopVar)) return null;
+        const accesses = [];
+        this._collectTypeFieldAccesses(body, accesses);
+        const varAccesses = accesses.filter(a => a.index.type !== 'int');
+        if (varAccesses.length === 0) return null;
+        if (!varAccesses.every(a => a.index.type === 'ident' && a.index.name === loopVar)) return null;
+        const instances = new Set(varAccesses.map(a => a.instance));
+        if (instances.size !== 1) return null;
+        const instName = [...instances][0];
+        const inst = this._typeInstances.get(instName);
+        if (!inst || !inst.isArray) return null;
+        const typeDef = this._typeDefs.get(inst.typeName);
+        if (!typeDef) return null;
+        return { instName, stride: typeDef.fields.length * 4 };
+    }
+
+    /** True if any statement in stmts (not recursing into nested loops) assigns varName. */
+    _bodyAssignsVar(stmts, varName) {
+        for (const s of stmts) {
+            if (!s) continue;
+            if (s.type === 'for' || s.type === 'while') continue;
+            if (s.type === 'assign' && s.target === varName) return true;
+            if (s.type === 'if') {
+                if (this._bodyAssignsVar(s.then, varName)) return true;
+                for (const ei of s.elseIfs) if (this._bodyAssignsVar(ei.body, varName)) return true;
+                if (this._bodyAssignsVar(s.else, varName)) return true;
+            }
+        }
+        return false;
     }
 
     // ── PERF-A: direct conditional branch ────────────────────────────────────
@@ -1250,20 +1434,32 @@ export class CodeGen {
         }
 
         // ── Arithmetic: * / ───────────────────────────────────────────────────
-        // muls.w / divs.w require a register source — keep generic push/pop path.
-        if (op === '*' || op === '/') {
+        if (op === '*') {
+            // PERF-1: if right operand is a power-of-two literal, use lsl.l
+            if (expr.right.type === 'int') {
+                this._genExpr(expr.left, lines);
+                this._emitMultiplyByConst(expr.right.value, lines);
+            } else if (expr.left.type === 'int') {
+                this._genExpr(expr.right, lines);
+                this._emitMultiplyByConst(expr.left.value, lines);
+            } else {
+                this._genExpr(expr.right, lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExpr(expr.left, lines);
+                lines.push('        move.l  (sp)+,d1');
+                lines.push('        muls.w  d1,d0');
+            }
+            return;
+        }
+        if (op === '/') {
+            // divs.w requires a register source — keep generic push/pop path.
             this._genExpr(expr.right, lines);
             lines.push('        move.l  d0,-(sp)');
             this._genExpr(expr.left, lines);
             lines.push('        move.l  (sp)+,d1');   // d0=left, d1=right
-            if (op === '*') {
-                // muls.w: d0.w × d1.w → d0.l (signed, 16×16→32)
-                lines.push('        muls.w  d1,d0');
-            } else {
-                // divs.w: d0.l ÷ d1.w → d0.w quotient; ext.l to 32 bits
-                lines.push('        divs.w  d1,d0');
-                lines.push('        ext.l   d0');
-            }
+            // divs.w: d0.l ÷ d1.w → d0.w quotient; ext.l to 32 bits
+            lines.push('        divs.w  d1,d0');
+            lines.push('        ext.l   d0');
             return;
         }
 
