@@ -68,6 +68,31 @@ x = 0 : y = 0 : dx = 2 : dy = 3
 If x < 0 : x = 0 : dx = -dx : EndIf
 ```
 
+### Include
+
+```blitz
+Include "dateiname.bassm"
+```
+
+Bindet den Inhalt einer anderen `.bassm`-Datei an dieser Stelle ein.
+Der Inhalt wird **vor dem Kompilieren** eingelesen und ersetzt die `Include`-Zeile
+vollständig. Der Pfad ist relativ zum Projektordner.
+
+```blitz
+; main.bassm
+Include "constants.bassm"    ; Konstanten und Palette-Definitionen
+Include "physics.bassm"      ; Physik-Hilfsfunktionen
+
+Graphics 320,256,4
+; ...
+```
+
+`Include` lädt Dateien rekursiv — eine eingebundene Datei kann selbst wieder `Include`
+verwenden. Zirkuläre Includes (A → B → A) werden erkannt und als Fehler gemeldet.
+
+> **Hinweis:** `Include` ist nur in Projekten verfügbar, die mit **„Open Folder"**
+> geöffnet wurden. Im eingebetteten Demo-Editor steht es nicht zur Verfügung.
+
 ### Groß-/Kleinschreibung
 
 Keywords und Befehlsnamen sind **nicht case-sensitiv** (`if` = `If` = `IF`).
@@ -879,6 +904,14 @@ Wend
 
 ---
 
+## Anhang: Präprozessor-Direktiven
+
+```
+Include "dateiname.bassm"
+```
+
+Werden vor dem Lexer ausgewertet — nicht Teil der eigentlichen Sprache.
+
 ## Anhang: Reservierte Schlüsselwörter
 
 ```
@@ -899,6 +932,7 @@ WaitVbl    WaitKey   Delay       ScreenFlip  End
 Plot       Line      Rect        Box
 Text       NPrint
 LoadSample PlaySample  PlaySampleOnce  StopSample
+LoadImage  DrawImage
 ```
 
 ---

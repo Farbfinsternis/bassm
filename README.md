@@ -187,6 +187,12 @@ offload.s      OS restoration (LoadView, RethinkDisplay, return to CLI)
 |---------|-------------|
 | `CopperColor y,r,g,b` | Set background colour (COLOR00) at raster line y via copper list |
 
+### Code Organisation
+
+| Directive | Description |
+|-----------|-------------|
+| `Include "file.bassm"` | Insert source file at this position (relative to project folder; recursive; circular detection) |
+
 ### Functions & Procedures
 
 Blitz2D signature convention — parentheses mark the distinction:
@@ -255,7 +261,7 @@ See [ROADMAP.md](ROADMAP.md) for the full implementation plan.
 
 **Next milestone:** LANG-C (number→text output) · M9b (Joystick/KeyDown) · M10 (Hardware Scrolling).
 
-Completed milestones: M0 (core pipeline), M1 (integer variables), M2 (If/Else), M3 (While/For), M4 (Select/Case), M5 (drawing commands), M5b (Blitter fill), M5c (Double-Buffering / `ScreenFlip`), M6 (Text / 8×8 font), M7 (Functions & Procedures: stack frame, local variables, Blitz2D signature convention), M8 (Arrays), M9a (WaitKey), M-COPPER (CopperColor raster effects), PERF-A+B+C (optimised codegen), M-ASSET A2 (Sound: Paula DMA looping + one-shot, vAmiga Web Audio), M-ASSET A1 (Bitmaps: `LoadImage`/`DrawImage`, Blitter A→D), LANG-A (`And`/`Or`/`Not`: logical and bitwise operators), LANG-B (`Mod`: modulo operator).
+Completed milestones: M0 (core pipeline), M1 (integer variables), M2 (If/Else), M3 (While/For), M4 (Select/Case), M5 (drawing commands), M5b (Blitter fill), M5c (Double-Buffering / `ScreenFlip`), M6 (Text / 8×8 font), M7 (Functions & Procedures: stack frame, local variables, Blitz2D signature convention), M8 (Arrays), M9a (WaitKey), M-COPPER (CopperColor raster effects), PERF-A+B+C (optimised codegen), M-ASSET A2 (Sound: Paula DMA looping + one-shot, vAmiga Web Audio), M-ASSET A1 (Bitmaps: `LoadImage`/`DrawImage`, Blitter A→D), LANG-A (`And`/`Or`/`Not`: logical and bitwise operators), LANG-B (`Mod`: modulo operator), TOOL-1 (`Include`: source file inclusion, recursive, circular detection).
 
 ---
 

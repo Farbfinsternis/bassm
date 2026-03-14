@@ -30,6 +30,7 @@
 | **M7** Funktionen / Prozeduren | `Function name(params)` (Rückgabewert, Klammern) + `Function name params` (Prozedur, ohne Klammern); Stack-Frame via LINK/UNLK; lokale Parameter + Variablen; `Return [expr]`; Blitz2D-Signatur-Konvention |
 | **LANG-A** And / Or / Not | `And`/`Or` (bitweise, auch logisch für -1/0 Werte) + `Not` (Komplement); alle drei als Präzedenzebenen im Parser; PERF-B für einfache Operanden; constant-folding für `Not <literal>` |
 | **LANG-B** Mod | Modulo-Operator; gleiche Präzedenz wie `*`/`/`; `divs.w + swap + ext.l`; PERF für literal Divisor |
+| **TOOL-1** Include | `Include "file.bassm"` — rekursive Datei-Inklusion im PreProcessor; async IPC-Readback; Circular-Detection; Path-Traversal-Schutz |
 
 ---
 
@@ -174,6 +175,31 @@ If ticks Mod 50 = 0 Then ...        ; every second
 
 ---
 
+### ✅ TOOL-1 — `Include` — Code aus externen Dateien einbinden
+
+```blitz
+; main.bassm
+Include "constants.bassm"
+Include "physics.bassm"
+Include "graphics_utils.bassm"
+
+Graphics 320,256,3
+; ... Hauptprogramm
+```
+
+- `[x]` PreProcessor: `expandIncludes(source, { readFile, _visited })` — rekursive Expansion
+  - Erkennt `Include "filename"` (case-insensitiv) als eigene Zeile (auch mit `;`-Kommentar)
+  - `readFile(filename)` — async Callback; Dateiname relativ zum Projektordner
+  - Circular-Detection via `Set<string>` der bereits expandierten Dateinamen
+  - Klare Fehlermeldungen: "file not found", "circular include", "requires open project"
+  - Läuft **vor** `process()` (vor Comment-Strip und Colon-Split) — im rohen Quelltext
+- `[x]` `bassm.js` `run()`: `await expandIncludes()` vor `compile()` — async Pre-Pass
+- `[x]` IPC `bassm:read-file` in `main.js`: liest Datei aus `projectDir`; Path-Traversal-Schutz
+- `[x]` `preload.js`: `readFile(payload)` via `ipcRenderer.invoke('bassm:read-file', payload)` exponiert
+- `[ ]` `Include` in Docs dokumentieren
+
+---
+
 ### LANG-C — Zahlen als Text ausgeben *(Feature-Complete-Blocker)*
 > `Text` akzeptiert nur String-Literale. Score, Lives, Timer — alles nicht anzeigbar.
 > Minimal nötig: `Str$(n)` oder `NPrint n` mit Integer-Argument.
@@ -312,8 +338,9 @@ Dim bx.w(7)    ; Word-Array statt Long-Array
 ✅ M7 Funktionen          Function/Proc; Stack-Frame; lokale Variablen; Return fertig
        ↓
 ⬅ SPRACHVOLLSTÄNDIGKEIT (Blocker)
-LANG-A  And / Or / Not    zusammengesetzte Bedingungen — fehlt im CodeGen
-LANG-B  Mod               Wraparound / Frame-Cycling — fehlt im CodeGen
+✅ LANG-A  And / Or / Not    zusammengesetzte Bedingungen — fertig
+✅ LANG-B  Mod               Wraparound / Frame-Cycling — fertig
+✅ TOOL-1  Include           Code-Aufteilung in Dateien — fertig
 LANG-C  Str$(n) / NPrint  Zahlen als Text — ohne das kein Score-Display
 M9b     Joydown/KeyDown   non-blocking Input — ohne das kein echtes Spiel
        ↓

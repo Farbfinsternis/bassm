@@ -13,6 +13,51 @@
 export class PreProcessor {
 
     /**
+     * Asynchronously expand Include "filename" directives, recursively.
+     * All filenames are resolved relative to the project directory via readFile.
+     * Must be called BEFORE process() — operates on raw source text.
+     *
+     * @param {string} source
+     * @param {{ readFile: (filename: string) => Promise<string>, _visited?: Set<string> }} opts
+     * @returns {Promise<string>}
+     */
+    async expandIncludes(source, { readFile, _visited = new Set() } = {}) {
+        const normalised = source.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        const lines = normalised.split('\n');
+        const result = [];
+
+        for (const line of lines) {
+            // Match:  Include "filename"  (optional trailing ; comment)
+            const m = line.match(/^\s*Include\s+"([^"]+)"\s*(?:;.*)?$/i);
+            if (!m) { result.push(line); continue; }
+
+            const filename = m[1];
+
+            if (!readFile) {
+                throw new Error(`Include requires an open project folder: "${filename}"`);
+            }
+            if (_visited.has(filename)) {
+                throw new Error(`Circular Include detected: "${filename}"`);
+            }
+
+            const visited2 = new Set(_visited);
+            visited2.add(filename);
+
+            let included;
+            try {
+                included = await readFile(filename);
+            } catch (e) {
+                throw new Error(`Include: file not found: "${filename}"`);
+            }
+
+            const expanded = await this.expandIncludes(included, { readFile, _visited: visited2 });
+            result.push(expanded);
+        }
+
+        return result.join('\n');
+    }
+
+    /**
      * @param {string} source  Raw Blitz2D source text
      * @returns {string}       Cleaned source (same line count, comments removed)
      */

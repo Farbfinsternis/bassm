@@ -195,6 +195,19 @@ ipcMain.handle('bassm:open-project', async (_event) => {
   return { projectDir, projectName, source };
 });
 
+// Renderer → main: read an included source file from projectDir
+// Accepts { projectDir: string, filename: string }
+// Returns the file content as a UTF-8 string.
+// Security: resolves path strictly within projectDir (no path traversal).
+ipcMain.handle('bassm:read-file', (_event, { projectDir, filename }) => {
+  const base     = path.resolve(projectDir);
+  const resolved = path.resolve(projectDir, filename);
+  if (!resolved.startsWith(base + path.sep)) {
+    throw new Error(`Include path escapes project directory: "${filename}"`);
+  }
+  return fs.readFileSync(resolved, 'utf8');
+});
+
 // Renderer → main: save source file back to project
 // Accepts { projectDir: string, source: string }
 ipcMain.handle('bassm:save-source', (_event, { projectDir, source }) => {

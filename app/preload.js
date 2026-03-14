@@ -20,4 +20,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openProject: () => ipcRenderer.invoke('bassm:open-project'),
   // Save source text to <projectDir>/main.bassm
   saveSource: (payload) => ipcRenderer.invoke('bassm:save-source', payload),
+  // Read an included source file from the project directory (for Include "file.bassm")
+  readFile: (payload) => ipcRenderer.invoke('bassm:read-file', payload),
 });

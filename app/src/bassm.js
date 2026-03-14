@@ -62,8 +62,14 @@ class BASSM {
      * @throws  {Error}             On compile or assemble error
      */
     async run(source, projectDir) {
+        // 0. Expand Include directives (requires an open project folder)
+        const readFile = projectDir
+            ? (filename) => window.electronAPI.readFile({ projectDir, filename })
+            : null;
+        const expanded = await this._preProcessor.expandIncludes(source, { readFile });
+
         // 1. Blitz2D → m68k assembly
-        const asm = this.compile(source);
+        const asm = this.compile(expanded);
         const assetFiles = this._codegen.getAssetRefs();
 
         // 2. Assemble with vasmm68k_mot via Electron IPC
