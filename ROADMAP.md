@@ -34,7 +34,7 @@
 
 ---
 
-## 📋 Geplante Milestones — Demo-Priorität
+## 📋 Geplante Milestones — Ziel: 100% Amiga-Game-Complete
 
 ---
 
@@ -196,41 +196,266 @@ Graphics 320,256,3
 - `[x]` `bassm.js` `run()`: `await expandIncludes()` vor `compile()` — async Pre-Pass
 - `[x]` IPC `bassm:read-file` in `main.js`: liest Datei aus `projectDir`; Path-Traversal-Schutz
 - `[x]` `preload.js`: `readFile(payload)` via `ipcRenderer.invoke('bassm:read-file', payload)` exponiert
-- `[ ]` `Include` in Docs dokumentieren
+- `[x]` `Include` in Docs dokumentieren (bassm_doc.md, docs.de.md, docs.en.md, README.md)
 
 ---
 
-### LANG-C — Zahlen als Text ausgeben *(Feature-Complete-Blocker)*
+### LANG-C — Zahlen als Text ausgeben *(Game-Complete-Blocker)*
 > `Text` akzeptiert nur String-Literale. Score, Lives, Timer — alles nicht anzeigbar.
 > Minimal nötig: `Str$(n)` oder `NPrint n` mit Integer-Argument.
 
 ```blitz
 Text 10, 10, "Score: " + Str$(score)
+Text 10, 20, "Lives:  " + Str$(lives)
 NPrint score                        ; Blitz2D-Kompatibilität
 ```
 
-- `[ ]` `int_to_str` Routine in `text.s` (oder eigenem Fragment): `divs.w #10` loop → Ziffern auf Stack, dann rückwärts ausgeben
-- `[ ]` `Str$(n)` — Funktion: konvertiert Integer → temporären String-Puffer, gibt Adresse in d0 zurück
-- `[ ]` `NPrint n` — Prozedur: `int_to_str` + `_Text` an aktueller Position (oder feste Position)
-- `[ ]` CodeGen: `Str$(expr)` als `call_expr` behandeln, result-Adresse als String-Pointer weiterreichen
-- `[ ]` `Text x,y,"prefix" + Str$(n)` — Concatenation zur Compile-Zeit nicht möglich; Lösung: `Text x,y,"prefix"` + `NPrint x+offset,y,n`
+- `[ ]` `int_to_str` Routine in `text.s` (oder eigenem Fragment): `divs.w #10` loop → Ziffern auf Stack, dann rückwärts ausgeben; negatives Vorzeichen `-` voranstellen
+- `[ ]` `Str$(n)` — Funktion: konvertiert Integer → temporären String-Puffer (`_str_buf` in BSS), gibt Adresse in d0 zurück
+- `[ ]` `NPrint x,y,n` — Prozedur: `int_to_str` + `_Text` an angegebener Position
+- `[ ]` CodeGen: `Str$(expr)` als `call_expr`; result-Adresse als String-Pointer an `_Text` weiterreichen
+- `[ ]` String-Concatenation: `"prefix" + Str$(n)` → zwei aufeinanderfolgende Text-Aufrufe; oder `NText x,y,"prefix",n` als kombinierter Befehl
 
 ---
 
-### M10 — Erweiterte Grafik
+### LANG-D — Math-Funktionen: `Rnd` + `Abs`
 
-- `[ ]` **Hardware-Scrolling** — `ScrollX n` setzt BPLCON1 + BPL1MOD/BPL2MOD; klassischer
-  Scrolltext-Effekt im Abspann
-- `[ ]` **Hardware-Sprites** — `DefSprite n, data`, `MoveSprite n,x,y`; 8 Sprites × 16px,
-  eigene Farben, keine Bitplane-/Blitter-Last
-- `[ ]` **`Circle x,y,r`** — Bresenham-Kreis, CPU (niedrige Prio)
+```blitz
+x = Rnd(320)              ; zufällige X-Position 0..319
+speed = Rnd(3) + 1        ; 1..3
+dist = Abs(x2 - x1)       ; absoluter Abstand
+If Abs(vx) < 1 Then vx = 1  ; Minimalgeschwindigkeit
+```
+
+- `[ ]` **`Rnd(n)`** — Zufallszahl 0..n−1
+  - Linearer Kongruenzgenerator: `seed = seed × 1664525 + 1013904223` (Numerical Recipes)
+  - `_rnd_seed` BSS Long; `muls.l` (68020) oder `muls.w` + Shift-Kombination (68000-safe)
+  - Rückgabe: `(seed >> 16) And $7FFF Mod n`; Codegen emittiert JSR `_Rnd` mit arg in d1
+  - Fragment `rnd.s` — nur eingebunden wenn `Rnd` verwendet wird
+- `[ ]` **`Abs(n)`** — absoluter Betrag
+  - Inline-Expansion: `tst.l d0 / bge .skip / neg.l d0`; kein Fragment nötig
+  - Codegen: `abs_expr` node → 3 Instruktionen inline
+- `[ ]` Parser: `Rnd(expr)` als `call_expr`; `Abs(expr)` als `unary_builtin`
 
 ---
 
-### M9b — Eingabe (Rest)
+### LANG-E — Fehlende Operatoren: `Xor` · `Shl` · `Shr`
 
-- `[ ]` **`Joydown(port)`** / **`Joyfire(port)`** — CIA JOYSTICK-Register auslesen (non-blocking)
-- `[ ]` **`KeyDown(scancode)`** — Echtzeit-Tastaturabfrage aus `_kbd_pending` (non-blocking)
+```blitz
+flags = flags Xor %00000100     ; Bit 2 toggeln
+color = r Shl 8 Or g Shl 4 Or b ; OCS-Palette-Word packen
+x = x Shr 4                     ; schnelle Division durch 16
+mask = 1 Shl bitnum              ; Bit-Maske berechnen
+```
+
+- `[ ]` **`Xor`** — bitweises XOR; gleiche Präzedenz wie `And`/`Or`
+  - Codegen: `eor.l d1,d0` (68k nennt es EOR, nicht XOR)
+  - Parser-Ebene: `Or < Xor < And` oder `And < Xor < Or`?
+    → Blitz2D: Xor auf gleicher Ebene wie Or (`Or`/`Xor` zwischen And und Comparison)
+- `[ ]` **`Shl`** — arithmetischer Linksshift; gleiche Präzedenz wie `*`/`/`/`Mod`
+  - Literal rechts: `asl.l #n,d0` (n≤8 direkt; n>8: loop oder `lsl.l d1,d0`)
+  - Variable rechts: Shift-Count in d1, `lsl.l d1,d0`
+- `[ ]` **`Shr`** — arithmetischer Rechtsshift (vorzeichenbehaftet: `asr.l`)
+  - Literal: `asr.l #n,d0`; Variable: `asr.l d1,d0`
+- `[ ]` PERF-B Erweiterung: `_isSimpleExpr` für Shl/Shr mit literal Shift-Count
+
+> **Shl/Shr sind auf dem Amiga besonders wichtig:** OCS-Farbregister, DMA-Bits,
+> Sprite-Koordinaten, BLTCON-Felder — alle sind bit-packed. Ohne Shift-Operatoren
+> muss man mit `*` und `/` arbeiten, was auf dem 68000 deutlich langsamer ist.
+
+---
+
+### LANG-F — Kontrollfluss-Vervollständigung: `Repeat/Until` · `Exit`
+
+```blitz
+; Repeat/Until — natürliche "do while"-Schleife
+Repeat
+  ReadInput
+  UpdatePhysics
+  ScreenFlip
+Until lives = 0 Or level > 10
+
+; Exit — frühzeitiger Schleifenabbruch
+For i = 0 To 63
+  If arr(i) = target Then found = i : Exit
+Next i
+
+While 1
+  If quit Then Exit
+  UpdateGame
+Wend
+```
+
+- `[ ]` **`Repeat … Until cond`**
+  - Parser: `REPEAT` → Body → `UNTIL` → Bedingung
+  - CodeGen: Loop-Label vor Body; `_genCondBranch(cond, loopLabel, lines)` am Ende (Sprung wenn falsch → zurück)
+  - Until-Bedingung: wahr = verlassen, falsch = wiederholen (invertierte Logik gegenüber While)
+- `[ ]` **`Exit [n]`** — verlässt n verschachtelte Schleifen (Standard: 1)
+  - CodeGen: `bra.w .loop_end_label`; braucht Label-Stack für While/For/Repeat
+  - `n > 1` selten, aber in Blitz2D dokumentiert — zunächst nur n=1 implementieren
+
+---
+
+### M9b — Eingabe (Joystick · Keyboard · Maus)
+
+```blitz
+; Joystick
+If Joydown(1) And %0001 Then y = y - 1  ; hoch
+If Joydown(1) And %0010 Then y = y + 1  ; runter
+If Joydown(1) And %0100 Then x = x - 1  ; links
+If Joydown(1) And %1000 Then x = x + 1  ; rechts
+If Joyfire(1) Then Fire
+
+; Tastatur (non-blocking)
+If KeyDown($45) Then End    ; Escape
+
+; Maus
+mx = MouseX : my = MouseY
+If MouseB(1) Then Click
+```
+
+- `[ ]` **`Joydown(port)`** — gibt Richtungs-Bitfeld zurück (Bit 0=oben, 1=unten, 2=links, 3=rechts)
+  - Liest `JOY0DAT`/`JOY1DAT` ($DFF00A/$DFF00C) — Quadratur-Decoder
+  - Standard-Dekodierung: `right = (dat>>1) Xor dat`, dann Bits ausmaskieren
+  - CIAAPRA ($BFE001) für Up/Down (Joystick Port 1)
+- `[ ]` **`Joyfire(port)`** — Feuer-Knopf; CIAAPRA Bit 7 (Port 1) / Bit 6 (Port 2)
+- `[ ]` **`KeyDown(scancode)`** — Echtzeit-Tastencheck
+  - CIA-A Handler in `startup.s` bereits vorhanden; Erweiterung: Key-Down-Matrix statt nur `_kbd_pending`
+  - `_kbd_matrix` 8-Byte-BSS (64 Tasten); Handler setzt/löscht Bits beim Key-Down/Up
+- `[ ]` **`MouseX`** / **`MouseY`** — Maus-Delta aus JOY0DAT (Low-Byte X, High-Byte Y)
+  - Absolut-Position akkumulieren: `_mouse_x`/`_mouse_y` BSS, vom VBL-Handler geupdated
+- `[ ]` **`MouseB(n)`** — Maustaste; Bit 10 von POTGOR ($DFF016) für rechte Taste; CIAAPRA für linke
+
+---
+
+### M-SYS — Direkter Hardware-Zugriff: `Peek` · `Poke`
+
+```blitz
+; Hardware-Register direkt lesen/schreiben
+beam   = PeekW($DFF006) And $1FF  ; vertikale Strahlposition (VPOSR)
+PokeW  $DFF180, $0F00             ; COLOR00 direkt auf Rot setzen
+PokeL  $DFF040, bltcon            ; Blitter-Control direkt schreiben
+
+; Chip-RAM manipulieren
+PokеB $BFE001, PeekB($BFE001) And %11111110  ; CIA-A bit0 löschen
+```
+
+- `[ ]` **`PeekB(addr)`** / **`PeekW(addr)`** / **`PeekL(addr)`** — liest 1/2/4 Bytes von Adresse
+  - Codegen: `move.l addr_expr,a0 / move.b/w/l (a0),d0`; kein Fragment
+  - Adresse kann Literal (`$DFF006`) oder Variable sein
+- `[ ]` **`PokeB addr, val`** / **`PokeW addr, val`** / **`PokeL addr, val`** — schreibt Bytes
+  - Codegen: `move.l addr,a0 / move.l val,d0 / move.b/w/l d0,(a0)`; inline
+- `[ ]` Kurzform: `Poke addr, val` als Alias für `PokeL` (Blitz2D-Kompatibilität)
+
+> **Begründung:** Mit Peek/Poke kann der Programmierer alles, was BASSM noch nicht
+> abstrahiert hat — Copper direkt patchen, Blitter-Register setzen, Custom Chips
+> jenseits der BASSM-API ansprechen. Das ist die "Ausflucht nach unten" die jede
+> Amiga-Sprache bieten muss.
+
+---
+
+### M-DATA — 2D-Arrays
+
+```blitz
+Dim map(19, 14)          ; 20×15 Tile-Map
+map(x, y) = TILE_WALL
+tile = map(px / 16, py / 16)
+
+Dim board(7, 7)          ; 8×8 Spielfeld
+```
+
+- `[ ]` Parser: `Dim name(w, h)` — zweites Argument optional; AST-Node `dim2d`
+- `[ ]` CodeGen: BSS `ds.l (w+1)*(h+1)`; Index-Formel `y*(w+1)+x` inline bei jedem Zugriff
+- `[ ]` `arr(x, y)` lesen/schreiben — gleiche Syntax wie 1D mit 2 Argumenten
+- `[ ]` Abwärtskompatibel: bestehende 1D-Syntax unverändert
+
+---
+
+### M-TYPE — Strukturen (`Type … EndType`)
+
+> **Das wichtigste fehlende Feature für Spiele.**
+> In Blitz2D ist jedes Spiel um Types herum gebaut. Ohne Types: N parallele Arrays.
+> Mit Types: saubere Objekt-Abstraktion, lesbarer Code, wartbare Programme.
+
+```blitz
+Type Enemy
+  Field x
+  Field y
+  Field vx
+  Field vy
+  Field hp
+  Field active
+EndType
+
+Dim enemies.Enemy(15)    ; 16 statische Enemy-Instanzen
+
+enemies(i)\x = Rnd(320)
+enemies(i)\y = Rnd(256)
+enemies(i)\active = 1
+
+If enemies(i)\hp <= 0 Then enemies(i)\active = 0
+```
+
+**Implementierungsansatz: Statische Arrays von Strukturen (kein Heap)**
+- Kein `New`/`Delete` — bare-metal, kein Heap-Allocator nötig
+- `Dim name.TypeName(n)` erzeugt statisches Array von n+1 Instanzen in BSS
+- Feldgröße: 4 Bytes (Long) pro Feld; Struct-Größe = Feldanzahl × 4
+- `arr(i)\field` → Adresse = `base + i*structsize + fieldOffset`
+
+**Implementierungsschritte:**
+- `[ ]` Parser: `Type name … Field fname … EndType` — TypeDef-Registry im Parser
+- `[ ]` Parser: `Dim arr.TypeName(n)` — typedArray-Node; erkennt TypeName
+- `[ ]` Parser: `arr(i)\field` lesen/schreiben — `field_access`-Node
+- `[ ]` CodeGen: TypeDef-Map `{name → {fields: [...], size: n*4}}`
+- `[ ]` CodeGen: `Dim arr.Type(n)` → BSS `ds.l (n+1)*structsize`
+- `[ ]` CodeGen: `arr(i)\field` → `move.l i_expr,d0 / muls.w #structsize,d0 / add.l #fieldOffset,d0 / move.l (base,d0.l),d1`
+- `[ ]` Fehlerprüfung: unbekannter Type, unbekanntes Feld → Compiler-Fehler
+
+---
+
+### M10 — Hardware-Grafik
+
+```blitz
+; Sprites (8 Hardware-Sprites à 16×Hpx, eigene Farben)
+DefSprite 0, spriteData    ; Sprite 0 aus Daten-Label definieren
+MoveSprite 0, px, py       ; Sprite 0 an Position setzen
+HideSprite 0               ; Sprite 0 ausblenden
+
+; Hardware-Scrolling
+ScrollX 8                  ; bitplane um 8 Pixel nach links scrollen (BPLCON1)
+ScrollY 1                  ; vertikales Scrolling (BPL1MOD/BPL2MOD)
+
+; Kreis
+Circle 160, 128, 50        ; CPU Bresenham-Kreis
+```
+
+- `[ ]` **Hardware-Sprites** — 8 OCS Sprites × 16px Breite, eigene Farben, keine Blitter-/CPU-Last
+  - `sprite.s`: `_DefSprite(d0=num, a0=data_ptr)` — SPRxPT + Sprite-DMA aktivieren
+  - `_MoveSprite(d0=num, d1=x, d2=y)` — SPRxPOS/SPRxCTL patchen
+  - `_HideSprite(d0=num)` — SPRxPOS=0 → unsichtbar
+  - Sprite-Daten als INCBIN oder inline in CODE-Section
+  - Sprite-DMA: DMACON Bit 5 (SPREN)
+- `[ ]` **Hardware-Scrolling** — `ScrollX n`: BPLCON1 (Fine-Scroll 0..15), BPL1MOD/BPL2MOD für Coarse-Scroll
+- `[ ]` **`Circle x,y,r`** — Bresenham-Kreis in `circle.s`, nutzt `_Plot` intern
+
+---
+
+### M-MOD — ProTracker MOD-Player *(Demo-Musik)*
+
+```blitz
+LoadModule "mysong.mod"   ; MOD-Datei laden (INCBIN in DATA_C)
+PlayModule                 ; Abspielen starten (VBlank-Hook)
+StopModule                 ; Stoppen
+```
+
+- `[ ]` Fertigen PT-Player als Fragment einbinden (`ptplayer.s` — öffentlich Domain, ~1KB)
+- `[ ]` VBlank-Hook in `startup.s` ruft `_mt_music` bereits auf (50 Hz) — Infrastruktur vorhanden
+- `[ ]` `LoadModule` → INCBIN DATA_C (Asset-Pipeline analog zu LoadSample)
+- `[ ]` `PlayModule` / `StopModule` → `_mt_init` / `_mt_end` in `ptplayer.s`
+- `[ ]` Paula-Kanäle 0–3 teilen sich zwischen MOD-Player und Sample-Befehlen → Kanal-Verwaltung
+
+> **Begründung:** "Eine Demo ohne Musik ist ein Bildschirmschoner." Mit ProTracker-Support
+> kann man fertige Amiga-MODs abspielen. Ohne das: nur Sample-Loops, kein richtiger Soundtrack.
 
 ---
 
@@ -326,58 +551,69 @@ Dim bx.w(7)    ; Word-Array statt Long-Array
 
 ---
 
-## Kritischer Pfad zur publishbaren Demo
+## Kritischer Pfad — Ziel: 100% Amiga-Game-Complete
+
+### Aktueller Stand
 
 ```
-✅ PERF-A + PERF-B        schneller Code — Bcc+Stack-Elim. fertig
-✅ Runtime-PaletteColor   Palette-Animation mit Variablen fertig
-✅ M-COPPER               CopperColor y,r,g,b — Rasterbalken CPU-frei fertig
-✅ M6 Text                Text x,y,"str" — 8×8 Bitmap-Font, CPU-Rendering fertig
-✅ M-ASSET Sound          PlaySample + PlaySampleOnce + StopSample + vAmiga Audio fertig
-✅ M-ASSET Bitmaps        LoadImage + DrawImage; Blitter A→D; image.s fertig
-✅ M7 Funktionen          Function/Proc; Stack-Frame; lokale Variablen; Return fertig
-       ↓
-⬅ SPRACHVOLLSTÄNDIGKEIT (Blocker)
-✅ LANG-A  And / Or / Not    zusammengesetzte Bedingungen — fertig
-✅ LANG-B  Mod               Wraparound / Frame-Cycling — fertig
-✅ TOOL-1  Include           Code-Aufteilung in Dateien — fertig
-LANG-C  Str$(n) / NPrint  Zahlen als Text — ohne das kein Score-Display
-M9b     Joydown/KeyDown   non-blocking Input — ohne das kein echtes Spiel
-       ↓
-M10 Hardware-Scrolling     Scrolltext für Greetings/Credits-Part
-       ↓
-M11 Strings (optional)     Erst nach LANG-C relevant
+✅ Kern-Pipeline       vasm · vlink · vAmiga · IPC · Editor
+✅ Grafik              Cls · Box · Line · Rect · Plot · CopperColor · Double-Buffer
+✅ Farbe               Color · PaletteColor (runtime) · ClsColor
+✅ Text                Text x,y,"str" — 8×8 Font, CPU, newline
+✅ Sound               PlaySample · PlaySampleOnce · StopSample · Paula DMA
+✅ Bitmaps             LoadImage · DrawImage · Blitter A→D
+✅ Kontrollfluss       If/ElseIf/Else · While · For/Step · Select/Case
+✅ Funktionen          Function/Proc · Stack-Frame · lokale Vars · Return
+✅ Arrays (1D)         Dim arr(n) · arr(i) lesen/schreiben
+✅ Operatoren          + - * / Mod And Or Not · alle Vergleiche
+✅ Eingabe (blocking)  WaitKey
+✅ Code-Organisation   Include · Statement-Separator ·
+✅ Timing              WaitVbl · Delay · ScreenFlip
 ```
 
-### Begründung der Reihenfolge
+### Stufe 1 — Sprach-Grundlagen für Spiele (Blocker)
 
-**Warum M-COPPER vor M6 Text?**
-Copper-Rasterbalken sind die visuelle DNA jeder Amiga-Demo. Sie kosten **null CPU-Zeit**
-(Copper läuft parallel), brauchen keinen Font, keine Subroutinen — nur eine Copper-Liste
-im Chip-RAM. Das Ergebnis ist sofort unverkennbar *Amiga*. Text braucht man danach für
-Credits, aber der erste visuelle Wow-Moment kommt vom Copper.
-
-**Warum Sound vor Bitmaps?**
-"Eine Demo ohne Musik ist ein Bildschirmschoner." (Scene-Weisheit)
-Ein einfacher Paula-Sample-Player (8-Bit raw, ein Kanal) reicht für Atmosound.
-Ein ProTracker-MOD-Player macht aus dem Projekt eine echte Demo.
-
-**Was M-COPPER konkret bedeutet:**
-```blitz
-; Rasterbalken: Copper setzt COLOR00 an bestimmten Rasterzeilen
-; → CPU-freier Farbverlauf über den gesamten Bildschirm
-; Typisch: 256-Zeilen-Gradient, jede Zeile eine andere Farbe
-; = 256 Copper-MOVE-Befehle im Copper-Programm
 ```
-Implementation: Copper-Liste zur Laufzeit aus BASSM heraus patchbar machen,
-sodass `CopperLine y, colorReg, rgbValue` einen Eintrag in die aktive Liste schreibt.
+LANG-C  Str$(n)          Zahlen anzeigen — Score, Leben, Timer
+LANG-D  Rnd(n) + Abs(n)  Zufall + Betrag — ohne Rnd kein Spiel
+LANG-E  Xor + Shl + Shr  Fehlende Operatoren — Hardware-Zugriff, Bit-Packing
+LANG-F  Repeat + Exit    Kontrollfluss vollständig
+M9b     Joydown/Key/Maus Echte Eingabe — kein interaktives Programm ohne das
+```
 
-### Was absichtlich niedrig priorisiert ist
+→ **Nach Stufe 1: ~80% game-complete.** Einfache Spiele wie Space Invaders,
+  Breakout, Tetris (ohne Tile-Map) sind vollständig umsetzbar.
+
+### Stufe 2 — Hardware und Daten
+
+```
+M-SYS   Peek/Poke        Direkter Hardware-Zugriff — "Ausflucht nach unten"
+M-DATA  2D-Arrays        Tile-Maps, Spielfelder, Matrizen
+M-TYPE  Type-Strukturen  Game-Objekte — das wichtigste fehlende Feature für echte Spiele
+```
+
+→ **Nach Stufe 2: ~95% game-complete.** Tile-basierte Spiele, komplexe Game-Objects,
+  vollständige Hardware-Kontrolle möglich.
+
+### Stufe 3 — Hardware-Features und Musik
+
+```
+M10     Sprites          Hardware-Sprites (8 OCS, eigene Farben, keine CPU-Last)
+M10     Scrolling        BPLCON1 + MOD — klassischer Scrolltext, Parallax
+M-MOD   ProTracker       MOD-Player — echte Demo-Musik statt Sample-Loops
+```
+
+→ **Nach Stufe 3: 100% game- und demo-complete.**
+
+---
+
+### Nicht umgesetzt (bewusste Entscheidung)
+
 | Feature | Grund |
 |---------|-------|
-| M11 Strings (Variablen) | LANG-C (`Str$`) reicht für Demo; volle String-Vars erst für Textadventures |
-| Hardware-Sprites | Blitter-Objekte für Demo genug; Sprites erst für Spiele wichtig |
-| Blitter-Line (B5) | CPU-Bresenham reicht für Demo-Zwecke |
-| Circle | Kein typisches Demo-Element |
-| Register-Caching | Erst nach M7 implementierbar |
-| Goto / Gosub | Bewusst nicht implementiert |
+| `GoTo` / `GoSub` | Spaghetti-Code-Förderung; Functions + Exit reichen |
+| Floating-Point | 68000 ohne FPU — zu langsam für Echtzeit; Amiga-Spiele nutzen Fixed-Point |
+| String-Variablen (M11) | `Str$` + statische Strings decken 95% der Game-Anforderungen |
+| Dynamische Speicherverwaltung (`New`/`Delete`) | Heap auf Amiga ist komplex; statische Arrays + Type ausreichend |
+| Rekursion (tief) | Stack auf Amiga begrenzt; Algorithmen iterativ umsetzbar |
+| Register-Caching (PERF-C) | Nur nach vollständiger Sprache sinnvoll; minimaler Nutzen vs. Aufwand |
