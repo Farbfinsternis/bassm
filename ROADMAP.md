@@ -459,6 +459,181 @@ StopModule                 ; Stoppen
 
 ---
 
+## 🎨 Asset Manager — Tooling-Spur
+
+> **Unabhängig von den Sprach-Milestones.** Der Asset Manager ist ein separates Fenster
+> in der BASSM IDE und kann parallel zur Sprachentwicklung implementiert werden.
+>
+> **Primäres Design-Prinzip: Palette First.**
+> Die Projektpalette ist der Ausgangspunkt — alle Bilder werden daran angepasst,
+> nicht umgekehrt. Das entspricht dem echten Amiga-Entwicklungsworkflow: erst
+> Palette definieren, dann alle Artwork-Assets daran ausrichten.
+
+---
+
+### A-MGR-1 — Projektpalette *(Fundament — zuerst implementieren)*
+
+> Ohne funktionierende Projektpalette macht der Rest keinen Sinn.
+> Direkt gespiegelt zu dem was `PaletteColor` im BASSM-Programm definiert.
+
+```
+┌─ Projektpalette ─────────────────────────────────────────────┐
+│  ██  ██  ██  ██  ██  ██  ██  ██   Farben 0–7                │
+│  ██  ██  ██  ██  ██  ██  ██  ██   Farben 8–15               │
+│  ··  ··  ··  ··  ··  ··  ··  ··   Farben 16–23 (inaktiv)    │
+│  ··  ··  ··  ··  ··  ··  ··  ··   Farben 24–31 (inaktiv)    │
+│                                                               │
+│  [Aus Bild extrahieren]  [Datei importieren]  [Aus Code]     │
+└───────────────────────────────────────────────────────────────┘
+```
+
+**Palette-Editor:**
+- `[ ]` **32-Farb-Matrix** — OCS-Farbwähler pro Slot; Schieberegler 0–15 je Kanal (nicht 0–255)
+  - Klick auf Slot → Picker öffnet; Live-Vorschau aller geladenen Bilder aktualisiert sich sofort
+- `[ ]` **Gespeichert** als `assets/palette_<name>.json` im Projektordner
+
+**Import-Quellen:**
+- `[ ]` **Aus Bild extrahieren** — Bild laden → Median-Cut-Quantisierung auf n Farben →
+  OCS-Snap (`round(c/255*15)`) → als Projektpalette übernehmen
+- `[ ]` **Datei importieren** — `.act` (Adobe Color Table, 768 Bytes raw), `.gpl` (GIMP),
+  `.pal` (Jasc/PSP); alle haben einfache, dokumentierte Formate
+- `[ ]` **Aus BASSM-Code lesen** — `PaletteColor`-Statements in `main.bassm` parsen
+  → Palette rekonstruieren; bei Programmstart automatisch ausgeführt
+
+**Bidirektionale Code-Synchronisation:**
+- `[ ]` Palette im Editor ändern → BASSM-Code-Block generieren (Copy-Button):
+  ```blitz
+  PaletteColor 0, 0, 0, 0
+  PaletteColor 1, 15, 8, 0
+  PaletteColor 2, 0, 12, 3
+  ; ...
+  ```
+- `[ ]` Code geändert (neue `PaletteColor`-Statements) → Palette-Grid aktualisiert sich
+- `[ ]` **Export `.act`** — für externe Tools (Aseprite, Photoshop, GIMP, Inkscape)
+
+---
+
+### A-MGR-2 — Bild-Konverter *(immer gegen Projektpalette)*
+
+> Bilder besitzen keine eigene Palette. Sie werden an die Projektpalette angepasst.
+> Das ist kein Verlust — es ist das Amiga-Programmiermodell.
+
+**Eingabe:** PNG, JPEG, BMP, GIF, WebP
+**Ausgabe:** Raw Planar Bitplane `.raw` (wie `LoadImage` erwartet)
+
+```
+Quelldatei (PNG/JPEG/…)
+    → decode via jimp (pure JS, keine nativen Binaries nötig)
+    → resize auf Word-Alignment: ((w+15)/16) × 16
+    → Nearest-Color-Mapping gegen Projektpalette
+         pixel (r,g,b) → nächster Eintrag per euklidischem Abstand im OCS-RGB-Raum
+    → optional Floyd-Steinberg Fehlerverteilung
+    → Chunky → Planar:
+         für Bitplane p, Zeile y, Word w: sammle Bit p jedes der 16 Pixel → 16-Bit-Word
+    → .raw schreiben in assets/
+```
+
+**UI:**
+- `[ ]` **Drag & Drop** PNG/JPEG/BMP in das Bild-Panel
+- `[ ]` **Split-View**: Original (Echtfarben) | Mit Projektpalette (OCS, pixel-perfect, kein Smoothing)
+- `[ ]` **Fit-Qualitätsanzeige**: mittlerer Farbabstand Bild ↔ Palette (0–100%)
+  → Entscheidungshilfe: passt das Bild zur aktuellen Palette gut genug?
+  → "82% — Dithering einschalten: 91%"
+- `[ ]` **Dithering-Toggle**: keins / Floyd-Steinberg — Qualitätsunterschied direkt im Split-View sichtbar
+- `[ ]` **Ziel-Tiefe**: 1–5 Bitplanes (begrenzt genutzte Palette-Slots: 2/4/8/16/32 Farben)
+- `[ ]` **Palette-Slots-Anzeige**: welche Slots nutzt das Bild tatsächlich?
+  → "Slots 1 3 5 7 (4 von 16)" — hilft bei der Palette-Planung
+- `[ ]` **Batch-Import**: Ordner wählen → alle Bilder gegen Projektpalette konvertieren
+- `[ ]` **Generierter BASSM-Code** (Copy-Button):
+  ```blitz
+  LoadImage 0, "hero.raw", 32, 48
+  ```
+  PaletteColor-Statements kommen aus A-MGR-1, nicht pro Bild
+
+**Technologie:**
+- `jimp` (pure JS, npm) — PNG, JPEG, BMP, GIF ohne native deps
+- Planar-Konvertierung: ~30 Zeilen custom JS
+- OCS-Snap: `Math.round(c / 255 * 15)` pro Kanal, trivial
+
+---
+
+### A-MGR-3 — Sound-Konverter
+
+**Eingabe:** WAV, MP3, OGG, FLAC, AIFF, M4A — alles was Chromium dekodiert
+**Ausgabe:** Raw 8-Bit Signed PCM Mono `.raw` (wie `LoadSample` erwartet)
+
+```
+Quelldatei
+    → AudioContext.decodeAudioData()  — Chromium/Electron nativ, kein FFmpeg
+    → OfflineAudioContext             — Resampling auf Zielfrequenz
+    → Mono-Mix: (L + R) / 2
+    → Float32 → Int8: round(sample × 127), geclamppt auf −128..127
+    → ArrayBuffer → IPC → main.js → .raw schreiben
+```
+
+**UI:**
+- `[ ]` **Drag & Drop** Audio-Datei
+- `[ ]` **Wellenform-Visualisierung** — Canvas, Zoom, Playback-Cursor
+- `[ ]` **Period / Frequenz-Rechner** — bidirektional:
+  - Slider Period 80–65535 ↔ Frequenz-Anzeige (`freq = 3546895 / period`)
+  - Empfehlung aus Original-Samplerate: "Original 44100 Hz → empfohlener Period: 80"
+  - Presets: 428 (8287 Hz Standard), 214 (16574 Hz), 135 (26306 Hz)
+- `[ ]` **Normalisieren** — Peak auf Maximum anheben
+- `[ ]` **Stille trimmen** — Anfang/Ende unter konfigurierbarem Schwellwert abschneiden
+- `[ ]` **Vorschau-Playback** — Original vs. Konvertiert direkt über Web Audio vergleichen
+- `[ ]` **Generierter BASSM-Code** (Copy-Button):
+  ```blitz
+  LoadSample 0, "explosion.raw"
+  PlaySampleOnce 0, 1, 214, 64
+  ```
+
+---
+
+### A-MGR-4 — Mehrere Paletten / Szenen-Paletten
+
+> Ein Spiel hat oft verschiedene Paletten pro Level, Screen oder Spielzustand.
+
+```
+assets/
+├── palette_level1.json   ← Wald — 16 Farben
+├── palette_level2.json   ← Höhle — 16 Farben
+├── palette_ui.json       ← Interface — 8 Farben
+└── [Aktive Palette: palette_level1.json]
+```
+
+- `[ ]` **Benannte Paletten** — mehrere Paletten pro Projekt anlegen, umbenennen, löschen, duplizieren
+- `[ ]` **Aktive Palette** — Dropdown in der Asset-Manager-Toolbar; alle Bild-Vorschauen
+  und Konvertierungen beziehen sich auf die gewählte Palette
+- `[ ]` **Bild gegen mehrere Paletten konvertieren** — aus einer Quelldatei mehrere `.raw`
+  erzeugen: `hero_forest.raw` (Palette Level1) + `hero_cave.raw` (Palette Level2)
+- `[ ]` **Palette aus Referenzbild ableiten** — Bild importieren → quantisieren → als neue
+  benannte Palette speichern (Einweg; Bild definiert Palette, danach gilt die Palette)
+- `[ ]` **Batch-Re-Quantisierung** — Projektpalette ändern → alle Assets gegen neue Palette
+  neu konvertieren (mit Vorschau und Bestätigung)
+
+---
+
+### A-MGR-5 — IDE-Integration
+
+- `[ ]` **Eigenes `BrowserWindow`** — nicht ein Panel im Editor; braucht Platz für
+  Split-View + Palette-Grid + Projektbaum
+- `[ ]` **[Assets]-Button** in der IDE-Toolbar — öffnet / fokussiert das Asset-Fenster
+- `[ ]` **Projektbaum** im Asset-Fenster:
+  - `images/` — .raw Bilder mit Thumbnail (aus erstem Frame generiert)
+  - `sounds/` — .raw Sounds mit Dauer und Wellenform-Miniatur
+  - `palettes/` — .json Paletten mit Farbbalken-Vorschau
+- `[ ]` **Drag & Drop** aus Projektbaum in Code-Editor → fügt `LoadImage`/`LoadSample`-
+  Statement an Cursor-Position ein
+- `[ ]` **Automatische Code-Synchronisation** beim Öffnen:
+  - Erkennt `LoadImage`/`LoadSample`-Statements → markiert referenzierte Assets im Baum
+  - Erkennt `PaletteColor`-Statements → lädt als aktive Projektpalette
+- `[ ]` **IPC-Handler** `bassm:asset-*` in `main.js`:
+  - `bassm:write-asset` — `.raw` in `assets/` schreiben
+  - `bassm:read-palette` — `palette_<name>.json` lesen/schreiben
+  - `bassm:list-assets` — Projektordner scannen
+
+---
+
 ### ✅ M7 — Funktionen / Prozeduren
 
 **Blitz2D Signatur-Konvention:**
