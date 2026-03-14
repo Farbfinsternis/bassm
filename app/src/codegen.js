@@ -66,6 +66,8 @@ export class CodeGen {
         this._typeDefs      = new Map();  // typeName → { fields: string[] }
         this._typeInstances = new Map();  // instanceName → { typeName, isArray, size: Expr|null }
         this._ptrCacheCtx   = null;       // PERF-2: active pointer cache { instName, regName }
+        this._userFunctions = new Map();  // name → { params, localVars, body, line }
+        this._funcCtx       = null;       // non-null when generating a function body
 
         // ── Locate and validate the Graphics statement ────────────────────────
         const gfxStmt = ast.find(s => s && s.type === 'command' && s.name === 'graphics');
@@ -191,6 +193,11 @@ export class CodeGen {
         }
         out.push('        rts');
         out.push('');
+
+        // ── User-defined function definitions ─────────────────────────────────
+        for (const [, funcDef] of this._userFunctions) {
+            out.push(...this._genFunctionDef(funcDef));
+        }
 
         // ── DATA & BSS SECTIONS (Must come after CODE for WinUAE compatibility) ──
 
@@ -423,7 +430,53 @@ export class CodeGen {
                     this._collectVars(c.body, varSet);
                 }
                 this._collectVars(stmt.default, varSet);
+            } else if (stmt.type === 'function_def') {
+                // Collect function-local vars into a separate set (NOT global BSS)
+                const localVars = new Set(stmt.params);
+                this._collectVarsInFunction(stmt.body, localVars);
+                this._userFunctions.set(stmt.name, {
+                    name:      stmt.name,
+                    params:    stmt.params,
+                    hasReturn: stmt.hasReturn,
+                    localVars,
+                    body:      stmt.body,
+                    line:      stmt.line,
+                });
+            } else if (stmt.type === 'call_stmt') {
+                // Global-scope function call: collect vars from arguments
+                for (const arg of stmt.args) this._collectVarsInExpr(arg, varSet);
             }
+        }
+    }
+
+    // ── Collect local variables inside a function body ─────────────────────────
+    //
+    // Walks only the function's own body. Variables assigned here are local.
+    // Does NOT recurse into nested function definitions (not supported).
+
+    _collectVarsInFunction(body, localVarSet) {
+        for (const stmt of body) {
+            if (!stmt) continue;
+            if (stmt.type === 'assign') {
+                localVarSet.add(stmt.target);
+            } else if (stmt.type === 'for') {
+                localVarSet.add(stmt.var);
+                this._collectVarsInFunction(stmt.body, localVarSet);
+            } else if (stmt.type === 'if') {
+                this._collectVarsInFunction(stmt.then, localVarSet);
+                for (const ei of stmt.elseIfs) {
+                    this._collectVarsInFunction(ei.body, localVarSet);
+                }
+                this._collectVarsInFunction(stmt.else, localVarSet);
+            } else if (stmt.type === 'while') {
+                this._collectVarsInFunction(stmt.body, localVarSet);
+            } else if (stmt.type === 'select') {
+                for (const c of stmt.cases) {
+                    this._collectVarsInFunction(c.body, localVarSet);
+                }
+                this._collectVarsInFunction(stmt.default, localVarSet);
+            }
+            // dim, type_def inside functions are treated as global declarations
         }
     }
 
@@ -436,6 +489,10 @@ export class CodeGen {
             case 'array_read':
                 // array name is NOT a scalar — only collect vars used in the index
                 this._collectVarsInExpr(expr.index, varSet);
+                break;
+            case 'call_expr':
+                // function/array name is NOT a scalar — collect vars from args
+                for (const arg of expr.args) this._collectVarsInExpr(arg, varSet);
                 break;
             case 'type_field_read':
                 if (expr.index) this._collectVarsInExpr(expr.index, varSet);
@@ -458,13 +515,42 @@ export class CodeGen {
         // ── Variable assignment: target = expr ───────────────────────────────
         if (stmt.type === 'assign') {
             this._genExpr(stmt.expr, lines);
-            lines.push(`        move.l  d0,_var_${stmt.target}`);
+            lines.push(`        move.l  d0,${this._varRef(stmt.target)}`);
             return lines;
         }
 
-        // ── Dim / Type — declaration only, no code emitted ───────────────────
+        // ── Dim / Type / Function definition — declaration only, no code ─────
         if (stmt.type === 'dim' || stmt.type === 'type_def' ||
-            stmt.type === 'dim_typed' || stmt.type === 'dim_typed_array') {
+            stmt.type === 'dim_typed' || stmt.type === 'dim_typed_array' ||
+            stmt.type === 'function_def') {
+            return lines;
+        }
+
+        // ── Return — exit current function ───────────────────────────────────
+        if (stmt.type === 'return') {
+            if (!this._funcCtx) throw new Error(`'Return' outside of a Function (line ${stmt.line})`);
+            if (stmt.expr) {
+                if (!this._funcCtx.hasReturn) {
+                    throw new Error(
+                        `'Return <expr>' in procedure '${this._funcCtx.name}' — procedures have no return value. ` +
+                        `Use parentheses in the Function declaration to mark it as a value-returning function.`
+                    );
+                }
+                this._genExpr(stmt.expr, lines);
+            } else {
+                lines.push('        moveq   #0,d0');
+            }
+            lines.push(`        bra.w   ${this._funcCtx.exitLabel}`);
+            return lines;
+        }
+
+        // ── User function call statement: name(args) or name args ─────────────
+        if (stmt.type === 'call_stmt') {
+            const funcDef = this._userFunctions.get(stmt.name);
+            if (!funcDef) {
+                throw new Error(`Undeclared function '${stmt.name}' called on line ${stmt.line}`);
+            }
+            this._emitFunctionCall(stmt.name, stmt.args, lines);
             return lines;
         }
 
@@ -992,13 +1078,14 @@ export class CodeGen {
 
         // Initialise loop variable
         this._genExpr(stmt.from, lines);
-        lines.push(`        move.l  d0,_var_${stmt.var}`);
+        lines.push(`        move.l  d0,${this._varRef(stmt.var)}`);
 
         lines.push(`${topLbl}:`);
 
         // PERF-2: detect if body exclusively accesses one typed array via loop var.
         // Disabled when already inside an outer cached loop (no nested caching).
-        const cacheCandidate = this._ptrCacheCtx === null
+        // Also disabled inside functions (frame-relative loop vars not cache-compatible).
+        const cacheCandidate = (this._ptrCacheCtx === null && !this._funcCtx)
             ? this._detectPointerCacheCandidate(stmt.body, stmt.var)
             : null;
 
@@ -1006,15 +1093,15 @@ export class CodeGen {
             // ── Literal step: direction known at compile time ─────────────────
             // PERF-5: avoid stack round-trip when limit is known at compile time
             if (stmt.to.type === 'int') {
-                lines.push(`        move.l  _var_${stmt.var},d0`);
+                lines.push(`        move.l  ${this._varRef(stmt.var)},d0`);
                 lines.push(`        cmp.l   #${stmt.to.value},d0`);
             } else if (this._isSimpleExpr(stmt.to)) {
-                lines.push(`        move.l  _var_${stmt.var},d0`);
+                lines.push(`        move.l  ${this._varRef(stmt.var)},d0`);
                 lines.push(`        cmp.l   ${this._simpleOperand(stmt.to)},d0`);
             } else {
                 this._genExpr(stmt.to, lines);
                 lines.push('        move.l  d0,-(sp)');
-                lines.push(`        move.l  _var_${stmt.var},d0`);
+                lines.push(`        move.l  ${this._varRef(stmt.var)},d0`);
                 lines.push('        move.l  (sp)+,d1');
                 lines.push('        cmp.l   d1,d0');
             }
@@ -1024,7 +1111,7 @@ export class CodeGen {
 
             // PERF-2: emit pointer cache prologue — a1 = &instName[i]
             if (cacheCandidate) {
-                lines.push(`        move.l  _var_${stmt.var},d0`);
+                lines.push(`        move.l  ${this._varRef(stmt.var)},d0`);
                 this._emitMultiplyByConst(cacheCandidate.stride, lines);
                 lines.push(`        lea     _tinst_${cacheCandidate.instName},a1`);
                 lines.push(`        add.l   d0,a1`);
@@ -1039,11 +1126,11 @@ export class CodeGen {
             const av = Math.abs(stepLit);
             if (av >= 1 && av <= 8) {
                 const op = stepLit > 0 ? 'addq.l' : 'subq.l';
-                lines.push(`        ${op}  #${av},_var_${stmt.var}`);
+                lines.push(`        ${op}  #${av},${this._varRef(stmt.var)}`);
             } else {
-                lines.push(`        move.l  _var_${stmt.var},d0`);
+                lines.push(`        move.l  ${this._varRef(stmt.var)},d0`);
                 lines.push(`        add.l   #${stepLit},d0`);
-                lines.push(`        move.l  d0,_var_${stmt.var}`);
+                lines.push(`        move.l  d0,${this._varRef(stmt.var)}`);
             }
 
         } else {
@@ -1059,7 +1146,7 @@ export class CodeGen {
             // step >= 0: exit if i > limit
             this._genExpr(stmt.to, lines);
             lines.push('        move.l  d0,-(sp)');
-            lines.push(`        move.l  _var_${stmt.var},d0`);
+            lines.push(`        move.l  ${this._varRef(stmt.var)},d0`);
             lines.push('        move.l  (sp)+,d1');
             lines.push('        cmp.l   d1,d0');
             lines.push(`        bgt.w   ${endLbl}`);
@@ -1069,7 +1156,7 @@ export class CodeGen {
             // step < 0: exit if i < limit
             this._genExpr(stmt.to, lines);
             lines.push('        move.l  d0,-(sp)');
-            lines.push(`        move.l  _var_${stmt.var},d0`);
+            lines.push(`        move.l  ${this._varRef(stmt.var)},d0`);
             lines.push('        move.l  (sp)+,d1');
             lines.push('        cmp.l   d1,d0');
             lines.push(`        blt.w   ${endLbl}`);
@@ -1078,7 +1165,7 @@ export class CodeGen {
 
             // PERF-2: emit pointer cache prologue
             if (cacheCandidate) {
-                lines.push(`        move.l  _var_${stmt.var},d0`);
+                lines.push(`        move.l  ${this._varRef(stmt.var)},d0`);
                 this._emitMultiplyByConst(cacheCandidate.stride, lines);
                 lines.push(`        lea     _tinst_${cacheCandidate.instName},a1`);
                 lines.push(`        add.l   d0,a1`);
@@ -1091,8 +1178,8 @@ export class CodeGen {
 
             // Step: i += step (re-evaluate)
             this._genExpr(stmt.step, lines);
-            lines.push(`        add.l   _var_${stmt.var},d0`);
-            lines.push(`        move.l  d0,_var_${stmt.var}`);
+            lines.push(`        add.l   ${this._varRef(stmt.var)},d0`);
+            lines.push(`        move.l  d0,${this._varRef(stmt.var)}`);
         }
 
         lines.push(`        bra.w   ${topLbl}`);
@@ -1238,7 +1325,7 @@ export class CodeGen {
                 break;
 
             case 'ident':
-                lines.push(`        move.l  _var_${expr.name},d0`);
+                lines.push(`        move.l  ${this._varRef(expr.name)},d0`);
                 break;
 
             case 'array_read':
@@ -1249,6 +1336,28 @@ export class CodeGen {
                 lines.push(`        add.l   d0,a0`);
                 lines.push(`        move.l  (a0),d0`);
                 break;
+
+            case 'call_expr': {
+                // Resolve: user function call or array read?
+                const funcDef = this._userFunctions.get(expr.name);
+                if (funcDef) {
+                    if (!funcDef.hasReturn) {
+                        throw new Error(
+                            `'${expr.name}' is a procedure (no return value) and cannot be used in an expression`
+                        );
+                    }
+                    this._emitFunctionCall(expr.name, expr.args, lines);
+                } else {
+                    // Array read: treat args[0] as index
+                    const index = expr.args[0] ?? { type: 'int', value: 0 };
+                    this._genExpr(index, lines);
+                    lines.push(`        asl.l   #2,d0`);
+                    lines.push(`        lea     _arr_${expr.name},a0`);
+                    lines.push(`        add.l   d0,a0`);
+                    lines.push(`        move.l  (a0),d0`);
+                }
+                break;
+            }
 
             case 'type_field_read': {
                 const inst    = this._typeInstances.get(expr.instance);
@@ -1284,6 +1393,9 @@ export class CodeGen {
                 if (expr.op === '-') {
                     this._genExpr(expr.operand, lines);
                     lines.push('        neg.l   d0');
+                } else if (expr.op === 'not') {
+                    this._genExpr(expr.operand, lines);
+                    lines.push('        not.l   d0');
                 }
                 break;
 
@@ -1314,8 +1426,37 @@ export class CodeGen {
     /** Return the m68k source operand string for a simple expression. */
     _simpleOperand(expr) {
         if (expr.type === 'int')   return `#${expr.value}`;
-        if (expr.type === 'ident') return `_var_${expr.name}`;
+        if (expr.type === 'ident') return this._varRef(expr.name);
         throw new Error('[CodeGen] _simpleOperand called on non-simple expr');
+    }
+
+    /** Return the m68k operand string (memory ref or BSS label) for a variable. */
+    _varRef(name) {
+        if (this._funcCtx) {
+            const off = this._funcCtx.localOffset[name];
+            if (off !== undefined) return `${off}(a6)`;
+        }
+        return `_var_${name}`;
+    }
+
+    /** Emit m68k code to call a user-defined function with given args. */
+    _emitFunctionCall(name, args, lines) {
+        // Push arguments right-to-left (last arg first → arg[0] at 8(a6) after LINK)
+        for (let i = args.length - 1; i >= 0; i--) {
+            this._genExpr(args[i], lines);
+            lines.push('        move.l  d0,-(sp)');
+        }
+        lines.push(`        jsr     _func_${name}`);
+        // Caller cleanup
+        const bytes = args.length * 4;
+        if (bytes > 0) {
+            if (bytes <= 8) {
+                lines.push(`        addq.l  #${bytes},sp`);
+            } else {
+                lines.push(`        adda.l  #${bytes},sp`);
+            }
+        }
+        // return value is in d0
     }
 
     // ── PERF-1: lsl.l instead of muls.w for power-of-two constants ───────────
@@ -1400,6 +1541,9 @@ export class CodeGen {
             case 'array_read':
                 this._collectTypeFieldAccessesInExpr(expr.index, accesses);
                 break;
+            case 'call_expr':
+                for (const arg of expr.args) this._collectTypeFieldAccessesInExpr(arg, accesses);
+                break;
         }
     }
 
@@ -1483,6 +1627,25 @@ export class CodeGen {
     _genBinop(expr, lines) {
         const op = expr.op;
 
+        // ── Bitwise / logical: And Or ────────────────────────────────────────
+        // In Blitz2D, And/Or operate on 32-bit integers — bitwise AND/OR.
+        // This also works correctly for boolean values (-1/0): -1 AND -1 = -1, etc.
+        // PERF-B: skip push/pop when right is a literal or single ident.
+        if (op === 'and' || op === 'or') {
+            const instr = op === 'and' ? 'and' : 'or';
+            if (this._isSimpleExpr(expr.right)) {
+                this._genExpr(expr.left, lines);
+                lines.push(`        ${instr}.l   ${this._simpleOperand(expr.right)},d0`);
+            } else {
+                this._genExpr(expr.right, lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExpr(expr.left, lines);
+                lines.push('        move.l  (sp)+,d1');
+                lines.push(`        ${instr}.l   d1,d0`);
+            }
+            return;
+        }
+
         // ── Arithmetic: + - ───────────────────────────────────────────────────
         // PERF-B: if right is a literal or single ident, skip push/pop entirely.
         if (op === '+' || op === '-') {
@@ -1531,6 +1694,28 @@ export class CodeGen {
             lines.push('        move.l  (sp)+,d1');   // d0=left, d1=right
             // divs.w: d0.l ÷ d1.w → d0.w quotient; ext.l to 32 bits
             lines.push('        divs.w  d1,d0');
+            lines.push('        ext.l   d0');
+            return;
+        }
+
+        // ── Modulo ────────────────────────────────────────────────────────────
+        // divs.w d1,d0: d0.l ÷ d1.w → d0.hi = remainder, d0.lo = quotient
+        // swap d0 puts remainder in d0.lo; ext.l sign-extends to 32 bits.
+        // Divisor must fit in 16 bits (-32768..32767) — valid for all typical
+        // game use cases (screen width, palette size, frame counts, etc.).
+        // PERF: literal divisor → immediate form avoids push/pop.
+        if (op === 'mod') {
+            if (expr.right.type === 'int') {
+                this._genExpr(expr.left, lines);
+                lines.push(`        divs.w  #${expr.right.value},d0`);
+            } else {
+                this._genExpr(expr.right, lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExpr(expr.left, lines);
+                lines.push('        move.l  (sp)+,d1');
+                lines.push('        divs.w  d1,d0');
+            }
+            lines.push('        swap    d0');
             lines.push('        ext.l   d0');
             return;
         }
@@ -1601,6 +1786,64 @@ export class CodeGen {
     /** Escape double-quotes and backslashes inside a dc.b string literal. */
     _escapeStr(s) {
         return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    }
+
+    // ── User-defined function code generation ─────────────────────────────────
+    //
+    // Emits a separate CODE section for each Function … EndFunction block.
+    //
+    // Stack frame layout (after LINK a6,#-localSpace):
+    //   4(a6)               = return address   (pushed by JSR)
+    //   8(a6)               = param[0]         (last thing caller pushed)
+    //   12(a6)              = param[1]
+    //   …
+    //   -4(a6)              = local var 0
+    //   -8(a6)              = local var 1
+    //   …
+    //
+    // Calling convention: caller pushes args RIGHT-TO-LEFT, caller cleans up.
+    // Return value: d0.  a6 is preserved across the call via LINK/UNLK.
+
+    _genFunctionDef(funcDef) {
+        const lines = [];
+        const { name, params, localVars, body } = funcDef;
+
+        // Local vars = vars assigned in body that are not parameters
+        const localVarList = [...localVars].filter(v => !params.includes(v));
+        const localSpace   = localVarList.length * 4;  // bytes for LINK displacement
+
+        // Build offset map
+        const localOffset = {};
+        for (let i = 0; i < params.length; i++) {
+            localOffset[params[i]] = 8 + i * 4;          // 8(a6), 12(a6), …
+        }
+        for (let i = 0; i < localVarList.length; i++) {
+            localOffset[localVarList[i]] = -(4 + i * 4); // -4(a6), -8(a6), …
+        }
+
+        const exitLabel = this._nextLabel();
+        this._funcCtx = { name, hasReturn: funcDef.hasReturn, localOffset, exitLabel };
+
+        lines.push('');
+        lines.push(`        SECTION func_${name},CODE`);
+        lines.push(`        XDEF    _func_${name}`);
+        lines.push(`_func_${name}:`);
+        lines.push(`        link    a6,#${localSpace > 0 ? -localSpace : 0}`);
+
+        for (const stmt of body) {
+            if (!stmt) continue;
+            lines.push(...this._genStatement(stmt));
+            this._peepholeRedundantReload(lines);
+        }
+
+        // Default return value (0) if control falls off the end
+        lines.push('        moveq   #0,d0');
+        lines.push(`${exitLabel}:`);
+        lines.push('        unlk    a6');
+        lines.push('        rts');
+
+        this._funcCtx = null;
+        return lines;
     }
 
     /** Return a globally unique local label string. */

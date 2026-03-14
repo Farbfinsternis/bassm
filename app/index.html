@@ -16,105 +16,93 @@
 		</div>
 
 		<script type="text/x-bassm" id="initial-source">
-; BASSM Demo -- M-Types: Rasterbalken + 8 Bouncing Boxes + Sound
-; Ball-Daten als Type (AoS): x,y,dx,dy + 2-Frame-History fuer Ghost-Erase
-; Kein Cls -- Erase-before-Draw: Loeschen von ox2/oy2 (2 Frames alt)
+; BASSM LANG-A + LANG-B Test -- And / Or / Not / Mod operators
+;
+; Visueller Test:
+;   Reihe 1 (y=20):  Or  in Bounce-Bedingung   — Box prallt an beiden Waenden ab
+;   Reihe 2 (y=100): And in Farb-Bedingung      — Farbe wechselt nur in der Mitte
+;   Reihe 3 (y=180): Not als Schleifenabbruch   — zaehlt bis 60, dann stop
+
 Graphics 320,256,4
 
-LoadSample 0, "boing.raw"
+PaletteColor 0,  0,  0,  0   ; schwarz
+PaletteColor 1, 15, 15, 15   ; weiss
+PaletteColor 2, 15,  4,  0   ; rot
+PaletteColor 3,  0, 14,  4   ; gruen
+PaletteColor 4,  4,  8, 15   ; blau
 
-Type Ball
-  Field x, y, dx, dy
-  Field ox, oy
-  Field ox2, oy2
-EndType
+; ── Test 1: Or in Bounce-Bedingung ────────────────────────────────────────────
+; Bouncing box — Richtungsumkehr wenn x < 5 Or x > 305
+x1 = 160 : dx = 3
 
-Dim b.Ball(7)
+For frame = 1 To 200
+  Cls
+  x1 = x1 + dx
+  If x1 < 5 Or x1 > 305 Then dx = -dx   ; OR
+  Color 1
+  Box x1, 20, 14, 14
+  ScreenFlip
+Next frame
 
-b(0)\x=10  : b(0)\y=20  : b(0)\dx=3  : b(0)\dy=2
-b(1)\x=100 : b(1)\y=50  : b(1)\dx=-4 : b(1)\dy=3
-b(2)\x=200 : b(2)\y=30  : b(2)\dx=2  : b(2)\dy=-3
-b(3)\x=50  : b(3)\y=150 : b(3)\dx=-3 : b(3)\dy=-2
-b(4)\x=250 : b(4)\y=100 : b(4)\dx=4  : b(4)\dy=2
-b(5)\x=130 : b(5)\y=200 : b(5)\dx=-2 : b(5)\dy=4
-b(6)\x=80  : b(6)\y=120 : b(6)\dx=5  : b(6)\dy=-3
-b(7)\x=280 : b(7)\y=180 : b(7)\dx=-3 : b(7)\dy=5
-
-; History mit Startpositionen vorbelegen (kein Artefakt in Frame 0+1)
-For i = 0 To 7
-  b(i)\ox = b(i)\x : b(i)\oy = b(i)\y
-  b(i)\ox2 = b(i)\x : b(i)\oy2 = b(i)\y
+; ── Test 2: And in kombinierter Bedingung ─────────────────────────────────────
+; Box laeuft durch — gruen in der Mitte (80..240), rot an den Raendern
+Cls
+For i = 0 To 319
+  Color 2                              ; Standard: rot
+  If i >= 80 And i <= 240 Then Color 3 ; AND: nur in der Mitte gruen
+  Box i, 100, 1, 40
 Next i
-
-; Text einmalig in beide Buffer zeichnen (Double-Buffer: je ein ScreenFlip)
-; Boxen bleiben unterhalb y=16 und oberhalb y=220, ueberdecken Text nie.
-Color 15
-Text 8, 4, "BASSM DEMO  * AMIGA OCS *"
-Color 8
-Text 8, 236, "CODE: BASSM COMPILER  FONT: 8X8"
 ScreenFlip
-Color 15
-Text 8, 4, "BASSM DEMO  * AMIGA OCS *"
-Color 8
-Text 8, 236, "CODE: BASSM COMPILER  FONT: 8X8"
+WaitKey
 
-t = 0
-
-While 1
-  ; Rasterbalken: animierter Rot/Blau-Gradient ohne Division
-  t = t + 1
-  If t > 15 : t = 0 : EndIf
-  rc = t
-  gc = 15 - t
-  For line = 0 To 211
-    CopperColor line, rc, 0, gc
-    rc = rc + 1 : If rc > 15 : rc = 0 : EndIf
-    gc = gc - 1 : If gc < 0  : gc = 15 : EndIf
-  Next line
-
-  ; Alte Box-Positionen loeschen (Stand von vor 2 Frames)
-  Color 0
-  For i = 0 To 7
-    Box b(i)\ox2, b(i)\oy2, 16, 16
-  Next i
-
-  ; Boxen bewegen, Grenzen pruefen, zeichnen
-  ; y-Grenzen: 16..220 -- Boxen ueberdecken Text bei y=4 und y=236 nie
-  For i = 0 To 7
-    b(i)\x = b(i)\x + b(i)\dx
-    b(i)\y = b(i)\y + b(i)\dy
-    If b(i)\x < 0
-      b(i)\x = 0
-      b(i)\dx = -b(i)\dx
-      PlaySampleOnce 0, 0
-    EndIf
-    If b(i)\x > 304
-      b(i)\x = 304
-      b(i)\dx = -b(i)\dx
-      PlaySampleOnce 0, 0
-    EndIf
-    If b(i)\y < 16
-      b(i)\y = 16
-      b(i)\dy = -b(i)\dy
-      PlaySampleOnce 0, 0
-    EndIf
-    If b(i)\y > 220
-      b(i)\y = 220
-      b(i)\dy = -b(i)\dy
-      PlaySampleOnce 0, 0
-    EndIf
-    Color i + 1
-    Box b(i)\x, b(i)\y, 16, 16
-  Next i
-
-  ; History vorschieben: ox2=ox (2 Frames alt), ox=x (1 Frame alt)
-  For i = 0 To 7
-    b(i)\ox2 = b(i)\ox : b(i)\oy2 = b(i)\oy
-    b(i)\ox = b(i)\x   : b(i)\oy = b(i)\y
-  Next i
-
+; ── Test 3: Not als Schleifenbedingung ────────────────────────────────────────
+; zaehlt hoch bis done gesetzt wird
+Cls
+done = 0
+counter = 0
+While Not done                      ; NOT
+  counter = counter + 1
+  Color 4
+  Box counter * 5, 180, 4, 30
+  If counter >= 60 Then done = -1   ; Blitz2D true = -1
   ScreenFlip
 Wend
+
+; ── Test 4: And/Or als Wert (Zuweisung) ───────────────────────────────────────
+; mask = $0F And $FF = $0F -> gruen wenn = 15
+mask = $0F And $FF
+If mask = 15 Then Color 3 Else Color 2
+Box 10, 230, 30, 14
+
+; flags: bit0 = 1, bit1 = 1 -> Or ergibt 3
+flags = 1 Or 2
+If flags = 3 Then Color 3 Else Color 2
+Box 50, 230, 30, 14
+
+; Not 0 = -1 -> blaue Box wenn = -1
+notval = Not 0
+If notval = -1 Then Color 4 Else Color 2
+Box 90, 230, 30, 14
+
+; ── Test 5: Mod — Frame-Cycling und Wraparound ────────────────────────────────
+; 16 Boxen nebeneinander, Farbe = i Mod 4 (zyklisch 0-3)
+Cls
+For i = 0 To 15
+  Color (i Mod 4) + 1
+  Box i * 20, 50, 18, 50
+Next i
+
+; Bounce mit Mod: x laeuft 0..319 und wraps
+x = 0
+For t = 0 To 400
+  Cls
+  x = (x + 3) Mod 320
+  Color 1
+  Box x, 130, 14, 14
+  ScreenFlip
+Next t
+
+WaitKey
 		</script>
 
 		<div id="editor-pane">

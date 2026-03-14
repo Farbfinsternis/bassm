@@ -153,8 +153,9 @@ offload.s      OS restoration (LoadView, RethinkDisplay, return to CLI)
 
 ### Variables & Expressions
 - Integer variables (`x = expr`)
-- Arithmetic: `+ - * /` with correct precedence, unary minus
+- Arithmetic: `+ - * / Mod` with correct precedence, unary minus
 - Comparisons: `= <> < > <= >=` (return Blitz2D boolean −1/0)
+- Logical/bitwise: `And` `Or` `Not` (32-bit, work correctly for −1/0 booleans)
 - Variables as command arguments
 
 ### Timing, Input & Double-Buffering
@@ -185,6 +186,37 @@ offload.s      OS restoration (LoadView, RethinkDisplay, return to CLI)
 | Command | Description |
 |---------|-------------|
 | `CopperColor y,r,g,b` | Set background colour (COLOR00) at raster line y via copper list |
+
+### Functions & Procedures
+
+Blitz2D signature convention — parentheses mark the distinction:
+
+| Declaration | Return value | Call site |
+|-------------|--------------|-----------|
+| `Function Name(p1, p2)` | yes — usable in expressions | `x = Name(a, b)` |
+| `Function Name p1, p2` | none — statement-only | `Name a, b` |
+
+```basic
+; Function with return value (parentheses required)
+Function Clamp(n, lo, hi)
+  If n < lo Then Return lo
+  If n > hi Then Return hi
+  Return n
+EndFunction
+
+; Procedure — no return value (no parentheses)
+Function DrawMark x, y
+  Box x, y, 8, 8
+EndFunction
+
+x = Clamp(pos, 0, 300)   ; call in expression
+DrawMark 100, 50          ; call as statement
+```
+
+Parameters and all variables assigned inside a function are **local** to that call.
+Global variables of the same name are unaffected. Stack-frame layout: `LINK a6,#-n` /
+`UNLK a6`; parameters at positive `a6` offsets (`8(a6)`, `12(a6)`, …), locals at
+negative offsets (`-4(a6)`, `-8(a6)`, …).
 
 ---
 
@@ -221,9 +253,9 @@ npm test
 
 See [ROADMAP.md](ROADMAP.md) for the full implementation plan.
 
-**Next milestone:** M10 (Hardware Scrolling) · M9b (Joystick/KeyDown) · M7 (Functions).
+**Next milestone:** LANG-C (number→text output) · M9b (Joystick/KeyDown) · M10 (Hardware Scrolling).
 
-Completed milestones: M0 (core pipeline), M1 (integer variables), M2 (If/Else), M3 (While/For), M4 (Select/Case), M5 (drawing commands), M5b (Blitter fill), M5c (Double-Buffering / `ScreenFlip`), M6 (Text / 8×8 font), M8 (Arrays), M9a (WaitKey), M-COPPER (CopperColor raster effects), PERF-A+B+C (optimised codegen), M-ASSET A2 (Sound: Paula DMA looping + one-shot, vAmiga Web Audio), M-ASSET A1 (Bitmaps: `LoadImage`/`DrawImage`, Blitter A→D).
+Completed milestones: M0 (core pipeline), M1 (integer variables), M2 (If/Else), M3 (While/For), M4 (Select/Case), M5 (drawing commands), M5b (Blitter fill), M5c (Double-Buffering / `ScreenFlip`), M6 (Text / 8×8 font), M7 (Functions & Procedures: stack frame, local variables, Blitz2D signature convention), M8 (Arrays), M9a (WaitKey), M-COPPER (CopperColor raster effects), PERF-A+B+C (optimised codegen), M-ASSET A2 (Sound: Paula DMA looping + one-shot, vAmiga Web Audio), M-ASSET A1 (Bitmaps: `LoadImage`/`DrawImage`, Blitter A→D), LANG-A (`And`/`Or`/`Not`: logical and bitwise operators), LANG-B (`Mod`: modulo operator).
 
 ---
 

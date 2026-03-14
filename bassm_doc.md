@@ -18,16 +18,17 @@ lauffähiges Amiga-Programm.
 3. [Arrays](#3-arrays)
 4. [Ausdrücke & Operatoren](#4-ausdrücke--operatoren)
 5. [Kontrollstrukturen](#5-kontrollstrukturen)
-6. [Systemsteuerung](#6-systemsteuerung)
-7. [Grafik — Grundlagen](#7-grafik--grundlagen)
-8. [Grafik — Zeichenbefehle](#8-grafik--zeichenbefehle)
-9. [Palette & Farben](#9-palette--farben)
-10. [Eingabe](#10-eingabe)
-11. [Text & Debug-Ausgabe](#11-text--debug-ausgabe)
-12. [Sound](#12-sound)
-13. [Amiga-spezifisches Verhalten](#13-amiga-spezifisches-verhalten)
-14. [Bekannte Einschränkungen](#14-bekannte-einschränkungen)
-15. [Vollständiges Beispiel](#15-vollständiges-beispiel)
+6. [Funktionen & Prozeduren](#6-funktionen--prozeduren)
+7. [Systemsteuerung](#7-systemsteuerung)
+8. [Grafik — Grundlagen](#8-grafik--grundlagen)
+9. [Grafik — Zeichenbefehle](#9-grafik--zeichenbefehle)
+10. [Palette & Farben](#10-palette--farben)
+11. [Eingabe](#11-eingabe)
+12. [Text & Debug-Ausgabe](#12-text--debug-ausgabe)
+13. [Sound](#13-sound)
+14. [Amiga-spezifisches Verhalten](#14-amiga-spezifisches-verhalten)
+15. [Bekannte Einschränkungen](#15-bekannte-einschränkungen)
+16. [Vollständiges Beispiel](#16-vollständiges-beispiel)
 
 ---
 
@@ -144,9 +145,16 @@ x = arr(i * 2)   ; Index kann ein Ausdruck sein
 | `-` | Subtraktion / unäres Minus | |
 | `*` | Multiplikation | Werte sollten −32768 bis 32767 sein |
 | `/` | Division (ganzzahlig, Rest wird verworfen) | |
+| `Mod` | Modulo (Rest der Division) | Divisor muss ≤ 32767 sein |
 
 > **Multiplikation:** Bei Werten über 32767 kann es zu falschen Ergebnissen kommen.
 > Für Bildschirmkoordinaten ist das normalerweise kein Problem.
+
+```blitz
+frame = (frame + 1) Mod 8     ; Frame-Cycling (0..7)
+x = (x + dx) Mod 320          ; horizontaler Wraparound
+If ticks Mod 50 = 0 Then ...   ; jede Sekunde (50 Hz)
+```
 
 ### Vergleiche
 
@@ -161,24 +169,43 @@ x = arr(i * 2)   ; Index kann ein Ausdruck sein
 
 Vergleiche liefern **−1** (wahr) oder **0** (falsch) — wie in Blitz2D.
 
+### Logische & Bitweise Operatoren
+
+| Operator | Bedeutung | Hinweis |
+|----------|-----------|---------|
+| `And` | UND (bitweise) | `-1 And -1 = -1` (wahr), `0 And -1 = 0` (falsch) |
+| `Or` | ODER (bitweise) | `0 Or -1 = -1` (wahr), `0 Or 0 = 0` (falsch) |
+| `Not` | Komplement (bitweise) | `Not 0 = -1`, `Not -1 = 0` |
+
+`And` und `Or` arbeiten auf 32-Bit-Integern — bitweise, genau wie in Blitz2D.
+Für boolesche Werte (−1/0) ergibt sich das erwartete logische Verhalten.
+
+```blitz
+; Zusammengesetzte Bedingungen
+If x > 0 And x < 320 Then ...
+If fire Or timer > 100 Then ...
+While Not done
+
+; Bitweise Operationen
+col = farbe And $0F          ; unteres Nibble maskieren
+flags = flags Or %00000010   ; Bit 1 setzen
+```
+
 ### Operatorrangfolge
 
 Von höchster zu niedrigster Priorität:
 
-1. Unäres Minus (`-x`)
-2. `*` `/`
+1. Unäres Minus (`-x`), `Not`
+2. `*` `/` `Mod`
 3. `+` `-`
 4. `=` `<>` `<` `>` `<=` `>=`
+5. `And`
+6. `Or`
 
 ```blitz
-y = (x + 2) * 3       ; Klammern überschreiben die Rangfolge
-If (a < b) = -1 Then Cls
-```
-
-### Kein Modulo-Operator
-
-```blitz
-rest = a - (a / b) * b    ; Workaround für Modulo (a Mod b)
+y = (x + 2) * 3                   ; Klammern überschreiben die Rangfolge
+If x > 0 And x < 320 Then ...     ; And bindet stärker als Or
+If a Or b And c Then ...           ; wird ausgewertet als: a Or (b And c)
 ```
 
 ---
@@ -299,7 +326,96 @@ EndSelect
 
 ---
 
-## 6. Systemsteuerung
+## 6. Funktionen & Prozeduren
+
+BASSM unterstützt benutzerdefinierte Unterprogramme in zwei Varianten —
+entsprechend der **Blitz2D-Signatur-Konvention**:
+
+| Form | Klammern | Rückgabewert | Aufruf |
+|------|----------|--------------|--------|
+| `Function Name(p1, p2)` | **ja** | **ja** — in Ausdrücken verwendbar | `x = Name(a, b)` |
+| `Function Name p1, p2` | **nein** | **nein** — nur als Statement aufrufbar | `Name a, b` |
+
+### Funktion mit Rückgabewert
+
+```blitz
+Function Clamp(n, lo, hi)
+  If n < lo Then Return lo
+  If n > hi Then Return hi
+  Return n
+EndFunction
+
+Function Add(a, b)
+  Return a + b
+EndFunction
+```
+
+Aufruf **im Ausdruck**:
+```blitz
+x = Clamp(meinWert, 0, 100)
+y = Add(x, 50) * 2
+```
+
+### Prozedur (kein Rückgabewert)
+
+```blitz
+Function DrawBox x, y
+  Box x, y, 16, 16
+EndFunction
+
+Function SetupColors r, g, b
+  PaletteColor 1, r, g, b
+  PaletteColor 2, 15-r, g, b
+EndFunction
+```
+
+Aufruf **als Statement** (mit oder ohne Klammern):
+```blitz
+DrawBox 100, 50
+DrawBox(100, 50)    ; auch gültig
+SetupColors 15, 8, 0
+```
+
+> **Fehler:** Eine Prozedur (ohne Klammern in der Deklaration) in einem Ausdruck
+> zu verwenden (`x = DrawBox(...)`) ist ein Compiler-Fehler.
+
+### Return
+
+```blitz
+Return          ; verlässt die Funktion/Prozedur sofort (kein Wert)
+Return expr     ; verlässt eine Funktion und gibt expr zurück
+```
+
+`Return` ohne Ausdruck ist in beiden Varianten erlaubt (Early Exit).
+`Return expr` ist nur in Funktionen mit Klammern erlaubt.
+
+### Lokale Variablen
+
+Parameter und alle Variablen, die innerhalb einer Funktion zugewiesen werden,
+sind **lokal** — sie existieren nur für die Dauer des Aufrufs und überschreiben
+keine gleichnamigen globalen Variablen.
+
+```blitz
+x = 42                      ; globales x
+
+Function Test(x)            ; lokaler Parameter x
+  y = x * 2                 ; lokales y
+  Return y
+EndFunction
+
+z = Test(10)                ; z = 20, globales x bleibt 42
+```
+
+### Einschränkungen
+
+- Maximale Parameteranzahl: unbegrenzt (Stack-basiert)
+- Keine Rekursion empfohlen (Stack-Tiefe auf dem Amiga begrenzt)
+- Keine verschachtelten Funktionsdefinitionen
+- `Dim` innerhalb von Funktionen erzeugt ein **globales** Array
+
+---
+
+## 7. Systemsteuerung
 
 ### Graphics
 ```blitz
@@ -351,7 +467,7 @@ Beendet das Programm und kehrt zum Amiga-Betriebssystem zurück.
 
 ---
 
-## 7. Grafik — Grundlagen
+## 8. Grafik — Grundlagen
 
 ### Koordinatensystem
 
@@ -381,7 +497,7 @@ Löscht den gesamten Hintergrund mit der durch `ClsColor` gesetzten Farbe
 
 ---
 
-## 8. Grafik — Zeichenbefehle
+## 9. Grafik — Zeichenbefehle
 
 Alle Zeichenbefehle verwenden die mit `Color` gesetzte Farbe und zeichnen
 ins Hinterbild.
@@ -414,7 +530,7 @@ Verwendet den Hardware-Zeichnungsbeschleuniger des Amiga — sehr schnell.
 
 ---
 
-## 9. Palette & Farben
+## 10. Palette & Farben
 
 Der Amiga hat eine Palette mit **32 Farben** (Indizes 0–31). Jede Farbe
 hat einen Rot-, Grün- und Blauanteil von je **0 bis 15** (4-Bit, nicht 0–255
@@ -521,7 +637,7 @@ Beim Programmstart stehen diese Farben zur Verfügung:
 
 ---
 
-## 10. Eingabe
+## 11. Eingabe
 
 ### WaitKey
 ```blitz
@@ -531,7 +647,7 @@ Hält das Programm an, bis eine Taste gedrückt und losgelassen wird.
 
 ---
 
-## 11. Text & Debug-Ausgabe
+## 12. Text & Debug-Ausgabe
 
 ### Text
 ```blitz
@@ -571,7 +687,7 @@ Hat keinen sichtbaren Effekt. Nur für Blitz2D-Kompatibilität vorhanden.
 
 ---
 
-## 12. Sound
+## 13. Sound
 
 Sound-Dateien müssen als **rohe 8-Bit-PCM-Mono-Daten** im Ordner `app/assets/`
 gespeichert sein. Geeignete Dateien lassen sich z.B. mit Audacity exportieren:
@@ -660,7 +776,7 @@ StopSample ch       ; Kanal aus Variable
 
 ---
 
-## 13. Amiga-spezifisches Verhalten
+## 14. Amiga-spezifisches Verhalten
 
 ### ScreenFlip ist Pflicht
 `ScreenFlip` muss am Ende jedes Frames aufgerufen werden — sonst sieht
@@ -692,22 +808,20 @@ normalerweise kein Problem.
 
 ---
 
-## 14. Bekannte Einschränkungen
+## 15. Bekannte Einschränkungen
 
 | Einschränkung | Erklärung |
 |---------------|-----------|
 | Nur 320px Breite | `Graphics` akzeptiert nur `width=320` |
 | Nur ganze Zahlen | Keine Kommazahlen, keine Strings als Variablen |
-| Keine Funktionen | `Function`/`Procedure` nicht implementiert |
 | Text: nur feste Texte | `Text` zeigt keine Zahlen oder Variableninhalte |
-| Kein Modulo | Workaround: `a - (a/b)*b` |
 | Kein Bounds-Checking | Array-Überläufe korrumpieren Speicher stillschweigend |
 | `*` bis 32767 | Multiplikation mit größeren Zahlen liefert falsche Ergebnisse |
 | OS-Restore (vAmiga) | Nach `End` erscheint unter AROS/vAmiga kein Workbench-Fenster wieder |
 
 ---
 
-## 15. Vollständiges Beispiel
+## 16. Vollständiges Beispiel
 
 Copper-Rasterbalken + 8 springende Boxen + Text + Sound.
 Läuft stabil mit 50 fps auf dem Amiga 500.
@@ -773,6 +887,8 @@ While  Wend
 For  To  Step  Next
 Select  Case  Default  EndSelect
 Dim
+Function  EndFunction  Return
+And  Or  Not  Mod
 ```
 
 ## Anhang: Reservierte Befehlsnamen
@@ -787,4 +903,4 @@ LoadSample PlaySample  PlaySampleOnce  StopSample
 
 ---
 
-*Dokumentation für BASSM — Stand: 2026-03-12*
+*Dokumentation für BASSM — Stand: 2026-03-14*

@@ -27,6 +27,9 @@
 | **PERF-C** CopperColor-Inlining | `CopperColor` inline expandiert; kein JSR-Overhead; ~120 Zyklen/Aufruf gespart |
 | **M-ASSET A2** Sound | `PlaySample "f.raw",ch,per,vol` + `StopSample ch`; Paula DMA; `sound.s`; Asset-Pipeline |
 | **M-ASSET A1** Bitmaps | `LoadImage n,"f.raw",w,h` + `DrawImage n,x,y`; Blitter A→D; `image.s`; 8-Byte-Header |
+| **M7** Funktionen / Prozeduren | `Function name(params)` (Rückgabewert, Klammern) + `Function name params` (Prozedur, ohne Klammern); Stack-Frame via LINK/UNLK; lokale Parameter + Variablen; `Return [expr]`; Blitz2D-Signatur-Konvention |
+| **LANG-A** And / Or / Not | `And`/`Or` (bitweise, auch logisch für -1/0 Werte) + `Not` (Komplement); alle drei als Präzedenzebenen im Parser; PERF-B für einfache Operanden; constant-folding für `Not <literal>` |
+| **LANG-B** Mod | Modulo-Operator; gleiche Präzedenz wie `*`/`/`; `divs.w + swap + ext.l`; PERF für literal Divisor |
 
 ---
 
@@ -132,6 +135,62 @@ Amiga hat 4 DMA-Audiokanäle (Paula). Einfachste Ebene: rohe 8-Bit-Samples.
 
 ---
 
+### ✅ LANG-A — Logische & Bitweise Operatoren
+
+```blitz
+If x > 0 And x < 320 Then ...      ; compound condition
+If fire Or timer > 100 Then ...
+While lives > 0 And level < 10
+    col = red And $0F               ; bitwise masking
+    flags = flags Or %00000010      ; bit set
+    If Not done Then ...
+Wend
+```
+
+- `[x]` `keywords-map.json`: `And`, `Or`, `Not` als Keywords registriert
+- `[x]` Parser: Präzedenzebenen `_parseOr()` → `_parseAnd()` → `_parseComparison()` (Or < And < Cmp)
+- `[x]` Parser: `Not` als Unary-Operator in `_parseUnary()` — vor `-`; constant-folding `Not 0 → -1`
+- `[x]` CodeGen `_genBinop`: `And` → `and.l d1,d0`; `Or` → `or.l d1,d0` (PERF-B: direkt wenn rechts einfach)
+- `[x]` CodeGen `_genExpr` unary: `Not` → `not.l d0`
+- `[x]` `_genCondBranch`: `And`/`Or` nutzen vorhandenen Fallback (`tst.l + beq.w`) — korrekt für -1/0 Werte
+- `[ ]` Kurzschluss-Auswertung (optional, niedrige Prio — 68000 hat keinen Branch-Predictor)
+
+---
+
+### ✅ LANG-B — `Mod`-Operator
+
+```blitz
+frame = (frame + 1) Mod 8          ; animation cycling
+x = (x + dx + 320) Mod 320         ; screen wraparound
+If ticks Mod 50 = 0 Then ...        ; every second
+```
+
+- `[x]` `keywords-map.json`: `Mod` als Keyword registriert
+- `[x]` Parser: `Mod` in `_parseMulDiv()` — gleiche Präzedenz wie `*`/`/`
+- `[x]` CodeGen: `divs.w #n,d0` (PERF: literal Divisor ohne push/pop) + generic push/pop-Pfad
+  - `divs.w`: d0.l ÷ d1.w → d0.hi = Rest, d0.lo = Quotient
+  - `swap d0` → Rest in d0.lo; `ext.l d0` → 32-Bit vorzeichenbehaftet
+- Divisor muss in 16 Bit passen — für alle typischen Spielwerte (Breite, Frames, Farben) gegeben
+
+---
+
+### LANG-C — Zahlen als Text ausgeben *(Feature-Complete-Blocker)*
+> `Text` akzeptiert nur String-Literale. Score, Lives, Timer — alles nicht anzeigbar.
+> Minimal nötig: `Str$(n)` oder `NPrint n` mit Integer-Argument.
+
+```blitz
+Text 10, 10, "Score: " + Str$(score)
+NPrint score                        ; Blitz2D-Kompatibilität
+```
+
+- `[ ]` `int_to_str` Routine in `text.s` (oder eigenem Fragment): `divs.w #10` loop → Ziffern auf Stack, dann rückwärts ausgeben
+- `[ ]` `Str$(n)` — Funktion: konvertiert Integer → temporären String-Puffer, gibt Adresse in d0 zurück
+- `[ ]` `NPrint n` — Prozedur: `int_to_str` + `_Text` an aktueller Position (oder feste Position)
+- `[ ]` CodeGen: `Str$(expr)` als `call_expr` behandeln, result-Adresse als String-Pointer weiterreichen
+- `[ ]` `Text x,y,"prefix" + Str$(n)` — Concatenation zur Compile-Zeit nicht möglich; Lösung: `Text x,y,"prefix"` + `NPrint x+offset,y,n`
+
+---
+
 ### M10 — Erweiterte Grafik
 
 - `[ ]` **Hardware-Scrolling** — `ScrollX n` setzt BPLCON1 + BPL1MOD/BPL2MOD; klassischer
@@ -149,15 +208,32 @@ Amiga hat 4 DMA-Audiokanäle (Paula). Einfachste Ebene: rohe 8-Bit-Samples.
 
 ---
 
-### M7 — Funktionen / Prozeduren
-> **Voraussetzung für komplexe, gut strukturierte Demo-Segmente.**
+### ✅ M7 — Funktionen / Prozeduren
 
-- `[ ]` Parser: `Function name([param,…])` … `EndFunction`
-- `[ ]` Parser: User-Prozedur-Aufruf `name arg1, arg2` (wie Command)
-- `[ ]` Parser: `Return [expr]`
-- `[ ]` CodeGen: `_fn_name:` Label + `rts`, Aufruf via `jsr _fn_name`
-- `[ ]` Parameter-Übergabe via Stack (push vor Call, pop nach Return)
-- `[ ]` Lokale Variablen auf dem Stack (Stack-Frame)
+**Blitz2D Signatur-Konvention:**
+- `Function name(param, …)` — **mit Klammern** = Funktion mit Rückgabewert
+- `Function name param, …` — **ohne Klammern** = Prozedur (kein Rückgabewert)
+
+**Stack-Frame (LINK/UNLK):**
+```
+8(a6)  = param[0]   (erster Parameter)
+12(a6) = param[1]   …
+-4(a6) = local[0]   (erste lokale Variable)
+-8(a6) = local[1]   …
+```
+
+- `[x]` Parser: `Function name(params)` … `EndFunction` (`hasReturn=true`)
+- `[x]` Parser: `Function name params` … `EndFunction` (`hasReturn=false`, Prozedur)
+- `[x]` Parser: User-Prozedur-Aufruf `name arg1, arg2` (Statement ohne Klammern)
+- `[x]` Parser: Funktionsaufruf `name(arg1, arg2)` in Ausdrücken (`call_expr`)
+- `[x]` Parser: `Return [expr]`
+- `[x]` CodeGen: Separate `SECTION func_name,CODE` pro Funktion; `_func_name:` XDEF
+- `[x]` CodeGen: LINK a6,#-n / UNLK a6; Caller-Cleanup nach JSR
+- `[x]` CodeGen: Parameter-Zugriff via positiver Frame-Offset `8(a6)`, `12(a6)` …
+- `[x]` CodeGen: Lokale Variablen via negativem Frame-Offset `-4(a6)`, `-8(a6)` …
+- `[x]` CodeGen: `_varRef(name)` — global BSS oder Frame-relative Adressierung
+- `[x]` Fehlerprüfung: Prozedur in Ausdrucks-Kontext → Compiler-Fehler
+- `[x]` Fehlerprüfung: `Return expr` in Prozedur → Compiler-Fehler
 
 ---
 
@@ -232,14 +308,18 @@ Dim bx.w(7)    ; Word-Array statt Long-Array
 ✅ M-COPPER               CopperColor y,r,g,b — Rasterbalken CPU-frei fertig
 ✅ M6 Text                Text x,y,"str" — 8×8 Bitmap-Font, CPU-Rendering fertig
 ✅ M-ASSET Sound          PlaySample + PlaySampleOnce + StopSample + vAmiga Audio fertig
-✅ M-ASSET Bitmaps         LoadImage + DrawImage; Blitter A→D; image.s fertig
+✅ M-ASSET Bitmaps        LoadImage + DrawImage; Blitter A→D; image.s fertig
+✅ M7 Funktionen          Function/Proc; Stack-Frame; lokale Variablen; Return fertig
        ↓
-⬅ NÄCHSTER SCHRITT
+⬅ SPRACHVOLLSTÄNDIGKEIT (Blocker)
+LANG-A  And / Or / Not    zusammengesetzte Bedingungen — fehlt im CodeGen
+LANG-B  Mod               Wraparound / Frame-Cycling — fehlt im CodeGen
+LANG-C  Str$(n) / NPrint  Zahlen als Text — ohne das kein Score-Display
+M9b     Joydown/KeyDown   non-blocking Input — ohne das kein echtes Spiel
+       ↓
 M10 Hardware-Scrolling     Scrolltext für Greetings/Credits-Part
        ↓
-M9b Joydown/Joyfire        optional: Interaktivität
-       ↓
-M7 Funktionen              für sehr komplexe Demo-Struktur
+M11 Strings (optional)     Erst nach LANG-C relevant
 ```
 
 ### Begründung der Reihenfolge
@@ -268,8 +348,9 @@ sodass `CopperLine y, colorReg, rgbValue` einen Eintrag in die aktive Liste schr
 ### Was absichtlich niedrig priorisiert ist
 | Feature | Grund |
 |---------|-------|
-| M11 Strings | Text via Literale für Demo ausreichend |
+| M11 Strings (Variablen) | LANG-C (`Str$`) reicht für Demo; volle String-Vars erst für Textadventures |
 | Hardware-Sprites | Blitter-Objekte für Demo genug; Sprites erst für Spiele wichtig |
 | Blitter-Line (B5) | CPU-Bresenham reicht für Demo-Zwecke |
 | Circle | Kein typisches Demo-Element |
 | Register-Caching | Erst nach M7 implementierbar |
+| Goto / Gosub | Bewusst nicht implementiert |

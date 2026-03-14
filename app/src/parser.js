@@ -6,26 +6,32 @@
 // of statement AST nodes.
 //
 // STATEMENT NODES
-//   { type: 'command', name: string, args: Expr[], line: number }
-//   { type: 'assign',  target: string, expr: Expr, line: number }
-//   { type: 'if',      cond: Expr, then: Stmt[], elseIfs: [{cond,body}[]], else: Stmt[], line: number }
-//   { type: 'while',   cond: Expr, body: Stmt[], line: number }
-//   { type: 'for',     var: string, from: Expr, to: Expr, step: Expr|null, body: Stmt[], line: number }
-//   { type: 'select',  expr: Expr, cases: [{values: Expr[], body: Stmt[]}[]], default: Stmt[], line: number }
+//   { type: 'command',      name: string, args: Expr[], line: number }
+//   { type: 'assign',       target: string, expr: Expr, line: number }
+//   { type: 'if',           cond: Expr, then: Stmt[], elseIfs: [{cond,body}[]], else: Stmt[], line: number }
+//   { type: 'while',        cond: Expr, body: Stmt[], line: number }
+//   { type: 'for',          var: string, from: Expr, to: Expr, step: Expr|null, body: Stmt[], line: number }
+//   { type: 'select',       expr: Expr, cases: [{values: Expr[], body: Stmt[]}[]], default: Stmt[], line: number }
+//   { type: 'function_def', name: string, params: string[], hasReturn: bool, body: Stmt[], line: number }
+//   { type: 'return',       expr: Expr|null, line: number }
+//   { type: 'call_stmt',    name: string, args: Expr[], line: number }
 //
 // EXPRESSION NODES
-//   { type: 'int',    value: number }
-//   { type: 'float',  value: number }
-//   { type: 'string', value: string }
-//   { type: 'ident',  name: string }          — variable reference
-//   { type: 'binop',  op: string, left: Expr, right: Expr }
-//   { type: 'unary',  op: string, operand: Expr }
+//   { type: 'int',       value: number }
+//   { type: 'float',     value: number }
+//   { type: 'string',    value: string }
+//   { type: 'ident',     name: string }          — variable reference
+//   { type: 'binop',     op: string, left: Expr, right: Expr }
+//   { type: 'unary',     op: string, operand: Expr }
+//   { type: 'call_expr', name: string, args: Expr[] }  — user func call or array read
 //
 // EXPRESSION PRECEDENCE (low → high)
+//   or          Or
+//   and         And
 //   comparison  =  <>  <  >  <=  >=   (non-associative, one per expression)
 //   add/sub     +  -
-//   mul/div     *  /
-//   unary       -
+//   mul/div     *  /  Mod
+//   unary       -  Not
 //   primary     literal | identifier | ( expr )
 //
 // RULES
@@ -36,6 +42,10 @@
 //   • An assignment begins with an IDENT token followed by EQ ('=').
 //   • Inside expressions '=' is a comparison operator, not assignment.
 //   • Lines that begin with an unrecognised token are skipped.
+//   • Function definitions are top-level: Function name(p1,p2…) … EndFunction.
+//   • Return [expr] exits the enclosing function.
+//   • A bare IDENT at statement level (not followed by =, (, or \) is parsed
+//     as a user function call statement with optional space-separated args.
 // ============================================================================
 
 import { TT } from './lexer.js';
@@ -83,14 +93,21 @@ export class Parser {
             if (next && next.type === TT.LPAREN)    return this._parseArrayAssignOrFieldWrite();
         }
 
-        // Control-flow keywords
+        // Control-flow and declaration keywords
         if (tok.type === TT.KEYWORD) {
-            if (tok.value === 'if')     return this._parseIf();
-            if (tok.value === 'while')  return this._parseWhile();
-            if (tok.value === 'for')    return this._parseFor();
-            if (tok.value === 'select') return this._parseSelect();
-            if (tok.value === 'dim')    return this._parseDim();
-            if (tok.value === 'type')   return this._parseTypeDef();
+            if (tok.value === 'if')          return this._parseIf();
+            if (tok.value === 'while')       return this._parseWhile();
+            if (tok.value === 'for')         return this._parseFor();
+            if (tok.value === 'select')      return this._parseSelect();
+            if (tok.value === 'dim')         return this._parseDim();
+            if (tok.value === 'type')        return this._parseTypeDef();
+            if (tok.value === 'function')    return this._parseFunctionDef();
+            if (tok.value === 'return')      return this._parseReturn();
+        }
+
+        // Bare IDENT at statement level (no =, (, \) → user function call statement
+        if (tok.type === TT.IDENT) {
+            return this._parseFunctionCallStmt();
         }
 
         // Unknown — skip tokens until next NEWLINE
@@ -113,16 +130,31 @@ export class Parser {
         };
     }
 
-    // ── Array assign or typed-array field write: <ident>(<index>)['\' field] = <expr> ──
+    // ── Array assign, typed-array field write, or function call statement ────
+    //
+    // name(args…)          → call_stmt  (no '=' after closing paren)
+    // name(index) = expr   → array_assign
+    // name(index)\f = expr → type_field_write
 
     _parseArrayAssignOrFieldWrite() {
         const nameTok = this._advance();            // consume IDENT
+        const name    = nameTok.value.toLowerCase();
         this._advance();                             // consume LPAREN
-        const index = this._parseExpr();
+
+        // Collect comma-separated arguments (support multi-arg function calls)
+        const args = [];
+        while (!this._atEnd() &&
+               this._peek().type !== TT.RPAREN &&
+               this._peek().type !== TT.NEWLINE &&
+               this._peek().type !== TT.EOF) {
+            if (this._peek().type === TT.COMMA) { this._advance(); continue; }
+            const expr = this._parseExpr();
+            if (expr !== null) args.push(expr);
+        }
         if (this._peek().type === TT.RPAREN) this._advance();   // consume RPAREN
 
-        if (this._peek().type === TT.BACKSLASH) {
-            // name(index)\field = expr — typed array field write
+        // name(index)\field = expr — typed array field write (single-arg only)
+        if (this._peek().type === TT.BACKSLASH && args.length === 1) {
             this._advance();                         // consume BACKSLASH
             if (this._peek().type !== TT.IDENT) {
                 console.warn(`[Parser] Field write: expected field name on line ${nameTok.line}`);
@@ -139,24 +171,29 @@ export class Parser {
             const expr = this._parseExpr();
             return {
                 type:     'type_field_write',
-                instance: nameTok.value.toLowerCase(),
+                instance: name,
                 field:    fieldTok.value.toLowerCase(),
-                index,
+                index:    args[0],
                 expr,
                 line:     nameTok.line,
             };
         }
 
-        // name(index) = expr — plain array assign
-        this._advance();                             // consume EQ
-        const expr = this._parseExpr();
-        return {
-            type:  'array_assign',
-            name:  nameTok.value.toLowerCase(),
-            index,
-            expr,
-            line:  nameTok.line,
-        };
+        // name(index) = expr — plain array assign (single-arg only)
+        if (this._peek().type === TT.EQ && args.length === 1) {
+            this._advance();                         // consume EQ
+            const expr = this._parseExpr();
+            return {
+                type:  'array_assign',
+                name,
+                index: args[0],
+                expr,
+                line:  nameTok.line,
+            };
+        }
+
+        // name(args…) — function call statement (result discarded)
+        return { type: 'call_stmt', name, args, line: nameTok.line };
     }
 
     // ── Scalar type field write: <ident> '\' <field> = <expr> ─────────────────
@@ -314,7 +351,31 @@ export class Parser {
     // Entry point.  Parses one comparison (or lower-precedence expression).
 
     _parseExpr() {
-        return this._parseComparison();
+        return this._parseOr();
+    }
+
+    // or: and { Or and }
+
+    _parseOr() {
+        let left = this._parseAnd();
+        while (this._peek()?.type === TT.KEYWORD && this._peek().value === 'or') {
+            this._advance();
+            const right = this._parseAnd();
+            left = { type: 'binop', op: 'or', left, right };
+        }
+        return left;
+    }
+
+    // and: comparison { And comparison }
+
+    _parseAnd() {
+        let left = this._parseComparison();
+        while (this._peek()?.type === TT.KEYWORD && this._peek().value === 'and') {
+            this._advance();
+            const right = this._parseComparison();
+            left = { type: 'binop', op: 'and', left, right };
+        }
+        return left;
     }
 
     // comparison: addSub [ (= | <> | < | > | <= | >=) addSub ]
@@ -351,25 +412,37 @@ export class Parser {
         return left;
     }
 
-    // mulDiv: unary { (*|/) unary }
+    // mulDiv: unary { (*|/|Mod) unary }
 
     _parseMulDiv() {
         let left = this._parseUnary();
 
         while (true) {
             const tok = this._peek();
-            if (!tok || (tok.type !== TT.STAR && tok.type !== TT.SLASH)) break;
+            const isMulDiv = tok && (tok.type === TT.STAR || tok.type === TT.SLASH);
+            const isMod    = tok && tok.type === TT.KEYWORD && tok.value === 'mod';
+            if (!isMulDiv && !isMod) break;
             this._advance();
             const right = this._parseUnary();
-            left = { type: 'binop', op: tok.value, left, right };
+            left = { type: 'binop', op: isMod ? 'mod' : tok.value, left, right };
         }
 
         return left;
     }
 
-    // unary: - unary | primary
+    // unary: Not unary | - unary | primary
 
     _parseUnary() {
+        // Not — bitwise complement (also serves as logical NOT for boolean values)
+        if (this._peek().type === TT.KEYWORD && this._peek().value === 'not') {
+            this._advance();
+            const operand = this._parseUnary();
+            // Fold constant Not at parse time (~n matches 68000 NOT.L behaviour)
+            if (operand && operand.type === 'int') {
+                return { type: 'int', value: ~operand.value };
+            }
+            return { type: 'unary', op: 'not', operand };
+        }
         if (this._peek().type === TT.MINUS) {
             this._advance();
             const operand = this._parseUnary();
@@ -408,18 +481,27 @@ export class Parser {
                 // references — command names are only meaningful at statement-start.
                 this._advance();
                 const name = tok.value.toLowerCase();
-                // Array or typed-array read: name(index)[\field]
+                // Function call or array read: name(args…)[\field]
                 if (this._peek().type === TT.LPAREN) {
                     this._advance();                        // consume LPAREN
-                    const index = this._parseExpr();
+                    const args = [];
+                    while (!this._atEnd() &&
+                           this._peek().type !== TT.RPAREN &&
+                           this._peek().type !== TT.NEWLINE &&
+                           this._peek().type !== TT.EOF) {
+                        if (this._peek().type === TT.COMMA) { this._advance(); continue; }
+                        const arg = this._parseExpr();
+                        if (arg !== null) args.push(arg);
+                    }
                     if (this._peek().type === TT.RPAREN) this._advance();  // consume RPAREN
-                    // Typed array field read: name(index)\field
-                    if (this._peek().type === TT.BACKSLASH) {
+                    // Typed array field read: name(index)\field — single-arg only
+                    if (this._peek().type === TT.BACKSLASH && args.length === 1) {
                         this._advance();                    // consume BACKSLASH
                         const fTok = this._advance();       // consume field IDENT
-                        return { type: 'type_field_read', instance: name, field: fTok.value.toLowerCase(), index };
+                        return { type: 'type_field_read', instance: name, field: fTok.value.toLowerCase(), index: args[0] };
                     }
-                    return { type: 'array_read', name, index };
+                    // call_expr: codegen resolves as user function or array read
+                    return { type: 'call_expr', name, args };
                 }
                 // Scalar typed field read: name\field
                 if (this._peek().type === TT.BACKSLASH) {
@@ -449,6 +531,111 @@ export class Parser {
                 this._advance();
                 return null;
         }
+    }
+
+    // ── Function definition: Function name(p1,p2…) … EndFunction ─────────────
+    //
+    // Blitz2D signature convention:
+    //   Function MyProc param1, param2   → procedure (no return value, NO parens)
+    //   Function MyFunc(param1, param2)  → function   (has return value, WITH parens)
+    //
+    // The presence of parentheses after the name is the distinguishing marker.
+
+    _parseFunctionDef() {
+        const fnTok = this._advance();              // consume 'function' KEYWORD
+        const nt = this._peek().type;
+        if (nt !== TT.IDENT && nt !== TT.COMMAND) {
+            console.warn(`[Parser] Function: expected name on line ${fnTok.line}`);
+            this._skipToNewline();
+            return null;
+        }
+        const nameTok = this._advance();            // consume function name
+
+        const params = [];
+        let hasReturn;
+
+        if (this._peek().type === TT.LPAREN) {
+            // ── Function with return value: name(p1, p2, …) ──────────────────
+            hasReturn = true;
+            this._advance();                        // consume LPAREN
+            while (!this._atEnd() &&
+                   this._peek().type !== TT.RPAREN &&
+                   this._peek().type !== TT.NEWLINE &&
+                   this._peek().type !== TT.EOF) {
+                if (this._peek().type === TT.COMMA) { this._advance(); continue; }
+                if (this._peek().type === TT.IDENT) {
+                    params.push(this._advance().value.toLowerCase());
+                } else {
+                    this._advance();                // skip unexpected token
+                }
+            }
+            if (this._peek().type === TT.RPAREN) this._advance();  // consume RPAREN
+        } else {
+            // ── Procedure without return value: name p1, p2, … (no parens) ───
+            hasReturn = false;
+            while (!this._atEnd() &&
+                   this._peek().type !== TT.NEWLINE &&
+                   this._peek().type !== TT.EOF) {
+                if (this._peek().type === TT.COMMA) { this._advance(); continue; }
+                if (this._peek().type === TT.IDENT) {
+                    params.push(this._advance().value.toLowerCase());
+                } else {
+                    this._advance();                // skip unexpected token
+                }
+            }
+        }
+        this._skipToNewline();
+
+        const body = this._parseBlock(['endfunction']);
+
+        if (this._peek().type === TT.KEYWORD && this._peek().value === 'endfunction') {
+            this._advance();                        // consume 'endfunction'
+        } else {
+            const t = this._peek();
+            console.warn(`[Parser] Expected EndFunction but got '${t?.value}' on line ${t?.line}`);
+        }
+        this._skipToNewline();
+
+        return {
+            type:      'function_def',
+            name:      nameTok.value.toLowerCase(),
+            params,
+            hasReturn,          // true = function (with parens); false = procedure (no parens)
+            body,
+            line:      fnTok.line,
+        };
+    }
+
+    // ── Return statement: Return [expr] ───────────────────────────────────────
+
+    _parseReturn() {
+        const retTok = this._advance();             // consume 'return' KEYWORD
+        let expr = null;
+        if (this._peek().type !== TT.NEWLINE && this._peek().type !== TT.EOF) {
+            expr = this._parseExpr();
+        }
+        return { type: 'return', expr, line: retTok.line };
+    }
+
+    // ── Bare-IDENT call statement: name [arg, arg…] ───────────────────────────
+    //
+    // Called when an IDENT appears at statement level without '=', '(' or '\'.
+    // Parses as a user function call statement with space/comma-separated args.
+
+    _parseFunctionCallStmt() {
+        const nameTok = this._advance();            // consume IDENT
+        const name    = nameTok.value.toLowerCase();
+        const args    = [];
+
+        while (!this._atEnd() &&
+               this._peek().type !== TT.NEWLINE &&
+               this._peek().type !== TT.EOF) {
+            if (this._peek().type === TT.COMMA) { this._advance(); continue; }
+            const expr = this._parseExpr();
+            if (expr !== null) args.push(expr);
+        }
+
+        return { type: 'call_stmt', name, args, line: nameTok.line };
     }
 
     // ── If statement ──────────────────────────────────────────────────────────

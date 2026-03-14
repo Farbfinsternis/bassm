@@ -1,5 +1,8 @@
 [
     "If", "Then", "Else", "ElseIf", "EndIf", "While", "Wend",
     "For", "To", "Step", "Next", "Select", "Case", "Default", "EndSelect",
-    "Dim", "Type", "Field", "EndType"
+    "Dim", "Type", "Field", "EndType",
+    "Function", "EndFunction", "Return",
+    "And", "Or", "Not",
+    "Mod"
 ]
