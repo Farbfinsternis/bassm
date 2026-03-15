@@ -177,10 +177,14 @@ offload.s      OS restoration (LoadView, RethinkDisplay, return to CLI)
 ### Images (Blitter)
 | Command | Description |
 |---------|-------------|
-| `LoadImage n,"file.raw",w,h` | Register raw planar image at index n (INCBIN into chip RAM; depth = screen depth) |
-| `DrawImage n,x,y` | Blit image n to back buffer at (x,y); x must be byte-aligned (x%8 == 0) |
+| `LoadImage n,"file.raw",w,h` | Register raw planar image at index n (INCBIN into chip RAM; depth = screen depth); `LoadImage 0` also applies the image's embedded OCS palette at runtime |
+| `DrawImage n,x,y` | Blit image n to back buffer at (x,y); x must be **word-aligned** (x%16 == 0) |
 
-**Image file format:** planar bitplane data, no header — plane 0 rows, then plane 1, etc. Each row is `((w+15)/16)*2` bytes (word-aligned). The codegen prepends the 8-byte metadata header automatically.
+**Image file format (`.raw`):** produced by the Asset Manager.
+- `[2^depth × 2 bytes]` OCS palette words (big-endian `$0RGB`); `LoadImage 0` copies these into the hardware color registers automatically.
+- `[depth × height × rowbytes bytes]` planar bitplane data — plane 0 rows, then plane 1, etc. Each row is `((w+15)/16)*2` bytes (word-aligned).
+
+The codegen prepends an 8-byte metadata header (`dc.w width, height, GFXDEPTH, rowbytes`) before the INCBIN. `_DrawImage` reads this header at runtime to skip the palette block and compute blit parameters.
 
 ### Copper Effects
 | Command | Description |

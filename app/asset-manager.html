@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="UTF-8" />
+		<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' blob: data:;" />
+		<meta http-equiv="X-Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' blob: data:;" />
+		<title>BASSM – Asset Manager</title>
+		<link rel="stylesheet" href="asset-manager.css" />
+	</head>
+	<body>
+
+		<div id="toolbar">
+			<button class="tab-btn active" data-tab="palette">Palette</button>
+			<button class="tab-btn"        data-tab="images" >Images</button>
+			<button class="tab-btn"        data-tab="sounds" >Sounds</button>
+			<span id="project-name">No project open</span>
+		</div>
+
+		<div id="main-area">
+
+			<!-- ── Left: Asset Tree ── -->
+			<div id="asset-tree-panel">
+
+				<div class="asset-group">
+					<div class="group-header" data-group="palettes">
+						<span class="toggle">&#9660;</span> Palettes
+					</div>
+					<div class="group-items" id="list-palettes"></div>
+				</div>
+
+				<div class="asset-group">
+					<div class="group-header" data-group="images">
+						<span class="toggle">&#9660;</span> Images
+					</div>
+					<div class="group-items" id="list-images"></div>
+				</div>
+
+				<div class="asset-group">
+					<div class="group-header" data-group="sounds">
+						<span class="toggle">&#9660;</span> Sounds
+					</div>
+					<div class="group-items" id="list-sounds"></div>
+				</div>
+
+			</div><!-- /asset-tree-panel -->
+
+			<!-- ── Right: Content panels ── -->
+			<div id="content-area">
+
+				<!-- ── A-MGR-1: Palette ── -->
+				<div id="tab-palette" class="tab-panel active">
+					<div class="panel-title">Project Palette <span class="badge">A-MGR-1</span></div>
+
+					<div id="palette-grid">
+						<!-- 32 slots filled by JS -->
+					</div>
+
+					<div id="palette-info">
+						<span id="palette-sel-info">Click a slot to edit (not yet implemented)</span>
+					</div>
+
+					<div class="action-row">
+						<button disabled>Extract from Image</button>
+						<button disabled>Import .act / .gpl</button>
+						<button disabled>Read from Code</button>
+						<button disabled>Copy to Code</button>
+						<button disabled>Export .act</button>
+					</div>
+				</div>
+
+				<!-- ── A-MGR-2: Images ── -->
+				<div id="tab-images" class="tab-panel">
+					<div class="panel-title">Image Converter <span class="badge">A-MGR-2</span></div>
+
+					<div id="image-drop-zone" class="drop-zone">
+						<div class="drop-icon">[ IMG ]</div>
+						<div class="drop-label">Drop PNG / JPEG / BMP here</div>
+						<div class="drop-sub">Converts against project palette &#8594; planar .raw</div>
+					</div>
+
+					<div id="image-split" class="split-view">
+						<div class="split-pane">
+							<div class="split-label">Original</div>
+							<canvas id="canvas-original"></canvas>
+						</div>
+						<div class="split-pane">
+							<div class="split-label">OCS palette</div>
+							<canvas id="canvas-converted"></canvas>
+						</div>
+					</div>
+
+					<div class="controls-bar">
+						<label>Depth
+							<select id="sel-depth">
+								<option value="1">1</option>
+								<option value="2">2</option>
+								<option value="3" selected>3</option>
+								<option value="4">4</option>
+								<option value="5">5</option>
+							</select>
+							Bitplanes
+						</label>
+						<label><input type="checkbox" id="chk-dither" /> Floyd-Steinberg</label>
+						<span id="fit-quality"></span>
+						<div class="spacer"></div>
+						<button disabled id="btn-convert-image">Convert &amp; Save</button>
+						<button disabled id="btn-copy-image-code">Copy Code</button>
+					</div>
+				</div>
+
+				<!-- ── A-MGR-3: Sounds ── -->
+				<div id="tab-sounds" class="tab-panel">
+					<div class="panel-title">Sound Converter <span class="badge">A-MGR-3</span></div>
+
+					<div id="sound-drop-zone" class="drop-zone">
+						<div class="drop-icon">[ SND ]</div>
+						<div class="drop-label">Drop WAV / MP3 / OGG here</div>
+						<div class="drop-sub">Converts to 8-bit signed PCM mono .raw</div>
+					</div>
+
+					<div id="waveform-wrap">
+						<canvas id="waveform-canvas"></canvas>
+						<div id="waveform-placeholder">Waveform appears here after loading a file</div>
+					</div>
+
+					<div class="controls-bar">
+						<label>Period
+							<input type="range" id="rng-period" min="80" max="3000" value="428" />
+						</label>
+						<span id="period-display">428 &nbsp;&#8776;&nbsp;8287 Hz</span>
+						<label><input type="checkbox" id="chk-normalize" /> Normalize</label>
+						<label><input type="checkbox" id="chk-trim" /> Trim silence</label>
+						<div class="spacer"></div>
+						<button disabled id="btn-convert-sound">Convert &amp; Save</button>
+						<button disabled id="btn-copy-sound-code">Copy Code</button>
+					</div>
+				</div>
+
+			</div><!-- /content-area -->
+
+		</div><!-- /main-area -->
+
+		<script src="src/asset-manager.js"></script>
+	</body>
+</html>

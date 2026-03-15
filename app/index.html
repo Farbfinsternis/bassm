@@ -11,8 +11,36 @@
 		<div id="toolbar">
 			<button id="btn-open">&#128193; Open Project</button>
 			<button id="btn-run">&#9654; Run</button>
+			<button id="btn-assets">&#128444; Assets</button>
 			<span id="project-name"></span>
 			<span id="status">Initialising...</span>
+		</div>
+
+		<div id="main-area">
+
+			<!-- Left panel: Project Tree + Outliner -->
+			<div id="left-panel">
+				<div id="project-tree">
+					<div class="panel-header">Project</div>
+					<div id="project-tree-content"></div>
+				</div>
+				<div id="outliner">
+					<div class="panel-header">Outliner</div>
+					<div id="outliner-content"></div>
+				</div>
+			</div>
+
+			<!-- Centre: Monaco Editor -->
+			<div id="editor-panel">
+				<div id="editor"></div>
+			</div>
+
+			<!-- Right panel: vAmiga preview + Console -->
+			<div id="right-panel">
+				<div id="emulator-view"></div>
+				<div id="console"></div>
+			</div>
+
 		</div>
 
 		<script type="text/x-bassm" id="initial-source">
@@ -104,11 +132,6 @@ Next t
 
 WaitKey
 		</script>
-
-		<div id="editor-pane">
-			<div id="editor"></div>
-			<div id="console"></div>
-		</div>
 
 		<script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
 		<script src="src/editor-init.js"></script>

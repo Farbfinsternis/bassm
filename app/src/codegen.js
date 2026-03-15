@@ -318,8 +318,9 @@ export class CodeGen {
 
         // ── Image data (chip RAM, one DATA_C section per unique file) ──────────
         // An 8-byte header (width, height, GFXDEPTH, rowbytes) is prepended
-        // before the INCBIN so _DrawImage can read metadata at runtime.
-        // The raw file contains only planar bitplane data (no header).
+        // before the INCBIN so _DrawImage / _SetImagePalette can read metadata.
+        // The .raw file format (from Asset Manager): 2^depth OCS palette words,
+        // followed by depth × height × rowbytes bytes of planar bitplane data.
         for (const [, { filename, label: lbl, width, height, rowbytes }] of this._imageAssets) {
             out.push(`        SECTION ${lbl}_sec,DATA_C`);
             out.push(`        XDEF    ${lbl}`);
@@ -689,8 +690,15 @@ export class CodeGen {
                 break;
 
             case 'loadimage':
-                // LoadImage index, "file", w, h — image was pre-registered in _collectVars.
-                // No assembly code emitted; INCBIN sections with header appear at end of generate().
+                // LoadImage 0 automatically applies the image's embedded palette at runtime.
+                // Other indices: no code emitted (data only, INCBIN at end of generate()).
+                if (stmt.args[0]?.type === 'int' && stmt.args[0].value === 0) {
+                    const slot = this._imageAssets.get(0);
+                    if (slot) {
+                        lines.push(`        lea     ${slot.label},a0`);
+                        lines.push(`        jsr     _SetImagePalette`);
+                    }
+                }
                 break;
 
             case 'drawimage': {

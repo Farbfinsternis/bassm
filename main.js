@@ -1,6 +1,6 @@
 const {
   app, BrowserWindow, WebContentsView,
-  ipcMain, protocol, net, dialog
+  ipcMain, protocol, net, dialog, Menu
 } = require('electron/main');
 
 // Allow AudioContext without user gesture (needed for Paula audio in the emulator view)
@@ -12,6 +12,44 @@ const { execFile } = require('node:child_process');
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 const VASM      = path.join(__dirname, 'bin', 'vasmm68k_mot.exe');
+
+// ── Project file watcher ────────────────────────────────────────────────────
+// Watches the open project directory (recursive) and notifies both the main
+// editor window and the Asset Manager when files are added, changed, or
+// removed externally. Debounced so burst-saves don't flood the renderers.
+let _projectWatcher  = null;
+let _watchDebounce   = null;
+const WATCH_DEBOUNCE = 300; // ms
+
+function startProjectWatcher(projectDir) {
+  stopProjectWatcher();
+  if (!projectDir) return;
+  try {
+    _projectWatcher = fs.watch(projectDir, { recursive: true }, (_type, filename) => {
+      if (!filename) return;
+      if (_watchDebounce) clearTimeout(_watchDebounce);
+      _watchDebounce = setTimeout(() => {
+        _watchDebounce = null;
+        // Notify main editor window(s)
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (win !== assetManagerWindow && !win.isDestroyed()) {
+            win.webContents.send('project:files-changed', { filename });
+          }
+        }
+        // Notify Asset Manager window
+        if (assetManagerWindow && !assetManagerWindow.isDestroyed()) {
+          assetManagerWindow.webContents.send('assets:files-changed', { filename });
+        }
+      }, WATCH_DEBOUNCE);
+    });
+    _projectWatcher.on('error', () => stopProjectWatcher());
+  } catch (_) { /* projectDir inaccessible — ignore */ }
+}
+
+function stopProjectWatcher() {
+  if (_watchDebounce) { clearTimeout(_watchDebounce); _watchDebounce = null; }
+  if (_projectWatcher) { _projectWatcher.close(); _projectWatcher = null; }
+}
 const VLINK     = path.join(__dirname, 'bin', 'vlink.exe');
 const FRAGMENTS = path.join(__dirname, 'app', 'src', 'm68k', 'fragments');
 const ROM_MAIN  = path.join(__dirname, 'emulator', 'vAmigaWeb', 'roms', 'aros.bin');
@@ -27,6 +65,79 @@ app.whenReady().then(() => {
     const file = path.join(__dirname, 'emulator', 'preview', url.pathname);
     return net.fetch(`file://${file}`);
   });
+});
+
+// ── Asset Manager Window ───────────────────────────────────────────────────
+let assetManagerWindow = null;
+
+function createAssetManagerWindow(projectDir) {
+  if (assetManagerWindow && !assetManagerWindow.isDestroyed()) {
+    assetManagerWindow.focus();
+    if (projectDir) {
+      assetManagerWindow.webContents.send('assets:set-project', { projectDir });
+    }
+    return;
+  }
+
+  assetManagerWindow = new BrowserWindow({
+    width:  960,
+    height: 680,
+    minWidth:  700,
+    minHeight: 480,
+    title: 'BASSM – Asset Manager',
+    backgroundColor: '#0a0a0a',
+    webPreferences: {
+      preload: path.join(__dirname, 'app', 'preload-assets.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  assetManagerWindow.loadFile('app/asset-manager.html');
+
+  if (projectDir) {
+    assetManagerWindow.webContents.once('did-finish-load', () => {
+      assetManagerWindow.webContents.send('assets:set-project', { projectDir });
+    });
+  }
+
+  assetManagerWindow.on('closed', () => { assetManagerWindow = null; });
+}
+
+// Renderer (editor) → main: open or focus the Asset Manager window
+ipcMain.on('bassm:open-asset-manager', (_event, { projectDir } = {}) => {
+  createAssetManagerWindow(projectDir || null);
+});
+
+// Renderer (asset manager) → main: list assets in project directory
+// Returns { palettes: [{name,path}], images: [{name,path}], sounds: [{name,path}] }
+ipcMain.handle('bassm:list-assets', (_event, { projectDir }) => {
+  if (!projectDir) return { palettes: [], images: [], sounds: [] };
+
+  function listDir(subdir, exts) {
+    const dir = path.join(projectDir, subdir);
+    try {
+      return fs.readdirSync(dir)
+        .filter(f => !f.startsWith('.') && exts.some(e => f.toLowerCase().endsWith(e)))
+        .sort()
+        .map(name => ({ name, path: subdir + '/' + name }));
+    } catch (_) { return []; }
+  }
+
+  // Palettes: root-level JSON files whose names start with "palette"
+  let palettes = [];
+  try {
+    palettes = fs.readdirSync(projectDir)
+      .filter(f => f.toLowerCase().startsWith('palette') && f.toLowerCase().endsWith('.json'))
+      .sort()
+      .map(name => ({ name, path: name }));
+  } catch (_) {}
+
+  return {
+    palettes,
+    images: listDir('images', ['.raw', '.bmp', '.iff', '.png', '.jpg']),
+    sounds: listDir('sounds', ['.raw', '.wav', '.mp3', '.ogg', '.aiff']),
+  };
 });
 
 // ── Emulator WebContentsView ───────────────────────────────────────────────
@@ -66,14 +177,17 @@ function createEmulatorView(parentWindow) {
 function positionEmulatorView(win) {
   if (!emulatorView) return;
   const [w, h] = win.getContentSize();
-  // Right half of the window — layout managed by the main renderer
-  // This will be updated dynamically once the UI is built
+  // Approximate layout: left panel 200px, right panel 380px, toolbar 28px, console 140px.
+  // The renderer's ResizeObserver sends pixel-perfect bounds via emulator:bounds IPC
+  // shortly after load and on every resize, so this is only a brief fallback.
   const TOOLBAR_H = 28;
+  const RIGHT_W   = 380;
+  const CONSOLE_H = 140;
   emulatorView.setBounds({
-    x: Math.floor(w / 2),
+    x: w - RIGHT_W,
     y: TOOLBAR_H,
-    width: Math.floor(w / 2),
-    height: h - TOOLBAR_H
+    width: RIGHT_W,
+    height: h - TOOLBAR_H - CONSOLE_H,
   });
 }
 
@@ -192,6 +306,7 @@ ipcMain.handle('bassm:open-project', async (_event) => {
   const sourceFile  = path.join(projectDir, 'main.bassm');
   let source = '';
   try { source = fs.readFileSync(sourceFile, 'utf8'); } catch (_) { /* new project — empty editor */ }
+  startProjectWatcher(projectDir);
   return { projectDir, projectName, source };
 });
 
@@ -209,10 +324,75 @@ ipcMain.handle('bassm:read-file', (_event, { projectDir, filename }) => {
 });
 
 // Renderer → main: save source file back to project
-// Accepts { projectDir: string, source: string }
-ipcMain.handle('bassm:save-source', (_event, { projectDir, source }) => {
-  const sourceFile = path.join(projectDir, 'main.bassm');
-  fs.writeFileSync(sourceFile, source, 'utf8');
+// Accepts { projectDir: string, filename?: string, source: string }
+// filename defaults to 'main.bassm'; path traversal is rejected.
+ipcMain.handle('bassm:save-source', (_event, { projectDir, filename = 'main.bassm', source }) => {
+  const base     = path.resolve(projectDir);
+  const resolved = path.resolve(projectDir, filename);
+  if (!resolved.startsWith(base + path.sep)) {
+    throw new Error(`Path escapes project directory: "${filename}"`);
+  }
+  fs.writeFileSync(resolved, source, 'utf8');
+});
+
+// Renderer → main: read a binary asset file from the project directory.
+// Returns the file contents as a plain number[] (Array.from(Buffer)) so it
+// can be transferred over the context-isolated IPC bridge.
+// Used by the Asset Manager to load source images (PNG/JPG) directly from
+// the left-panel file list without requiring drag & drop.
+ipcMain.handle('bassm:read-asset', (_event, { projectDir, path: relPath }) => {
+  const base     = path.resolve(projectDir);
+  const resolved = path.resolve(projectDir, relPath);
+  if (!resolved.startsWith(base + path.sep)) {
+    throw new Error(`Path escapes project directory: "${relPath}"`);
+  }
+  return Array.from(fs.readFileSync(resolved));
+});
+
+// Renderer (asset manager) → main: write a converted asset into the project
+// Accepts { projectDir, subdir, filename, data: number[] }
+ipcMain.handle('bassm:write-asset', (_event, { projectDir, subdir, filename, data }) => {
+  const base    = path.resolve(projectDir);
+  const outDir  = path.join(projectDir, subdir);
+  const outFile = path.join(outDir, filename);
+  if (!path.resolve(outFile).startsWith(base + path.sep)) {
+    throw new Error(`Path escapes project directory: "${filename}"`);
+  }
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(outFile, Buffer.from(data));
+});
+
+// Renderer → main: recursively scan project directory
+// Returns a tree: Array<{ name, type:'dir'|'file', path?, children? }>
+// path is the slash-normalized relative path from projectDir (files only).
+// Dirs sort before files; main.bassm is always first among files.
+ipcMain.handle('bassm:list-files', (_event, { projectDir }) => {
+  function scanDir(dir, base) {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+    catch (_) { return []; }
+    const dirs  = [];
+    const files = [];
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue;
+      if (e.isDirectory()) {
+        const children = scanDir(path.join(dir, e.name), base);
+        dirs.push({ name: e.name, type: 'dir', children });
+      } else {
+        const rel = path.relative(base, path.join(dir, e.name)).replace(/\\/g, '/');
+        files.push({ name: e.name, type: 'file', path: rel });
+      }
+    }
+    dirs.sort( (a, b) => a.name.localeCompare(b.name));
+    files.sort((a, b) => {
+      if (a.name === 'main.bassm') return -1;
+      if (b.name === 'main.bassm') return 1;
+      return a.name.localeCompare(b.name);
+    });
+    return [...dirs, ...files];
+  }
+  try { return scanDir(projectDir, projectDir); }
+  catch (_) { return []; }
 });
 
 // ── Main window ────────────────────────────────────────────────────────────
@@ -233,6 +413,12 @@ function createWindow() {
   createEmulatorView(win);
   win.loadFile('app/index.html');
 
+  win.on('closed', () => {
+    if (assetManagerWindow && !assetManagerWindow.isDestroyed()) {
+      assetManagerWindow.close();
+    }
+  });
+
   // DevTools for both views — remove or guard with isDev check for production
   win.webContents.openDevTools({ mode: 'detach' });
   emulatorView.webContents.openDevTools({ mode: 'detach' });
@@ -241,6 +427,15 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: 'File',
+      submenu: [
+        { label: 'Quit', accelerator: 'Alt+F4', click: () => app.quit() }
+      ]
+    }
+  ]));
+
   createWindow();
 
   app.on('activate', () => {

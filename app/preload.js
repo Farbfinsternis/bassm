@@ -22,4 +22,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveSource: (payload) => ipcRenderer.invoke('bassm:save-source', payload),
   // Read an included source file from the project directory (for Include "file.bassm")
   readFile: (payload) => ipcRenderer.invoke('bassm:read-file', payload),
+  // List all .bassm files in the project directory; returns string[]
+  listFiles: (payload) => ipcRenderer.invoke('bassm:list-files', payload),
+  // Open (or focus) the Asset Manager window, optionally passing the current projectDir
+  openAssetManager: (payload) => ipcRenderer.send('bassm:open-asset-manager', payload || {}),
+  // Called when any file in the project directory changes externally.
+  // callback receives { filename: string } (relative path within projectDir).
+  onFilesChanged: (callback) => {
+    ipcRenderer.on('project:files-changed', (_e, data) => callback(data));
+  },
 });

@@ -104,9 +104,18 @@ Raw-Bitplane-Daten per `INCBIN` in die Executable einbetten und per Blitter in d
   - `_DrawImage` liest Header zur Laufzeit — kein Pre-Pass, keine IPC-Roundtrip
   - `rowbytes = ((width+15)/16)*2` (word-aligned)
   - Asset-Pipeline: Datei aus Projektordner → tmpDir kopiert (analog zu `LoadSample`)
+  - **`.raw`-Format (Asset Manager):** `[2^depth × 2-Byte OCS-Palette-Words ($0RGB)] [planar Bitplane-Daten]`
+    — Palette-Block geht dem Bitplane-Daten voraus; `_DrawImage` überspringt Palette beim Blitten
+  - **`LoadImage 0` → auto-Palette:** CodeGen emittiert `lea _img_0,a0 / jsr _SetImagePalette`
+    — setzt alle OCS COLOR-Register direkt aus dem embedded Palette-Block der `.raw`-Datei;
+    kein explizites `PaletteColor` mehr nötig
+  - `_SetImagePalette` in `image.s`: liest depth aus 8-Byte-Header, kopiert `2^depth` OCS-Words
+    zu `_gfx_palette` (Chip-RAM) und `COLOR00..COLORn` (Hardware-Register) via `lea COLOR00(a5),a2`
 - `[x]` **`DrawImage index, x, y`** — zeichnet Bild in Back-Buffer
   - `image.s`: `_DrawImage(d0=x, d1=y, a0=img_ptr)` — Blitter A→D, Minterm `$09F0` (D=A), pro Plane
-  - BLTDMOD = GFXBPR − rowbytes; BLTSIZE = (height<<6) | (rowbytes/2); `x` muss byte-aligned sein
+  - BLTDMOD = GFXBPR − rowbytes; BLTSIZE = (height<<6) | (rowbytes/2)
+  - **`x` muss word-aligned sein (x % 16 == 0)** — OCS-Blitter löscht Bit 0 von BLTDPT (Wortgrenze);
+    nicht-word-alignierte Positionen (x%16=8) werden als (x & −16) gezeichnet → Erase-Mismatch
   - Kein Clipping; kein Transparenz-Masking (full-replace)
 - `[ ]` IFF ILBM Parser (optional, spätere Phase) — für Standard-Amiga-Bildformat
 

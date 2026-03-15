@@ -16,15 +16,21 @@
 ;     DrawImage 0, px, py
 ;
 ; IMAGE FILE FORMAT
-;   Raw binary — only planar bitplane data, NO embedded header.
 ;   The codegen prepends an 8-byte header (dc.w) before the INCBIN:
 ;
 ;     +0  dc.w  width     ; pixels
 ;     +2  dc.w  height    ; scanlines
 ;     +4  dc.w  GFXDEPTH ; bitplanes (equals the Graphics depth)
 ;     +6  dc.w  rowbytes  ; bytes per row, word-aligned = ((width+15)/16)*2
-;     +8  data  ...       ; depth × height × rowbytes bytes, planar layout:
-;                         ;   plane 0 rows, then plane 1 rows, …, plane N-1 rows
+;
+;   The .raw file itself (from the Asset Manager) contains:
+;     [0 .. (2^depth)*2-1]  OCS palette words (2 bytes each, big-endian $0RGB)
+;     [(2^depth)*2 ..]      planar bitplane data:
+;                             plane 0 rows, then plane 1 rows, …, plane depth-1 rows
+;
+;   _SetImagePalette reads the palette block and writes it to _gfx_palette +
+;   hardware COLOR registers.  _DrawImage skips the palette block and blits
+;   the bitplane data.
 ;
 ;   Planar layout (plane 0 first):
 ;     byte 0..(height*rowbytes-1)             ← plane 0
@@ -38,7 +44,10 @@
 ;   _DrawImage reads the 4-word header, then runs one Blitter A→D operation per
 ;   bitplane.  Minterm $F0 (D = A) copies the source bits directly to the
 ;   destination, overwriting whatever was there.  First/last word masks are
-;   $FFFF (full words), so x must be byte-aligned (x % 8 == 0).
+;   $FFFF (full words) and BLTCON1 shift is 0, so x must be WORD-aligned
+;   (x % 16 == 0).  The OCS blitter clears bit 0 of BLTDPT (forces word
+;   alignment), so byte-aligned-but-not-word-aligned x values (x%16==8) would
+;   draw at (x & -16) — shifted 8px left — causing erase-position mismatch.
 ;
 ;   Blitter per plane:
 ;     BLTCON0  = $09F0  (USEA | USED | minterm $F0: D = A)
@@ -63,7 +72,7 @@
 ; CODEGEN CONTRACT
 ;   Eval y → d0 → push; eval x → d0; pop y → d1; lea _img_N,a0; jsr _DrawImage
 ;
-;   On entry:   d0.l = x  (pixel x, must be byte-aligned: x%8 == 0)
+;   On entry:   d0.l = x  (pixel x, must be WORD-aligned: x%16 == 0)
 ;               d1.l = y  (pixel y)
 ;               a0   = pointer to image data (header + bitplane data)
 ;
@@ -97,7 +106,12 @@ _DrawImage:
         move.w  (a0)+,d4            ; height
         move.w  (a0)+,d5            ; depth
         move.w  (a0)+,d6            ; rowbytes
-        ; a0 now points to the first plane's data
+        ; a0 now points to the embedded palette block — skip it.
+        ; Palette size = (1 << depth) * 2 bytes.  Use d7 (free until plane_size below).
+        moveq   #1,d7
+        lsl.l   d5,d7               ; d7 = 1 << depth  (number of palette entries)
+        add.l   d7,d7               ; d7 *= 2           (byte count)
+        add.l   d7,a0               ; a0 = start of bitplane data
 
         ; ── Source plane size = height * rowbytes ─────────────────────────────
         move.w  d4,d7
@@ -158,4 +172,42 @@ _DrawImage:
         dbra    d5,.plane_loop
 
         movem.l (sp)+,d0-d7/a0-a3
+        rts
+
+
+; ── _SetImagePalette ──────────────────────────────────────────────────────────
+;
+; Reads the OCS palette embedded in an image (immediately after the 8-byte
+; header, before the bitplane data) and writes all entries to both _gfx_palette
+; and the hardware COLOR00-COLOR(n) registers.
+;
+; Call this once per program to initialise the display palette from image 0.
+; Codegen emits this automatically for every "LoadImage 0" statement.
+;
+; Args:   a0 = pointer to image data (8-byte header + palette + bitplane data)
+; Trashes: nothing (saves/restores d0-d1/a0-a2)
+
+        XDEF    _SetImagePalette
+_SetImagePalette:
+        movem.l d0-d1/a0-a2,-(sp)
+
+        addq.l  #4,a0               ; skip width + height (2 words)
+        move.w  (a0)+,d0            ; d0.w = depth
+        addq.l  #2,a0               ; skip rowbytes
+        ; a0 = start of palette data (offset 8 from image label)
+
+        moveq   #1,d1
+        lsl.l   d0,d1               ; d1 = 1 << depth  (number of colour entries)
+        subq.l  #1,d1               ; d1 - 1 for dbra
+
+        lea     _gfx_palette,a1     ; destination: palette RAM (chip)
+        lea     COLOR00(a5),a2      ; destination: hardware COLOR registers
+
+.sip_loop:
+        move.w  (a0)+,d0            ; read one OCS colour word
+        move.w  d0,(a1)+            ; write → _gfx_palette
+        move.w  d0,(a2)+            ; write → hardware COLOR register
+        dbra    d1,.sip_loop
+
+        movem.l (sp)+,d0-d1/a0-a2
         rts

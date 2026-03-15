@@ -21,7 +21,7 @@ lauffähiges Amiga-Programm.
 6. [Funktionen & Prozeduren](#6-funktionen--prozeduren)
 7. [Systemsteuerung](#7-systemsteuerung)
 8. [Grafik — Grundlagen](#8-grafik--grundlagen)
-9. [Grafik — Zeichenbefehle](#9-grafik--zeichenbefehle)
+9. [Grafik — Zeichenbefehle](#9-grafik--zeichenbefehle) (Plot, Line, Rect, Box, LoadImage/DrawImage)
 10. [Palette & Farben](#10-palette--farben)
 11. [Eingabe](#11-eingabe)
 12. [Text & Debug-Ausgabe](#12-text--debug-ausgabe)
@@ -29,6 +29,8 @@ lauffähiges Amiga-Programm.
 14. [Amiga-spezifisches Verhalten](#14-amiga-spezifisches-verhalten)
 15. [Bekannte Einschränkungen](#15-bekannte-einschränkungen)
 16. [Vollständiges Beispiel](#16-vollständiges-beispiel)
+17. [Die IDE — Hauptfenster](#17-die-ide--hauptfenster)
+18. [Asset Manager](#18-asset-manager)
 
 ---
 
@@ -553,6 +555,48 @@ Box x, y, breite, höhe
 Zeichnet ein **gefülltes Rechteck**. `(x,y)` ist die obere linke Ecke.
 Verwendet den Hardware-Zeichnungsbeschleuniger des Amiga — sehr schnell.
 
+### LoadImage / DrawImage
+
+```blitz
+LoadImage index, "datei.raw", breite, höhe
+DrawImage index, x, y
+```
+
+Lädt ein vorkonvertiertes Bild und zeichnet es in den Back-Buffer (Blitter A→D, sehr schnell).
+
+| Parameter | Beschreibung |
+|-----------|--------------|
+| `index` | Bild-Nummer 0–… |
+| `"datei.raw"` | Dateiname relativ zum Projektordner (`images/`-Unterordner empfohlen) |
+| `breite` / `höhe` | Bildgröße in Pixeln |
+| `x`, `y` | Zielposition (obere linke Ecke) |
+
+```blitz
+LoadImage 0, "images/player.raw", 16, 16
+LoadImage 1, "images/bullet.raw", 8, 8
+
+While 1
+  DrawImage 0, px, py
+  DrawImage 1, bx, by
+  ScreenFlip
+Wend
+```
+
+**Dateiformat (`.raw`):** Erzeugt vom Asset Manager. Enthält zuerst die OCS-Palette
+(`2^tiefe × 2 Bytes`, Big-Endian `$0RGB`), gefolgt von den planaren Bitplane-Daten
+(Plane 0 zuerst, dann Plane 1 usw.). Jede Zeile ist auf Wortgrenzen aufgefüllt
+(`((breite+15)/16)*2` Bytes).
+
+> **Auto-Palette:** `LoadImage 0` liest die im Bild eingebettete Palette und setzt
+> **automatisch** alle OCS-Farbregister. Ein explizites `PaletteColor` ist für
+> Bild-basierte Programme **nicht** nötig.
+
+> **Wort-Ausrichtung:** `x` muss durch 16 teilbar sein (`x % 16 == 0`). Der OCS-Blitter
+> rundet die Zieladresse auf Wortgrenzen ab — Positionen wie `x=8` werden als `x=0`
+> gezeichnet und können zu Ghost-Pixeln führen. Im Code `b(i)\x And -16` verwenden.
+
+> **Kein Clipping:** `(x + breite)` darf den rechten Bildschirmrand nicht überschreiten.
+
 ---
 
 ## 10. Palette & Farben
@@ -579,6 +623,10 @@ PaletteColor n, r, g, b
 ```
 Ändert Palette-Eintrag `n` zur Farbe `(r, g, b)`.
 Jeder Kanal: **0–15** (nicht 0–255!).
+
+> **Tipp:** Bei Bild-basierten Programmen setzt `LoadImage 0` die Palette automatisch
+> aus dem Bild. `PaletteColor` ist dann nur noch nötig, wenn Farben nachträglich
+> geändert werden sollen.
 
 ```blitz
 PaletteColor 1, 15, 0, 0      ; Rot
@@ -904,6 +952,168 @@ Wend
 
 ---
 
+## 17. Die IDE — Hauptfenster
+
+BASSM ist eine eigenständige Electron-Anwendung mit integriertem Editor,
+Emulator-Vorschau und Build-Pipeline.
+
+### Fenster-Layout
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  📁 Open Project  ▶ Run  🖼 Assets  │ Projektname │    Status       │
+├──────────────────┬──────────────────────────────┬───────────────────┤
+│  Project         │                              │                   │
+│  ├ main.bassm    │                              │  vAmiga           │
+│  ├ images/       │       Monaco Editor          │  Emulator         │
+│  │  └ blob.raw   │       (Blitz2D Syntax)       │  Vorschau         │
+│  └ sounds/       │                              │                   │
+│                  │                              ├───────────────────┤
+│  Outliner        │                              │  Console          │
+│  ├ fn  Clamp     │                              │  (Assembly-Log,   │
+│  └ proc DrawMark │                              │   Fehlermeldungen)│
+└──────────────────┴──────────────────────────────┴───────────────────┘
+```
+
+### Toolbar
+
+| Schaltfläche | Funktion |
+|---|---|
+| `📁 Open Project` | Öffnet einen Projektordner; lädt `main.bassm` in den Editor |
+| `▶ Run` | Kompiliert, assembliert und startet das Programm im Emulator |
+| `🖼 Assets` | Öffnet den Asset Manager als separates Fenster |
+| Projektname | Zeigt den Namen des geöffneten Ordners |
+| Status | `Ready` · `Compiling…` · `Running` · `Error` |
+
+### Linke Seitenleiste
+
+**Project Tree** — zeigt alle Dateien des Projektordners rekursiv.
+Klick auf eine `.bassm`-Datei öffnet sie im Editor.
+Asset-Dateien (`.raw`, Bilder, Sounds) werden angezeigt, können aber
+nicht direkt bearbeitet werden.
+`main.bassm` ist der Einstiegspunkt und wird immer zuerst gelistet.
+Der Baum aktualisiert sich automatisch wenn Dateien extern hinzugefügt,
+geändert oder gelöscht werden.
+
+**Outliner** — listet alle `Function`-Deklarationen im aktuellen Quelltext.
+Klick auf einen Eintrag springt direkt zur entsprechenden Zeile im Editor.
+
+### Editor
+
+Monaco-Editor mit BASSM-Syntax-Highlighting:
+
+| Token | Farbe |
+|---|---|
+| Keywords (`If`, `While`, `For`, …) | blau |
+| String-Literale (`"text"`) | orange |
+| Zahlen (`42`, `$FF`, `%1010`) | hellgrün |
+| Kommentare (`;` und `//`) | grün-grau, kursiv |
+
+### Run-Workflow
+
+Klick auf `▶ Run` führt diese Schritte automatisch aus:
+
+1. **Auto-Save** — die aktuelle Datei wird auf Disk gespeichert
+2. **Include-Expansion** — `Include "datei.bassm"` werden aufgelöst
+3. **Kompilierung** — Blitz2D → m68k-Assembly (BASSM Compiler)
+4. **Assemblierung** — `vasmm68k_mot -Fhunk` → Objekt-Datei
+5. **Linken** — `vlink -bamigahunk` → AmigaOS HUNK-Executable
+6. **Start** — Binary wird an den vAmiga-Emulator gesendet; AROS bootet sofort
+
+Die generierte Assembly und Fehlermeldungen erscheinen in der **Console**.
+Das Binary wird zusätzlich als `out/bassm_out.exe` gespeichert —
+kompatibel mit WinUAE und echter Amiga-Hardware.
+
+### Projektstruktur
+
+Ein Projekt ist ein einfacher Ordner mit einer `main.bassm`. Empfohlene
+Struktur:
+
+```
+mein-projekt/
+  main.bassm          ← Hauptquelltext (Pflicht)
+  physics.bassm       ← Include-Datei (optional)
+  images/
+    player.png        ← Quell-Grafik (noch nicht konvertiert)
+    player.raw        ← Konvertiertes Format (INCBIN)
+  sounds/
+    boing.raw         ← Amiga-PCM-Sample
+```
+
+---
+
+## 18. Asset Manager
+
+Der Asset Manager öffnet sich als separates Fenster über `🖼 Assets`.
+Er konvertiert externe Mediendateien in Amiga-kompatible Formate und
+zeigt alle Assets des Projekts übersichtlich in einer Liste.
+
+### Linke Seitenleiste
+
+Zeigt alle Assets des offenen Projekts in drei Gruppen:
+**Palettes** · **Images** · **Sounds**.
+
+| Markierung | Bedeutung |
+|---|---|
+| `◆` (amber) | Quell-Datei (PNG, JPG, WAV …) — noch nicht konvertiert |
+| `✓` (grün) | Konvertierte Datei (`.raw`) — bereit für `INCBIN` |
+
+Klick auf eine Quell-Datei öffnet sie direkt im Konverter.
+Die Liste aktualisiert sich automatisch wenn der Projektordner
+extern geändert wird (Datei hinzugefügt, umbenannt, gelöscht).
+
+### Palette-Tab
+
+Zeigt das 32-Slot-Palette-Raster des Projekts.
+Klick auf einen Slot öffnet einen Farbwähler.
+
+> **Hinweis:** Bei Bild-basierten Programmen übernimmt `LoadImage 0`
+> die Palette automatisch aus dem Bild — manuelles Setzen ist selten nötig.
+
+### Images-Tab — Bild-Konverter
+
+Konvertiert PNG/JPG/BMP in das Amiga-Planar-Raw-Format.
+
+**Bild laden — zwei Wege:**
+- Quell-Datei in der linken Liste anklicken *(empfohlen)*
+- PNG/JPG/BMP per Drag & Drop in die Drop-Zone ziehen
+
+**Split-View:** Original links, OCS-Palette-Vorschau rechts.
+Die Vorschau aktualisiert sich live bei jeder Änderung.
+
+**Einstellungen:**
+
+| Option | Beschreibung |
+|---|---|
+| **Depth** | Bitplanes (1–5) → 2–32 Farben; muss mit `Graphics`-Tiefe übereinstimmen |
+| **Floyd-Steinberg** | Dithering für weichere Farbübergänge |
+| **Match %** | Qualitätswert: 100 % = verlustfreie Übernahme |
+
+**Aktionen:**
+
+| Schaltfläche | Funktion |
+|---|---|
+| `Convert & Save` | Konvertiert und speichert als `images/<name>.raw` im Projektordner |
+| `Copy Code` | Kopiert den passenden `LoadImage`-Befehl in die Zwischenablage |
+
+**Ausgabe-Format (`.raw`):**
+
+```
+[2^depth × 2 Bytes]    OCS-Palette ($0RGB, Big-Endian)
+[planare Bitplane-Daten]  Plane 0 (alle Zeilen) · Plane 1 · …
+```
+
+`LoadImage 0` liest die Palette automatisch aus dieser Datei und
+setzt alle OCS-Farbregister — kein `PaletteColor` nötig.
+
+### Sounds-Tab
+
+Konvertiert WAV/MP3/OGG in 8-Bit-Signed-PCM-Mono (`.raw`) für Paula.
+
+> **Hinweis:** Die Sound-Konvertierung ist noch in Entwicklung.
+
+---
+
 ## Anhang: Präprozessor-Direktiven
 
 ```
@@ -937,4 +1147,4 @@ LoadImage  DrawImage
 
 ---
 
-*Dokumentation für BASSM — Stand: 2026-03-14*
+*Dokumentation für BASSM — Stand: 2026-03-15* · Sektionen 17–18: IDE & Asset Manager

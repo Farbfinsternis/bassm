@@ -1,9 +1,14 @@
-; BASSM Demo -- M-Types: Rasterbalken + 8 Bouncing Boxes + Sound
-; Ball-Daten als Type (AoS): x,y,dx,dy + 2-Frame-History fuer Ghost-Erase
-; Kein Cls -- Erase-before-Draw: Loeschen von ox2/oy2 (2 Frames alt)
-Graphics 320,256,4
+; BASSM Demo -- 8 Blob-Sprites + Rasterbalken + Sound
+; Sprites via DrawImage (planar .raw, depth=3, 8 Farben)
+; DrawImage erfordert word-aligniertes x (OCS Blitter rundet BLTDPT auf Wortgrenze)
+; -> And -16 beim Zeichnen, NICHT And -8 (sonst Geister-Pixel links)
+; Erase-before-Draw: 2-Frame-History fuer geisterfreies Loeschen
+Graphics 320,256,3
 
 LoadSample 0, "sounds/boing.raw"
+LoadImage  0, "images/blob.raw", 16, 16
+
+; Palette wird automatisch aus blob.raw geladen (LoadImage 0 => _SetImagePalette)
 
 Type Ball
   Field x, y, dx, dy
@@ -13,86 +18,81 @@ EndType
 
 Dim b.Ball(7)
 
-b(0)\x=10  : b(0)\y=20  : b(0)\dx=3  : b(0)\dy=2
-b(1)\x=100 : b(1)\y=50  : b(1)\dx=-4 : b(1)\dy=3
+b(0)\x=8   : b(0)\y=20  : b(0)\dx=3  : b(0)\dy=2
+b(1)\x=96  : b(1)\y=50  : b(1)\dx=-4 : b(1)\dy=3
 b(2)\x=200 : b(2)\y=30  : b(2)\dx=2  : b(2)\dy=-3
-b(3)\x=50  : b(3)\y=150 : b(3)\dx=-3 : b(3)\dy=-2
-b(4)\x=250 : b(4)\y=100 : b(4)\dx=4  : b(4)\dy=2
-b(5)\x=130 : b(5)\y=200 : b(5)\dx=-2 : b(5)\dy=4
+b(3)\x=48  : b(3)\y=150 : b(3)\dx=-3 : b(3)\dy=-2
+b(4)\x=248 : b(4)\y=100 : b(4)\dx=4  : b(4)\dy=2
+b(5)\x=128 : b(5)\y=200 : b(5)\dx=-2 : b(5)\dy=4
 b(6)\x=80  : b(6)\y=120 : b(6)\dx=5  : b(6)\dy=-3
 b(7)\x=280 : b(7)\y=180 : b(7)\dx=-3 : b(7)\dy=5
 
-; History mit Startpositionen vorbelegen (kein Artefakt in Frame 0+1)
+; History mit word-alignierten Draw-Positionen vorbelegen
 For i = 0 To 7
-  b(i)\ox = b(i)\x : b(i)\oy = b(i)\y
-  b(i)\ox2 = b(i)\x : b(i)\oy2 = b(i)\y
+  b(i)\ox  = b(i)\x And -16 : b(i)\oy  = b(i)\y
+  b(i)\ox2 = b(i)\x And -16 : b(i)\oy2 = b(i)\y
 Next i
 
-; Text einmalig in beide Buffer zeichnen (Double-Buffer: je ein ScreenFlip)
-; Boxen bleiben unterhalb y=16 und oberhalb y=220, ueberdecken Text nie.
-Color 15
+; Titel in beide Buffer zeichnen (Double-Buffer braucht 2x ScreenFlip)
+Color 1
 Text 8, 4, "BASSM DEMO  * AMIGA OCS *"
-Color 8
+Color 6
 Text 8, 236, "CODE: BASSM COMPILER  FONT: 8X8"
 ScreenFlip
-Color 15
+Color 1
 Text 8, 4, "BASSM DEMO  * AMIGA OCS *"
-Color 8
+Color 6
 Text 8, 236, "CODE: BASSM COMPILER  FONT: 8X8"
 
 t = 0
 
 While 1
-  ; Rasterbalken: animierter Rot/Blau-Gradient ohne Division
+
+  ; Rasterbalken: animierter Rot/Cyan-Gradient
   t = t + 1
   If t > 15 : t = 0 : EndIf
-  rc = t
-  gc = 15 - t
+  rc = t : gc = 15 - t
   For line = 0 To 211
     CopperColor line, rc, 0, gc
     rc = rc + 1 : If rc > 15 : rc = 0 : EndIf
     gc = gc - 1 : If gc < 0  : gc = 15 : EndIf
   Next line
 
-  ; Alte Box-Positionen loeschen (Stand von vor 2 Frames)
+  ; Alte Blob-Positionen loeschen (2 Frames zurueck)
   Color 0
   For i = 0 To 7
     Box b(i)\ox2, b(i)\oy2, 16, 16
   Next i
 
-  ; Boxen bewegen, Grenzen pruefen, zeichnen
-  ; y-Grenzen: 16..220 -- Boxen ueberdecken Text bei y=4 und y=236 nie
+  ; Blobs bewegen, an Raendern abprallen, zeichnen
   For i = 0 To 7
     b(i)\x = b(i)\x + b(i)\dx
     b(i)\y = b(i)\y + b(i)\dy
+
     If b(i)\x < 0
-      b(i)\x = 0
-      b(i)\dx = -b(i)\dx
+      b(i)\x = 0 : b(i)\dx = -b(i)\dx
       PlaySampleOnce 0, 0
     EndIf
     If b(i)\x > 304
-      b(i)\x = 304
-      b(i)\dx = -b(i)\dx
+      b(i)\x = 304 : b(i)\dx = -b(i)\dx
       PlaySampleOnce 0, 0
     EndIf
     If b(i)\y < 16
-      b(i)\y = 16
-      b(i)\dy = -b(i)\dy
+      b(i)\y = 16 : b(i)\dy = -b(i)\dy
       PlaySampleOnce 0, 0
     EndIf
     If b(i)\y > 220
-      b(i)\y = 220
-      b(i)\dy = -b(i)\dy
+      b(i)\y = 220 : b(i)\dy = -b(i)\dy
       PlaySampleOnce 0, 0
     EndIf
-    Color i + 1
-    Box b(i)\x, b(i)\y, 16, 16
+
+    DrawImage 0, b(i)\x And -16, b(i)\y
   Next i
 
-  ; History vorschieben: ox2=ox (2 Frames alt), ox=x (1 Frame alt)
+  ; History vorschieben — snapped Draw-x speichern, nicht Physics-x
   For i = 0 To 7
-    b(i)\ox2 = b(i)\ox : b(i)\oy2 = b(i)\oy
-    b(i)\ox = b(i)\x   : b(i)\oy = b(i)\y
+    b(i)\ox2 = b(i)\ox         : b(i)\oy2 = b(i)\oy
+    b(i)\ox  = b(i)\x And -16  : b(i)\oy  = b(i)\y
   Next i
 
   ScreenFlip
