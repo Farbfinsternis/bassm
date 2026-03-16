@@ -172,3 +172,108 @@ body {
 
 #console .error { color: #c55; }
 #console .info  { color: #59a; }
+
+/* ── Budget strip ── */
+#budget-strip {
+    height: 30px;
+    background: #0c0c0c;
+    border-top: 1px solid #282828;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 0 14px;
+    flex-shrink: 0;
+}
+
+.budget-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.budget-label {
+    font-size: 9px;
+    color: #555;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    width: 30px;
+    flex-shrink: 0;
+}
+
+/* Track: recessed slot, glow applied here so overflow:hidden doesn't clip it */
+.budget-track {
+    width: 140px;
+    height: 11px;
+    background: #050505;
+    border: 1px solid #252525;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.9);
+    overflow: hidden;
+    cursor: default;
+    flex-shrink: 0;
+    transition: border-color 0.4s ease, box-shadow 0.4s ease;
+}
+
+.budget-track.ok {
+    border-color: #1a5a28;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.9),
+                0 0 9px 2px  rgba(0, 210, 65,  0.45),
+                0 0 3px 1px  rgba(0, 210, 65,  0.30);
+}
+.budget-track.warn {
+    border-color: #5a4800;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.9),
+                0 0 9px 2px  rgba(210, 155, 0,  0.45),
+                0 0 3px 1px  rgba(210, 155, 0,  0.30);
+}
+.budget-track.crit {
+    border-color: #5a1a1a;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.9),
+                0 0 11px 3px rgba(210,  30, 30,  0.60),
+                0 0  4px 1px rgba(210,  30, 30,  0.40);
+}
+
+/* Fill: gradient shows the full danger spectrum, clipped to current % */
+.budget-fill {
+    height: 100%;
+    width: 0%;
+    /* Top-edge sheen + danger gradient — background-size keeps gradient fixed-width
+       so the colour at the right edge always reflects the current usage level */
+    background:
+        linear-gradient(to bottom, rgba(255,255,255,0.18) 0%, transparent 45%),
+        linear-gradient(to right,
+            #00cc44  0%,
+            #88cc00 40%,
+            #ccaa00 60%,
+            #cc5500 80%,
+            #cc1111 100%
+        );
+    background-size: 100% 100%, 140px 100%;
+    background-repeat: no-repeat;
+    transition: width 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+.budget-pct {
+    font-size: 10px;
+    width: 40px;
+    text-align: right;
+    flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+    transition: color 0.4s ease;
+    color: #444;
+}
+.budget-pct.ok   { color: #33aa55; }
+.budget-pct.warn { color: #ccaa20; }
+.budget-pct.crit { color: #cc3333; }
+
+.budget-sep {
+    color: #202020;
+    font-size: 14px;
+}
+
+#budget-hint {
+    font-size: 10px;
+    color: #cc2222;
+    margin-left: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}

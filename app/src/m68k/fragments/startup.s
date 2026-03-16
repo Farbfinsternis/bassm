@@ -318,6 +318,14 @@ _lev3_handler:
         move.l  d0,a0
         jsr     (a0)
 .no_hook:
+
+        ; Optional mouse VBL update (installed by _MouseInit when mouse.s is used)
+        move.l  _mouse_vbl_ptr,d0
+        beq.s   .no_mouse_vbl
+        move.l  d0,a0
+        jsr     (a0)
+.no_mouse_vbl:
+
         movem.l (sp)+,d0-d7/a0-a5
         rte
 
@@ -340,7 +348,7 @@ _lev3_handler:
 ; Note: Other CIA-A sources (Timer A, Timer B) are silently acknowledged.
 
 _lev2_kbd_handler:
-        movem.l d0-d1/a5,-(sp)
+        movem.l d0-d2/a0/a5,-(sp)
         lea     CUSTOM,a5
 
         move.b  $BFED01,d0              ; read CIA-A ICR  (clears all CIA-A flags)
@@ -349,7 +357,26 @@ _lev2_kbd_handler:
 
         ; Read and store the keyboard byte
         move.b  $BFEC01,d0              ; d0 = raw byte from CIASDR
-        move.b  d0,_kbd_pending         ; save for _WaitKey / InKey$ to consume
+        move.b  d0,_kbd_pending         ; save for _WaitKey to consume
+
+        ; ── Key matrix update ────────────────────────────────────────────────
+        ; Decode raw CIA byte: NOT + ROR → bit7=up_flag, bits6:0=scancode
+        not.b   d0
+        ror.b   #1,d0                   ; d0: bit7=up_flag, bits6:0=scancode
+        move.w  d0,d1                   ; d1 = decoded word
+        and.w   #$7F,d1                 ; d1 = scancode (0..127)
+        move.w  d1,d2                   ; d2 = scancode copy
+        lsr.w   #3,d1                   ; d1 = byte index  (scancode >> 3)
+        and.w   #7,d2                   ; d2 = bit index   (scancode & 7)
+        lea     _kbd_matrix,a0
+        add.w   d1,a0                   ; a0 → matrix byte for this scancode
+        btst    #7,d0                   ; test up_flag (bit7 of decoded byte)
+        bne.s   .lev2_key_up
+        bset    d2,(a0)                 ; key-down → set bit
+        bra.s   .lev2_matrix_done
+.lev2_key_up:
+        bclr    d2,(a0)                 ; key-up   → clear bit
+.lev2_matrix_done:
 
         ; ACK handshake (~600 µs: CIACRA bit 6 = output → delay → input)
         bset    #6,$BFEE01              ; CIACRA: SP → output  (KDAT low = ACK start)
@@ -363,7 +390,7 @@ _lev2_kbd_handler:
         move.w  #INTF_PORTS,INTREQ(a5)
         move.w  #INTF_PORTS,INTREQ(a5)  ; double-write for chipset bus settling
 
-        movem.l (sp)+,d0-d1/a5
+        movem.l (sp)+,d0-d2/a0/a5
         rte
 
 
@@ -487,7 +514,9 @@ _null_copper:
         XDEF    _saved_view
         XDEF    _frame_count
         XDEF    _vblank_hook
+        XDEF    _mouse_vbl_ptr
         XDEF    _kbd_pending
+        XDEF    _kbd_matrix
         XDEF    _back_planes_ptr
         XDEF    _front_is_a
         XDEF    _gfx_planes
@@ -501,8 +530,10 @@ _saved_lev3vec:     ds.l    1   ; Level-3 vector     — restored by offload.s
 _saved_gfx_base:    ds.l    1   ; graphics.library base — used by offload.s for LoadView
 _saved_view:        ds.l    1   ; GfxBase->ActiView on entry — restored by offload.s
 _frame_count:       ds.l    1   ; VBlank counter, incremented 50×/sec
-_vblank_hook:       ds.l    1   ; optional callback address (0 = none)
+_vblank_hook:       ds.l    1   ; optional user callback address (0 = none)
+_mouse_vbl_ptr:     ds.l    1   ; mouse VBL callback (set by _MouseInit, 0 = none)
 _kbd_pending:       ds.b    1   ; raw CIA key byte from _lev2_kbd_handler (0 = none)
+_kbd_matrix:        ds.b    16  ; 128-bit key state: bit n set while scancode n is held
         EVEN                        ; pad to even address — required before longword access
 _back_planes_ptr:   ds.l    1   ; chip-RAM address of back bitplane buffer (set by _setup_graphics)
 _front_is_a:        ds.b    1   ; 0 = copper A is front (buffer A displayed), 1 = copper B is front

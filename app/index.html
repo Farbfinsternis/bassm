@@ -33,6 +33,24 @@
 			<!-- Centre: Monaco Editor -->
 			<div id="editor-panel">
 				<div id="editor"></div>
+				<div id="budget-strip">
+					<div class="budget-item">
+						<span class="budget-label">CPU</span>
+						<div class="budget-track" id="budget-cpu-track" title="Cycle-Budget pro Frame (7.09 MHz, 50 Hz PAL = 141 800 Cycles)">
+							<div class="budget-fill" id="budget-cpu-fill"></div>
+						</div>
+						<span class="budget-pct" id="budget-cpu-pct">—</span>
+					</div>
+					<span class="budget-sep">·</span>
+					<div class="budget-item">
+						<span class="budget-label">CHIP</span>
+						<div class="budget-track" id="budget-mem-track" title="Chip-RAM-Verbrauch (A500 Standard: 512 KB)">
+							<div class="budget-fill" id="budget-mem-fill"></div>
+						</div>
+						<span class="budget-pct" id="budget-mem-pct">—</span>
+					</div>
+					<span class="budget-hint" id="budget-hint"></span>
+				</div>
 			</div>
 
 			<!-- Right panel: vAmiga preview + Console -->
@@ -44,93 +62,82 @@
 		</div>
 
 		<script type="text/x-bassm" id="initial-source">
-; BASSM LANG-A + LANG-B Test -- And / Or / Not / Mod operators
+; BASSM LANG-D Test -- Rnd + Abs
 ;
-; Visueller Test:
-;   Reihe 1 (y=20):  Or  in Bounce-Bedingung   — Box prallt an beiden Waenden ab
-;   Reihe 2 (y=100): And in Farb-Bedingung      — Farbe wechselt nur in der Mitte
-;   Reihe 3 (y=180): Not als Schleifenabbruch   — zaehlt bis 60, dann stop
+; Demo: Scrollendes Starfield (Rnd) + Bouncing Box (Rnd Init + Abs fuer Farbe)
+;
+;   30 Sterne an zufaelligen Positionen, scrollen nach links, respawnen rechts
+;   Bouncing Box: zufaellige Startposition + Geschwindigkeit
+;   Boxfarbe = Abs(Abstand zur Bildmitte) -- rot=nah, cyan=mittel, blau=weit
 
 Graphics 320,256,4
 
-PaletteColor 0,  0,  0,  0   ; schwarz
-PaletteColor 1, 15, 15, 15   ; weiss
-PaletteColor 2, 15,  4,  0   ; rot
-PaletteColor 3,  0, 14,  4   ; gruen
-PaletteColor 4,  4,  8, 15   ; blau
+PaletteColor 0,  0,  0,  0   ; schwarz (Hintergrund)
+PaletteColor 1, 15,  0,  0   ; rot
+PaletteColor 2,  0, 15,  0   ; gruen
+PaletteColor 3,  4,  8, 15   ; blau
+PaletteColor 4, 15, 15,  0   ; gelb
+PaletteColor 5,  0, 15, 15   ; cyan
+PaletteColor 6, 15,  0, 15   ; magenta
+PaletteColor 7, 15, 15, 15   ; weiss
 
-; ── Test 1: Or in Bounce-Bedingung ────────────────────────────────────────────
-; Bouncing box — Richtungsumkehr wenn x < 5 Or x > 305
-x1 = 160 : dx = 3
+ClsColor 0
 
-For frame = 1 To 200
-  Cls
-  x1 = x1 + dx
-  If x1 < 5 Or x1 > 305 Then dx = -dx   ; OR
-  Color 1
-  Box x1, 20, 14, 14
-  ScreenFlip
-Next frame
+; -- Starfield-Init (Rnd) ------------------------------------------------------
+Dim sx(29)
+Dim sy(29)
+Dim sv(29)
 
-; ── Test 2: And in kombinierter Bedingung ─────────────────────────────────────
-; Box laeuft durch — gruen in der Mitte (80..240), rot an den Raendern
-Cls
-For i = 0 To 319
-  Color 2                              ; Standard: rot
-  If i >= 80 And i <= 240 Then Color 3 ; AND: nur in der Mitte gruen
-  Box i, 100, 1, 40
-Next i
-ScreenFlip
-WaitKey
-
-; ── Test 3: Not als Schleifenbedingung ────────────────────────────────────────
-; zaehlt hoch bis done gesetzt wird
-Cls
-done = 0
-counter = 0
-While Not done                      ; NOT
-  counter = counter + 1
-  Color 4
-  Box counter * 5, 180, 4, 30
-  If counter >= 60 Then done = -1   ; Blitz2D true = -1
-  ScreenFlip
-Wend
-
-; ── Test 4: And/Or als Wert (Zuweisung) ───────────────────────────────────────
-; mask = $0F And $FF = $0F -> gruen wenn = 15
-mask = $0F And $FF
-If mask = 15 Then Color 3 Else Color 2
-Box 10, 230, 30, 14
-
-; flags: bit0 = 1, bit1 = 1 -> Or ergibt 3
-flags = 1 Or 2
-If flags = 3 Then Color 3 Else Color 2
-Box 50, 230, 30, 14
-
-; Not 0 = -1 -> blaue Box wenn = -1
-notval = Not 0
-If notval = -1 Then Color 4 Else Color 2
-Box 90, 230, 30, 14
-
-; ── Test 5: Mod — Frame-Cycling und Wraparound ────────────────────────────────
-; 16 Boxen nebeneinander, Farbe = i Mod 4 (zyklisch 0-3)
-Cls
-For i = 0 To 15
-  Color (i Mod 4) + 1
-  Box i * 20, 50, 18, 50
+For i = 0 To 29
+  sx(i) = Rnd(320)
+  sy(i) = Rnd(256)
+  sv(i) = Rnd(3) + 1
 Next i
 
-; Bounce mit Mod: x laeuft 0..319 und wraps
-x = 0
-For t = 0 To 400
-  Cls
-  x = (x + 3) Mod 320
-  Color 1
-  Box x, 130, 14, 14
-  ScreenFlip
-Next t
+; -- Bouncing Box Init (Rnd) ---------------------------------------------------
+bx = Rnd(280) + 20
+by = Rnd(220) + 18
+dvx = Rnd(4) + 3
+dvy = Rnd(4) + 3
 
-WaitKey
+; -- Main Loop (Repeat/Until demo) ---------------------------------------------
+frames = 0
+
+Repeat
+  Cls
+
+  ; Sterne zeichnen und nach links scrollen
+  Color 7
+  For i = 0 To 29
+    Plot sx(i), sy(i)
+    sx(i) = sx(i) - sv(i)
+    If sx(i) < 0 Then sx(i) = 319 : sy(i) = Rnd(256)
+  Next i
+
+  ; Box bewegen + abprallen
+  bx = bx + dvx
+  by = by + dvy
+  If bx < 0 Or bx > 303 Then dvx = -dvx : bx = bx + dvx
+  If by < 0 Or by > 239 Then dvy = -dvy : by = by + dvy
+
+  ; Farbe = Abs(Abstand zur horizontalen Mitte)
+  dist = Abs(bx - 152)
+  If dist < 50 Then Color 1
+  If dist >= 50 And dist < 100 Then Color 5
+  If dist >= 100 Then Color 3
+
+  Box bx, by, 16, 16
+
+  ; HUD
+  Color 7
+  Text 4, 4, "Frame:" + Str$(frames) + " BX:" + Str$(bx)
+
+  frames = frames + 1
+  ScreenFlip
+
+  ; Exit demo: Exit when frame 500 reached (using Exit inside For)
+  ; (loop runs forever otherwise — Until 0 = infinite)
+Until 0
 		</script>
 
 		<script src="../node_modules/monaco-editor/min/vs/loader.js"></script>

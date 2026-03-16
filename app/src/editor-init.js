@@ -23,17 +23,18 @@ require(['vs/editor/editor.main'], function () {
         keywords: [
             'For', 'Next', 'To', 'Step',
             'While', 'Wend',
+            'Repeat', 'Until',
             'If', 'Then', 'Else', 'ElseIf', 'EndIf',
             'Select', 'Case', 'Default', 'EndSelect',
             'Dim', 'Type', 'Field', 'EndType',
             'Function', 'EndFunction', 'Return',
-            'Exit', 'And', 'Or', 'Not',
+            'Exit', 'And', 'Or', 'Xor', 'Not', 'Mod', 'Shl', 'Shr',
             'Graphics', 'Color', 'Cls', 'ClsColor',
             'Box', 'Line', 'Rect', 'Plot', 'Text',
-            'ScreenFlip', 'PaletteColor',
+            'ScreenFlip', 'PaletteColor', 'CopperColor',
             'LoadSample', 'PlaySample', 'PlaySampleOnce', 'StopSample',
             'LoadImage', 'DrawImage',
-            'CopperColor', 'WaitKey',
+            'WaitKey', 'Include',
         ],
         tokenizer: {
             root: [

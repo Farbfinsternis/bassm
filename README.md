@@ -95,13 +95,16 @@ real Amiga / WinUAE  runs natively on hardware and any compatible emulator
 Every compiled program is assembled from these fragments in order:
 
 ```
-startup.s      bare-metal system takeover (Forbid, VBL handler, keyboard ISR)
+startup.s      bare-metal system takeover (Forbid, VBL handler, CIA-A keyboard ISR,
+               128-key matrix, mouse delta accumulation)
 graphics.s     bitplane + two copper lists setup (double-buffering)
 cls.s          Blitter screen clear (_Cls, writes to back buffer)
 clscolor.s     _ClsColor (sets background fill colour)
 color.s        _SetColor
 palette.s      32-entry OCS palette (_InitPalette, _SetPaletteColor, _draw_color)
 text.s         _Text (8×8 bitmap font, CPU per-plane per-row rendering, newline support)
+               _IntToStr / _str_buf — integer-to-decimal for Str$
+rnd.s          _Rnd (Xorshift32, auto-seeded from VHPOSR) — only if Rnd is used
 plot.s         _Plot (single pixel, CPU, writes to back buffer)
 line.s         _Line (Bresenham, CPU)
 rect.s         _Rect (outline rectangle, 4× _Box calls)
@@ -148,23 +151,38 @@ offload.s      OS restoration (LoadView, RethinkDisplay, return to CLI)
 | `If expr … Else … EndIf` | With else branch |
 | `If … ElseIf … EndIf` | ElseIf chain |
 | `While expr … Wend` | While loop |
+| `Repeat … Until expr` | Do-while loop (body runs at least once; exits when condition is true) |
 | `For v = a To b [Step s] … Next` | For loop |
 | `Select expr … Case v … EndSelect` | Select/Case |
+| `Exit [n]` | Exit n levels of nested loops (default 1); works in While, For, Repeat |
 
 ### Variables & Expressions
 - Integer variables (`x = expr`)
 - Arithmetic: `+ - * / Mod` with correct precedence, unary minus
 - Comparisons: `= <> < > <= >=` (return Blitz2D boolean −1/0)
-- Logical/bitwise: `And` `Or` `Not` (32-bit, work correctly for −1/0 booleans)
+- Logical/bitwise: `And` `Or` `Xor` `Not` (32-bit, work correctly for −1/0 booleans)
+- Shift: `Shl` (left shift, `lsl.l`) / `Shr` (arithmetic right shift, `asr.l`)
+- Math: `Rnd(n)` — random 0..n-1 (Xorshift32, VHPOSR seed); `Abs(n)` — absolute value (inline)
+- `Str$(n)` — converts integer to decimal string pointer (usable in `Text`)
 - Variables as command arguments
 
-### Timing, Input & Double-Buffering
+### Timing & Double-Buffering
 | Command | Description |
 |---------|-------------|
 | `WaitVbl` | Wait for next vertical blank (50 Hz PAL) |
 | `Delay n` | Wait n VBlanks |
-| `WaitKey` | Halt until any key is pressed (interrupt-driven CIA-A) |
 | `ScreenFlip` | VBL-synchronised front/back buffer swap (no screen tearing) |
+
+### Input
+| Command / Function | Description |
+|--------------------|-------------|
+| `WaitKey` | Halt until any key is pressed (interrupt-driven CIA-A) |
+| `KeyDown(sc)` | −1 if scancode `sc` is held, 0 otherwise; non-blocking; up to 128 simultaneous keys |
+| `JoyUp(p)` / `JoyDown(p)` / `JoyLeft(p)` / `JoyRight(p)` | Joystick direction on port p (0=left/mouse, 1=right/joystick) |
+| `Joyfire(p)` | Fire button on port p |
+| `MouseX()` / `MouseY()` | Mouse position (starts at screen centre; updated every VBL) |
+| `MouseDown(n)` | −1 if mouse button n is held (0=left, 1=right) |
+| `MouseHit(n)` | −1 if button n was clicked since last call; clears flag (one-shot) |
 
 ### Sound (Paula DMA)
 | Command | Description |
@@ -237,7 +255,9 @@ negative offsets (`-4(a6)`, `-8(a6)`, …).
 - **Assembler:** `vasmm68k_mot -Fhunk` (object) + `vlink -bamigahunk` (executable)
 - **Register convention:** `a5 = $DFF000` (custom chip base) for the entire program lifetime
 - **VBL interrupt:** Level-3 autovector at `$6C`, 50 Hz PAL frame counter
-- **Keyboard:** Interrupt-driven Level-2 (CIA-A) handler at `$68`; `_kbd_pending` byte shared with `_WaitKey`
+- **Keyboard:** Interrupt-driven Level-2 (CIA-A) handler at `$68`; 128-key matrix in `startup.s`; `KeyDown(scancode)` tests any of 128 scancodes; `WaitKey` blocks until key release
+- **Mouse:** Delta accumulation in VBL handler (JOY0DAT); left button = CIAAPRA bit 6; right button = POTINP bit 10 (POTGO init at startup)
+- **Joystick:** JOY0DAT/JOY1DAT XOR-decode inline; fire = CIAAPRA bits 7/6
 - **Blitter:** A→D mode with chip-RAM constant pattern rows (`_blt_ones_row` / `_blt_zero_row`); D-only mode does not work reliably in vAmiga
 
 ---
@@ -263,9 +283,9 @@ npm test
 
 See [ROADMAP.md](ROADMAP.md) for the full implementation plan.
 
-**Next milestone:** LANG-C (number→text output) · M9b (Joystick/KeyDown) · M10 (Hardware Scrolling).
+**Next milestone:** M10 Hardware Scrolling · M-BOB (Bobs / sprite blitting with background restore).
 
-Completed milestones: M0 (core pipeline), M1 (integer variables), M2 (If/Else), M3 (While/For), M4 (Select/Case), M5 (drawing commands), M5b (Blitter fill), M5c (Double-Buffering / `ScreenFlip`), M6 (Text / 8×8 font), M7 (Functions & Procedures: stack frame, local variables, Blitz2D signature convention), M8 (Arrays), M9a (WaitKey), M-COPPER (CopperColor raster effects), PERF-A+B+C (optimised codegen), M-ASSET A2 (Sound: Paula DMA looping + one-shot, vAmiga Web Audio), M-ASSET A1 (Bitmaps: `LoadImage`/`DrawImage`, Blitter A→D), LANG-A (`And`/`Or`/`Not`: logical and bitwise operators), LANG-B (`Mod`: modulo operator), TOOL-1 (`Include`: source file inclusion, recursive, circular detection).
+Completed milestones: M0 (core pipeline), M1 (integer variables), M2 (If/Else), M3 (While/For), M4 (Select/Case), M5 (drawing commands), M5b (Blitter fill), M5c (Double-Buffering / `ScreenFlip`), M6 (Text / 8×8 font), M7 (Functions & Procedures: stack frame, local variables, Blitz2D signature convention), M8 (Arrays), M9a (WaitKey), M9b (full input: Joystick, `KeyDown`, Mouse — interrupt-driven, non-blocking), M-COPPER (`CopperColor` raster effects), PERF-A+B+C (optimised codegen), M-ASSET A2 (Sound: Paula DMA looping + one-shot, vAmiga Web Audio), M-ASSET A1 (Bitmaps: `LoadImage`/`DrawImage`, Blitter A→D), LANG-A (`And`/`Or`/`Not`), LANG-B (`Mod`), LANG-C (`Str$`: integer-to-string for live HUD display), LANG-D (`Rnd`/`Abs`: Xorshift32 random + inline absolute value), LANG-E (`Xor`/`Shl`/`Shr`: bitwise XOR and 68k shift instructions), LANG-F (`Repeat`/`Until`/`Exit`: do-while loop with multi-level break), TOOL-1 (`Include`: source file inclusion, recursive, circular detection), TOOL-IDE (IDE Budget Bars: live CPU-cycles + Chip RAM health bars in the editor).
 
 ---
 

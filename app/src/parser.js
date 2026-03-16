@@ -11,6 +11,8 @@
 //   { type: 'if',           cond: Expr, then: Stmt[], elseIfs: [{cond,body}[]], else: Stmt[], line: number }
 //   { type: 'while',        cond: Expr, body: Stmt[], line: number }
 //   { type: 'for',          var: string, from: Expr, to: Expr, step: Expr|null, body: Stmt[], line: number }
+//   { type: 'repeat',       cond: Expr, body: Stmt[], line: number }
+//   { type: 'exit',         count: number, line: number }
 //   { type: 'select',       expr: Expr, cases: [{values: Expr[], body: Stmt[]}[]], default: Stmt[], line: number }
 //   { type: 'function_def', name: string, params: string[], hasReturn: bool, body: Stmt[], line: number }
 //   { type: 'return',       expr: Expr|null, line: number }
@@ -98,6 +100,8 @@ export class Parser {
             if (tok.value === 'if')          return this._parseIf();
             if (tok.value === 'while')       return this._parseWhile();
             if (tok.value === 'for')         return this._parseFor();
+            if (tok.value === 'repeat')      return this._parseRepeat();
+            if (tok.value === 'exit')        return this._parseExit();
             if (tok.value === 'select')      return this._parseSelect();
             if (tok.value === 'dim')         return this._parseDim();
             if (tok.value === 'type')        return this._parseTypeDef();
@@ -354,14 +358,15 @@ export class Parser {
         return this._parseOr();
     }
 
-    // or: and { Or and }
+    // or: and { (Or|Xor) and }
 
     _parseOr() {
         let left = this._parseAnd();
-        while (this._peek()?.type === TT.KEYWORD && this._peek().value === 'or') {
-            this._advance();
+        while (this._peek()?.type === TT.KEYWORD &&
+               (this._peek().value === 'or' || this._peek().value === 'xor')) {
+            const op = this._advance().value;
             const right = this._parseAnd();
-            left = { type: 'binop', op: 'or', left, right };
+            left = { type: 'binop', op, left, right };
         }
         return left;
     }
@@ -412,7 +417,7 @@ export class Parser {
         return left;
     }
 
-    // mulDiv: unary { (*|/|Mod) unary }
+    // mulDiv: unary { (*|/|Mod|Shl|Shr) unary }
 
     _parseMulDiv() {
         let left = this._parseUnary();
@@ -421,10 +426,12 @@ export class Parser {
             const tok = this._peek();
             const isMulDiv = tok && (tok.type === TT.STAR || tok.type === TT.SLASH);
             const isMod    = tok && tok.type === TT.KEYWORD && tok.value === 'mod';
-            if (!isMulDiv && !isMod) break;
+            const isShift  = tok && tok.type === TT.KEYWORD && (tok.value === 'shl' || tok.value === 'shr');
+            if (!isMulDiv && !isMod && !isShift) break;
             this._advance();
             const right = this._parseUnary();
-            left = { type: 'binop', op: isMod ? 'mod' : tok.value, left, right };
+            const op = isMod ? 'mod' : isShift ? tok.value : tok.value;
+            left = { type: 'binop', op, left, right };
         }
 
         return left;
@@ -718,6 +725,49 @@ export class Parser {
         this._skipToNewline();
 
         return { type: 'while', cond, body, line: whileTok.line };
+    }
+
+    // ── Repeat / Until statement ──────────────────────────────────────────────
+    //
+    // Repeat NEWLINE … Until <cond>
+    //
+    // Executes the body at least once; repeats while <cond> is false (exits
+    // when <cond> is true) — the opposite sense from While.
+
+    _parseRepeat() {
+        const repTok = this._advance();             // consume 'repeat'
+        this._skipToNewline();
+        const body   = this._parseBlock(['until']);
+
+        if (this._peek().type === TT.KEYWORD && this._peek().value === 'until') {
+            this._advance();                        // consume 'until'
+        } else {
+            const t = this._peek();
+            console.warn(`[Parser] Expected Until but got '${t?.value}' on line ${t?.line}`);
+        }
+        const cond = this._parseExpr();
+        this._skipToNewline();
+
+        return { type: 'repeat', cond, body, line: repTok.line };
+    }
+
+    // ── Exit statement ────────────────────────────────────────────────────────
+    //
+    // Exit [n]
+    //
+    // Exits n enclosing loops (While, For, Repeat). Default n = 1.
+
+    _parseExit() {
+        const exitTok = this._advance();            // consume 'exit'
+        // Optional integer: Exit 2 exits 2 loops. Must be on the same line.
+        let count = 1;
+        if (this._pos < this._tokens.length &&
+            this._peek().type === TT.INT &&
+            this._peek().line === exitTok.line) {
+            count = this._advance().value;
+        }
+        this._skipToNewline();
+        return { type: 'exit', count, line: exitTok.line };
     }
 
     // ── For statement ─────────────────────────────────────────────────────────

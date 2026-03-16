@@ -68,6 +68,9 @@ export class CodeGen {
         this._ptrCacheCtx   = null;       // PERF-2: active pointer cache { instName, regName }
         this._userFunctions = new Map();  // name → { params, localVars, body, line }
         this._funcCtx       = null;       // non-null when generating a function body
+        this._usesRnd       = false;      // true if any Rnd() call present
+        this._usesMouse     = false;      // true if any MouseX/Y/Down/Hit used
+        this._loopStack     = [];         // stack of endLabels for Exit — push on loop entry, pop on exit
 
         // ── Locate and validate the Graphics statement ────────────────────────
         const gfxStmt = ast.find(s => s && s.type === 'command' && s.name === 'graphics');
@@ -153,6 +156,12 @@ export class CodeGen {
         }
         if (this._usesImage) {
             out.push('        INCLUDE "image.s"');
+        }
+        if (this._usesRnd) {
+            out.push('        INCLUDE "rnd.s"');
+        }
+        if (this._usesMouse) {
+            out.push('        INCLUDE "mouse.s"');
         }
         out.push('');
         out.push('        even');
@@ -418,6 +427,9 @@ export class CodeGen {
             } else if (stmt.type === 'while') {
                 this._collectVarsInExpr(stmt.cond, varSet);
                 this._collectVars(stmt.body, varSet);
+            } else if (stmt.type === 'repeat') {
+                this._collectVarsInExpr(stmt.cond, varSet);
+                this._collectVars(stmt.body, varSet);
             } else if (stmt.type === 'for') {
                 varSet.add(stmt.var);
                 this._collectVarsInExpr(stmt.from, varSet);
@@ -469,7 +481,7 @@ export class CodeGen {
                     this._collectVarsInFunction(ei.body, localVarSet);
                 }
                 this._collectVarsInFunction(stmt.else, localVarSet);
-            } else if (stmt.type === 'while') {
+            } else if (stmt.type === 'while' || stmt.type === 'repeat') {
                 this._collectVarsInFunction(stmt.body, localVarSet);
             } else if (stmt.type === 'select') {
                 for (const c of stmt.cases) {
@@ -493,6 +505,9 @@ export class CodeGen {
                 break;
             case 'call_expr':
                 // function/array name is NOT a scalar — collect vars from args
+                if (expr.name === 'rnd') this._usesRnd = true;
+                if (expr.name === 'mousex' || expr.name === 'mousey' ||
+                    expr.name === 'mousedown' || expr.name === 'mousehit') this._usesMouse = true;
                 for (const arg of expr.args) this._collectVarsInExpr(arg, varSet);
                 break;
             case 'type_field_read':
@@ -592,6 +607,21 @@ export class CodeGen {
             return lines;
         }
 
+        // ── Repeat / Until ────────────────────────────────────────────────────
+        if (stmt.type === 'repeat') {
+            this._genRepeat(stmt, lines);
+            return lines;
+        }
+
+        // ── Exit [n] ──────────────────────────────────────────────────────────
+        if (stmt.type === 'exit') {
+            const depth = stmt.count ?? 1;
+            const idx   = this._loopStack.length - depth;
+            if (idx < 0) throw new Error(`Exit ${depth}: not inside enough loops (line ${stmt.line})`);
+            lines.push(`        bra.w   ${this._loopStack[idx]}`);
+            return lines;
+        }
+
         // ── Select / Case / Default / EndSelect ───────────────────────────────
         if (stmt.type === 'select') {
             this._genSelect(stmt, lines);
@@ -606,6 +636,7 @@ export class CodeGen {
 
             case 'graphics':
                 lines.push('        jsr     _setup_graphics');
+                if (this._usesMouse) lines.push('        jsr     _MouseInit');
                 break;
 
             case 'cls':
@@ -895,36 +926,58 @@ export class CodeGen {
             }
 
             case 'text': {
-                const str     = this._strArg(stmt, 2, 'Text string');
-                const strLbl  = this._nextLabel();
-                const pastLbl = this._nextLabel();
-                // _Text(a0=str, d0=x, d1=y)
-                // Evaluate y first (save it), then x, then move y to d1
+                // _Text(a0=str, d0=x, d1=y) — now returns new x in d0.
+                // Supports: "literal", Str$(n), and "a" + Str$(n) + "b" concatenation.
+                const parts = this._flattenStrArg(stmt.args[2]);
+                // Evaluate y first (push), then x (into d0), pop y → d1
                 this._genExprArg(stmt, 1, 'Text y', lines);
-                lines.push(`        move.l  d0,-(sp)`);
+                lines.push('        move.l  d0,-(sp)');
                 this._genExprArg(stmt, 0, 'Text x', lines);
-                lines.push(`        move.l  (sp)+,d1`);
-                lines.push(`        lea     ${strLbl},a0`);
-                lines.push(`        jsr     _Text`);
-                lines.push(`        bra.s   ${pastLbl}`);
-                lines.push(`${strLbl}:`);
-                lines.push(`        dc.b    "${this._escapeStr(str)}",0`);
-                lines.push('        even');
-                lines.push(`${pastLbl}:`);
+                lines.push('        move.l  (sp)+,d1');
+                if (parts.length === 1 && parts[0].type === 'lit') {
+                    // Fast path: single literal (original behaviour)
+                    const strLbl  = this._nextLabel();
+                    const pastLbl = this._nextLabel();
+                    lines.push(`        lea     ${strLbl},a0`);
+                    lines.push('        jsr     _Text');
+                    lines.push(`        bra.s   ${pastLbl}`);
+                    lines.push(`${strLbl}:`);
+                    lines.push(`        dc.b    "${this._escapeStr(parts[0].value)}",0`);
+                    lines.push('        even');
+                    lines.push(`${pastLbl}:`);
+                } else {
+                    // Multi-part: save y to _text_y, chain _Text calls.
+                    // Each _Text call returns new x in d0; reload _text_y into d1 each time.
+                    lines.push('        move.l  d1,_text_y');
+                    for (const part of parts) {
+                        if (part.type === 'lit') {
+                            const strLbl  = this._nextLabel();
+                            const pastLbl = this._nextLabel();
+                            lines.push(`        lea     ${strLbl},a0`);
+                            lines.push('        jsr     _Text');     // returns new x in d0
+                            lines.push(`        bra.s   ${pastLbl}`);
+                            lines.push(`${strLbl}:`);
+                            lines.push(`        dc.b    "${this._escapeStr(part.value)}",0`);
+                            lines.push('        even');
+                            lines.push(`${pastLbl}:`);
+                            lines.push('        move.l  _text_y,d1');
+                        } else {  // str_expr
+                            lines.push('        move.l  d0,-(sp)');   // save current x
+                            this._genExpr(part.expr, lines);           // d0 = integer
+                            lines.push('        jsr     _IntToStr');   // d0 = string ptr
+                            lines.push('        move.l  d0,a0');
+                            lines.push('        move.l  (sp)+,d0');    // restore x
+                            lines.push('        move.l  _text_y,d1');  // restore y
+                            lines.push('        jsr     _Text');
+                            lines.push('        move.l  _text_y,d1');
+                        }
+                    }
+                }
                 break;
             }
 
             case 'nprint': {
-                const str     = this._strArg(stmt, 0, 'NPrint string');
-                const strLbl  = this._nextLabel();
-                const pastLbl = this._nextLabel();
-                lines.push(`        lea     ${strLbl},a0`);
-                lines.push('        jsr     _NPrint');
-                lines.push(`        bra.s   ${pastLbl}`);
-                lines.push(`${strLbl}:`);
-                lines.push(`        dc.b    "${this._escapeStr(str)}",0`);
-                lines.push('        even');
-                lines.push(`${pastLbl}:`);
+                // Blitz2D compatibility stub — no-op in bare-metal builds
                 break;
             }
 
@@ -1041,6 +1094,9 @@ export class CodeGen {
 
     _genWhile(stmt, lines) {
         const topLbl = this._nextLabel();
+        const endLbl = this._nextLabel();
+
+        this._loopStack.push(endLbl);
 
         // Constant-true condition (While 1, While -1, …): no test needed.
         // Emits just a top label + body + unconditional branch — saves 3 instructions
@@ -1049,19 +1105,16 @@ export class CodeGen {
             lines.push(`${topLbl}:`);
             for (const s of stmt.body) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
             lines.push(`        bra.w   ${topLbl}`);
-            return;
+        } else {
+            lines.push(`${topLbl}:`);
+            // PERF-A: emit cmp+Bcc directly for comparison conditions
+            this._genCondBranch(stmt.cond, endLbl, lines);
+            for (const s of stmt.body) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
+            lines.push(`        bra.w   ${topLbl}`);
         }
 
-        const endLbl = this._nextLabel();
-
-        lines.push(`${topLbl}:`);
-        // PERF-A: emit cmp+Bcc directly for comparison conditions
-        this._genCondBranch(stmt.cond, endLbl, lines);
-
-        for (const s of stmt.body) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
-
-        lines.push(`        bra.w   ${topLbl}`);
         lines.push(`${endLbl}:`);
+        this._loopStack.pop();
     }
 
     // ── For statement code generation ─────────────────────────────────────────
@@ -1078,6 +1131,8 @@ export class CodeGen {
     _genFor(stmt, lines) {
         const topLbl = this._nextLabel();
         const endLbl = this._nextLabel();
+
+        this._loopStack.push(endLbl);
 
         // Determine step value at compile time (null = unknown / expression)
         const stepLit = stmt.step === null       ? 1
@@ -1192,6 +1247,33 @@ export class CodeGen {
 
         lines.push(`        bra.w   ${topLbl}`);
         lines.push(`${endLbl}:`);
+        this._loopStack.pop();
+    }
+
+    // ── Repeat / Until statement code generation ──────────────────────────────
+    //
+    // Repeat … Until <cond>
+    //   Body always executes at least once.
+    //   At the bottom: if cond is FALSE → jump back to top (keep looping).
+    //                  if cond is TRUE  → fall through (exit loop).
+    //
+    //   _genCondBranch(cond, topLbl) branches to topLbl when cond is false —
+    //   exactly the semantics we need.
+
+    _genRepeat(stmt, lines) {
+        const topLbl = this._nextLabel();
+        const endLbl = this._nextLabel();
+
+        this._loopStack.push(endLbl);
+
+        lines.push(`${topLbl}:`);
+        for (const s of stmt.body) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
+
+        // Until cond: repeat while cond is false
+        this._genCondBranch(stmt.cond, topLbl, lines);
+
+        lines.push(`${endLbl}:`);
+        this._loopStack.pop();
     }
 
     // ── Select statement code generation ─────────────────────────────────────
@@ -1346,7 +1428,172 @@ export class CodeGen {
                 break;
 
             case 'call_expr': {
-                // Resolve: user function call or array read?
+                // ── Built-in functions ────────────────────────────────────────
+                // Checked before user functions so names like 'abs'/'rnd' can
+                // never be shadowed by a user-defined function of the same name.
+
+                // Abs(n) — inline: tst.l d0 / bge.s / neg.l d0
+                if (expr.name === 'abs') {
+                    const doneLbl = this._nextLabel();
+                    this._genExpr(expr.args[0] ?? { type: 'int', value: 0 }, lines);
+                    lines.push('        tst.l   d0');
+                    lines.push(`        bge.s   ${doneLbl}`);
+                    lines.push('        neg.l   d0');
+                    lines.push(`${doneLbl}:`);
+                    break;
+                }
+
+                // Rnd(n) — calls _Rnd; d1 = n (upper bound), result in d0
+                if (expr.name === 'rnd') {
+                    this._genExpr(expr.args[0] ?? { type: 'int', value: 1 }, lines);
+                    lines.push('        move.l  d0,d1');
+                    lines.push('        jsr     _Rnd');
+                    break;
+                }
+
+                // ── JoyUp/JoyDown/JoyLeft/JoyRight(port) — inline joystick read ──
+                //
+                // JOY0DAT = $DFF00A (port 0),  JOY1DAT = $DFF00C (port 1)
+                // XOR decode:  move.w; move.w d0,d1; lsr.w #1,d1; eor.w d0,d1
+                //   d1 bit 0  = RIGHT  (bit1 XOR bit0  of raw)
+                //   d1 bit 1  = LEFT   (bit1 of raw; bit2 = 0 for digital joystick)
+                //   d1 bit 8  = DOWN   (bit9 XOR bit8  of raw)
+                //   d1 bit 9  = UP     (bit9 of raw; bit10 = 0 for digital joystick)
+                // Returns -1 (pressed) or 0 (not pressed).
+                {
+                    const joyBit = { joyright: 0, joyleft: 1, joydown: 8, joyup: 9 };
+                    if (Object.prototype.hasOwnProperty.call(joyBit, expr.name)) {
+                        const bitN   = joyBit[expr.name];
+                        const portArg = expr.args[0] ?? { type: 'int', value: 1 };
+                        if (portArg.type === 'int') {
+                            const addr = portArg.value === 0 ? '$DFF00A' : '$DFF00C';
+                            lines.push(`        move.w  ${addr},d0`);
+                        } else {
+                            // runtime port (0 or 1): JOYxDAT = $DFF00A + port*2
+                            this._genExpr(portArg, lines);
+                            lines.push('        add.l   d0,d0');
+                            lines.push('        lea     $DFF00A,a0');
+                            lines.push('        move.w  0(a0,d0.w),d0');
+                        }
+                        lines.push('        move.w  d0,d1');
+                        lines.push('        lsr.w   #1,d1');
+                        lines.push('        eor.w   d0,d1');
+                        lines.push(`        btst    #${bitN},d1`);
+                        lines.push('        sne     d0');
+                        lines.push('        ext.w   d0');
+                        lines.push('        ext.l   d0');
+                        break;
+                    }
+                }
+
+                // ── Joyfire(port) — CIAAPRA ($BFE001), active low ────────────────
+                // Port 0: bit 7,  Port 1: bit 6.
+                // Bit = 0 when fire is pressed (active low) → invert then sne.
+                // Returns -1 (pressed) or 0 (not pressed).
+                if (expr.name === 'joyfire') {
+                    const portArg = expr.args[0] ?? { type: 'int', value: 1 };
+                    lines.push('        move.b  $BFE001,d0');
+                    lines.push('        not.b   d0');           // invert: pressed → bit set
+                    if (portArg.type === 'int') {
+                        const bitN = portArg.value === 0 ? 7 : 6;
+                        lines.push(`        btst    #${bitN},d0`);
+                    } else {
+                        // runtime port: fire bit = 7 - port  (port0→7, port1→6)
+                        this._genExpr(portArg, lines);
+                        lines.push('        move.l  d0,d1');
+                        lines.push('        moveq   #7,d0');
+                        lines.push('        sub.l   d1,d0');
+                        lines.push('        move.l  d0,d1');
+                        lines.push('        move.b  $BFE001,d0');
+                        lines.push('        not.b   d0');
+                        lines.push('        btst    d1,d0');
+                    }
+                    lines.push('        sne     d0');
+                    lines.push('        ext.w   d0');
+                    lines.push('        ext.l   d0');
+                    break;
+                }
+
+                // ── MouseX() / MouseY() — current mouse position ─────────────────
+                if (expr.name === 'mousex') {
+                    lines.push('        move.w  _mouse_x,d0');
+                    lines.push('        ext.l   d0');
+                    break;
+                }
+                if (expr.name === 'mousey') {
+                    lines.push('        move.w  _mouse_y,d0');
+                    lines.push('        ext.l   d0');
+                    break;
+                }
+
+                // ── MouseDown(n) — is button n currently held? ───────────────────
+                // n=0: left (_mouse_down_0),  n=1: right (_mouse_down_1)
+                // Returns -1 (held) or 0 (not held).
+                if (expr.name === 'mousedown') {
+                    const btn = expr.args[0] ?? { type: 'int', value: 0 };
+                    if (btn.type === 'int') {
+                        const v = btn.value === 0 ? '_mouse_down_0' : '_mouse_down_1';
+                        lines.push(`        move.b  ${v},d0`);
+                    } else {
+                        this._genExpr(btn, lines);
+                        lines.push('        move.l  d0,d1');
+                        lines.push('        lea     _mouse_down_0,a0');
+                        lines.push('        move.b  0(a0,d1.l),d0');
+                    }
+                    lines.push('        ext.w   d0');
+                    lines.push('        ext.l   d0');
+                    break;
+                }
+
+                // ── MouseHit(n) — was button n clicked since last call? ───────────
+                // Returns -1 if hit, 0 otherwise. Clears the hit flag on read.
+                if (expr.name === 'mousehit') {
+                    const btn = expr.args[0] ?? { type: 'int', value: 0 };
+                    if (btn.type === 'int') {
+                        const v = btn.value === 0 ? '_mouse_hit_0' : '_mouse_hit_1';
+                        lines.push(`        move.b  ${v},d0`);
+                        lines.push(`        clr.b   ${v}`);
+                    } else {
+                        this._genExpr(btn, lines);
+                        lines.push('        move.l  d0,d1');
+                        lines.push('        lea     _mouse_hit_0,a0');
+                        lines.push('        move.b  0(a0,d1.l),d0');
+                        lines.push('        clr.b   0(a0,d1.l)');
+                    }
+                    lines.push('        ext.w   d0');
+                    lines.push('        ext.l   d0');
+                    break;
+                }
+
+                // ── KeyDown(scancode) — non-blocking key state from _kbd_matrix ──
+                //
+                // _kbd_matrix is a 16-byte (128-bit) array maintained by the Level-2
+                // keyboard interrupt handler in startup.s.
+                // Bit n of the matrix is set while scancode n is held down.
+                //   byte = scancode >> 3,  bit = scancode & 7
+                // Returns -1 (held) or 0 (not held).
+                if (expr.name === 'keydown') {
+                    this._genExpr(expr.args[0] ?? { type: 'int', value: 0 }, lines);
+                    lines.push('        move.l  d0,d1');
+                    lines.push('        lsr.l   #3,d1');        // d1 = byte index
+                    lines.push('        and.l   #7,d0');        // d0 = bit index
+                    lines.push('        lea     _kbd_matrix,a0');
+                    lines.push('        add.l   d1,a0');        // a0 → matrix byte
+                    lines.push('        btst    d0,(a0)');      // test bit (mod 8 for memory)
+                    lines.push('        sne     d0');
+                    lines.push('        ext.w   d0');
+                    lines.push('        ext.l   d0');
+                    break;
+                }
+
+                // Str$(n) — integer to decimal ASCII string pointer
+                if (expr.name === 'str$') {
+                    this._genExpr(expr.args[0] ?? { type: 'int', value: 0 }, lines);
+                    lines.push('        jsr     _IntToStr');    // d0 = string ptr
+                    break;
+                }
+
+                // ── User function call or array read ──────────────────────────
                 const funcDef = this._userFunctions.get(expr.name);
                 if (funcDef) {
                     if (!funcDef.hasReturn) {
@@ -1514,7 +1761,7 @@ export class CodeGen {
     _collectTypeFieldAccesses(stmts, accesses) {
         for (const s of stmts) {
             if (!s) continue;
-            if (s.type === 'for' || s.type === 'while') continue;
+            if (s.type === 'for' || s.type === 'while' || s.type === 'repeat') continue;
             if (s.type === 'type_field_write') {
                 if (s.index) accesses.push({ instance: s.instance, index: s.index });
                 this._collectTypeFieldAccessesInExpr(s.expr, accesses);
@@ -1578,7 +1825,7 @@ export class CodeGen {
     _bodyAssignsVar(stmts, varName) {
         for (const s of stmts) {
             if (!s) continue;
-            if (s.type === 'for' || s.type === 'while') continue;
+            if (s.type === 'for' || s.type === 'while' || s.type === 'repeat') continue;
             if (s.type === 'assign' && s.target === varName) return true;
             if (s.type === 'if') {
                 if (this._bodyAssignsVar(s.then, varName)) return true;
@@ -1635,13 +1882,25 @@ export class CodeGen {
     _genBinop(expr, lines) {
         const op = expr.op;
 
-        // ── Bitwise / logical: And Or ────────────────────────────────────────
-        // In Blitz2D, And/Or operate on 32-bit integers — bitwise AND/OR.
+        // ── Bitwise / logical: And Or Xor ────────────────────────────────────
+        // In Blitz2D, And/Or/Xor operate on 32-bit integers — bitwise AND/OR/XOR.
         // This also works correctly for boolean values (-1/0): -1 AND -1 = -1, etc.
         // PERF-B: skip push/pop when right is a literal or single ident.
-        if (op === 'and' || op === 'or') {
-            const instr = op === 'and' ? 'and' : 'or';
-            if (this._isSimpleExpr(expr.right)) {
+        // Note: 68000 eor only has register-source form (no eor.l #n,Dn) — use eori.
+        if (op === 'and' || op === 'or' || op === 'xor') {
+            const instr = op === 'and' ? 'and' : op === 'or' ? 'or' : null; // null = xor
+            if (op === 'xor') {
+                if (expr.right.type === 'int') {
+                    this._genExpr(expr.left, lines);
+                    lines.push(`        eori.l  #${expr.right.value},d0`);
+                } else {
+                    this._genExpr(expr.right, lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExpr(expr.left, lines);
+                    lines.push('        move.l  (sp)+,d1');
+                    lines.push('        eor.l   d1,d0');
+                }
+            } else if (this._isSimpleExpr(expr.right)) {
                 this._genExpr(expr.left, lines);
                 lines.push(`        ${instr}.l   ${this._simpleOperand(expr.right)},d0`);
             } else {
@@ -1650,6 +1909,33 @@ export class CodeGen {
                 this._genExpr(expr.left, lines);
                 lines.push('        move.l  (sp)+,d1');
                 lines.push(`        ${instr}.l   d1,d0`);
+            }
+            return;
+        }
+
+        // ── Shifts: Shl Shr ──────────────────────────────────────────────────
+        // 68000: lsl.l #n,Dn for n=1..8; lsl.l d1,d0 for register count.
+        // Shr uses asr (arithmetic/signed shift right) to preserve sign.
+        if (op === 'shl' || op === 'shr') {
+            const shiftInstr = op === 'shl' ? 'lsl' : 'asr';
+            if (expr.right.type === 'int') {
+                const n = expr.right.value;
+                this._genExpr(expr.left, lines);
+                if (n >= 1 && n <= 8) {
+                    lines.push(`        ${shiftInstr}.l  #${n},d0`);
+                } else {
+                    // n > 8 or 0: use register form (move count to d1)
+                    lines.push(`        move.l  d0,d1`);
+                    lines.push(`        move.l  #${n},d0`);
+                    lines.push(`        exg     d0,d1`);
+                    lines.push(`        ${shiftInstr}.l  d1,d0`);
+                }
+            } else {
+                this._genExpr(expr.right, lines);
+                lines.push('        move.l  d0,-(sp)');
+                this._genExpr(expr.left, lines);
+                lines.push('        move.l  (sp)+,d1');
+                lines.push(`        ${shiftInstr}.l  d1,d0`);
             }
             return;
         }
@@ -1789,6 +2075,21 @@ export class CodeGen {
             );
         }
         return arg.value;
+    }
+
+    /**
+     * Decompose a Text string argument into flat parts for multi-part rendering.
+     * Each part is either {type:'lit', value:'...'} or {type:'str_expr', expr:...}.
+     * Supports: "literal", Str$(n), and (+)-concatenation of the two.
+     */
+    _flattenStrArg(arg) {
+        if (!arg) throw new Error('Text: missing string argument');
+        if (arg.type === 'string') return [{ type: 'lit', value: arg.value }];
+        if (arg.type === 'call_expr' && arg.name === 'str$')
+            return [{ type: 'str_expr', expr: arg.args[0] ?? { type: 'int', value: 0 } }];
+        if (arg.type === 'binop' && arg.op === '+')
+            return [...this._flattenStrArg(arg.left), ...this._flattenStrArg(arg.right)];
+        throw new Error(`Text: expected string literal, Str$(n), or concatenation (+); got ${arg.type}`);
     }
 
     /** Escape double-quotes and backslashes inside a dc.b string literal. */

@@ -206,6 +206,12 @@ export class Lexer {
             word += this._src[this._pos++];
         }
 
+        // Consume Blitz2D string-function suffix $ (e.g. Str$(n) → ident "str$")
+        if (this._pos < this._src.length && this._cur() === '$') {
+            word += '$';
+            this._pos++;
+        }
+
         const lower = word.toLowerCase();
         if (this._keywords.has(lower))     this._emit(TT.KEYWORD, lower);
         else if (this._commands.has(lower)) this._emit(TT.COMMAND, lower);

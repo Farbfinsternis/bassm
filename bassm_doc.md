@@ -235,6 +235,30 @@ If x > 0 And x < 320 Then ...     ; And bindet stärker als Or
 If a Or b And c Then ...           ; wird ausgewertet als: a Or (b And c)
 ```
 
+### Math-Funktionen
+
+| Funktion | Ergebnis | Hinweis |
+|----------|----------|---------|
+| `Rnd(n)` | Zufallszahl 0..n−1 | n muss 1..32767 sein |
+| `Abs(n)` | Absolutwert von n | `Abs(-5)` ergibt `5` |
+
+`Rnd` und `Abs` sind **Built-in-Funktionen** und können überall in Ausdrücken
+verwendet werden.
+
+```blitz
+x     = Rnd(320)              ; zufaellige X-Position 0..319
+speed = Rnd(3) + 1            ; Geschwindigkeit 1, 2 oder 3
+dist  = Abs(x2 - x1)          ; absoluter Abstand
+If Abs(vx) < 1 Then vx = 1   ; Mindestgeschwindigkeit
+```
+
+**`Rnd(n)`** verwendet einen Xorshift32-Generator (Periode 2^32−1). Beim ersten
+Aufruf wird der Seed automatisch aus dem Amiga-Strahlzähler (VHPOSR) initialisiert —
+jeder Programmstart liefert eine andere Sequenz.
+
+**`Abs(n)`** wird inline expandiert (3 Instruktionen, kein Subroutinen-Aufruf).
+
+
 ---
 
 ## 5. Kontrollstrukturen

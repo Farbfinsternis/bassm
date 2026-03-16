@@ -17,238 +17,146 @@
 | **M5** Zeichenbefehle | Plot, Line (Bresenham), Rect (Umriss), Box (gefüllt) |
 | **M5b** Blitter | WaitBlit, Blitter-Cls, Blitter-Box, Blitter-Rect via 4×Box |
 | **M5c** Double-Buffering | Zwei Copper-Listen, ScreenFlip, alle Draw-Befehle → Back-Buffer |
-| **M8** Arrays + `:` Trenner | `Dim arr(n)`, arr(i) lesen/schreiben, `:` als Statement-Separator |
-| **M9a** WaitKey | CIA-A SP-Flag, Interrupt-driven, Level-2-Vektor |
-| **PERF-A** Direkte Bcc-Sprünge | `_genCondBranch`: `cmp.l + Bcc` statt `Scc+ext+tst+beq` — 4 Instr. pro Condition |
-| **PERF-B** Stack-Eliminierung | `_isSimpleExpr`: `x+1`, `x+dx`, `x<320` ohne Push/Pop; `addq`/`subq` für 1..8 |
-| **Runtime PaletteColor** | `_SetPaletteColorRGB(d0,d1,d2,d3)` in `palette.s`; alle 4 Args als Ausdrücke |
-| **M-COPPER** Rasterbalken | `CopperColor y,r,g,b`; `_gfx_raster_a/b` in Copper-Listen; `copper_raster.s`; GFXRASTER EQU |
 | **M6** Text | `Text x,y,"str"` → CPU 8×8 Font, per-Plane per-Row, Shift-Trick, Newline-Support |
-| **PERF-C** CopperColor-Inlining | `CopperColor` inline expandiert; kein JSR-Overhead; ~120 Zyklen/Aufruf gespart |
-| **M-ASSET A2** Sound | `PlaySample "f.raw",ch,per,vol` + `StopSample ch`; Paula DMA; `sound.s`; Asset-Pipeline |
-| **M-ASSET A1** Bitmaps | `LoadImage n,"f.raw",w,h` + `DrawImage n,x,y`; Blitter A→D; `image.s`; 8-Byte-Header |
-| **M7** Funktionen / Prozeduren | `Function name(params)` (Rückgabewert, Klammern) + `Function name params` (Prozedur, ohne Klammern); Stack-Frame via LINK/UNLK; lokale Parameter + Variablen; `Return [expr]`; Blitz2D-Signatur-Konvention |
-| **LANG-A** And / Or / Not | `And`/`Or` (bitweise, auch logisch für -1/0 Werte) + `Not` (Komplement); alle drei als Präzedenzebenen im Parser; PERF-B für einfache Operanden; constant-folding für `Not <literal>` |
-| **LANG-B** Mod | Modulo-Operator; gleiche Präzedenz wie `*`/`/`; `divs.w + swap + ext.l`; PERF für literal Divisor |
-| **TOOL-1** Include | `Include "file.bassm"` — rekursive Datei-Inklusion im PreProcessor; async IPC-Readback; Circular-Detection; Path-Traversal-Schutz |
+| **M7** Funktionen / Prozeduren | `Function name(params)` + `Function name params`; Stack-Frame LINK/UNLK; lokale Vars; `Return [expr]` |
+| **M8** Arrays + `:` Trenner | `Dim arr(n)`, arr(i) lesen/schreiben, `:` als Statement-Separator |
+| **M-TYPE** Strukturen | `Type … Field … EndType`; `Dim inst.T` + `Dim arr.T(n)`; `inst\field` + `arr(i)\field` lesen/schreiben; AoS-Layout (4 Bytes/Feld); PERF-2 Pointer-Cache für wiederholten Index-Zugriff |
+| **M9a** WaitKey | CIA-A SP-Flag, Interrupt-driven, Level-2-Vektor |
+| **M9b-Mouse** Maus-Eingabe | `MouseX()`, `MouseY()` — Delta-Akkumulation via JOY0DAT; `MouseDown(n)`, `MouseHit(n)` — Links/Rechts-Tasten; VBL-Interrupt-driven; `mouse.s` Fragment |
+| **M-COPPER** Rasterbalken | `CopperColor y,r,g,b`; `_gfx_raster_a/b`; `copper_raster.s`; GFXRASTER EQU |
+| **M-ASSET A1** Bitmaps | `LoadImage n,"f.raw",w,h` + `DrawImage n,x,y`; Blitter A→D; 8-Byte-Header; auto-Palette via `LoadImage 0` |
+| **M-ASSET A2** Sound | `PlaySample "f.raw",ch,per,vol` + `PlaySampleOnce` + `StopSample`; Paula DMA; vAmiga Web Audio |
+| **PERF-A** Direkte Bcc-Sprünge | `_genCondBranch`: `cmp.l + Bcc` statt Scc-Kette |
+| **PERF-B** Stack-Eliminierung | `_isSimpleExpr`: `x+1`, `x+dx` ohne Push/Pop; `addq`/`subq` für 1..8 |
+| **PERF-C** CopperColor-Inlining | `CopperColor` inline expandiert; ~120 Zyklen/Aufruf gespart |
+| **Runtime PaletteColor** | `_SetPaletteColorRGB(d0,d1,d2,d3)` in `palette.s`; alle 4 Args als Ausdrücke |
+| **LANG-A** And / Or / Not | Bitweise + logisch; alle drei als Präzedenzebenen im Parser |
+| **LANG-B** Mod | Modulo-Operator; `divs.w + swap + ext.l`; PERF für literal Divisor |
+| **TOOL-1** Include | `Include "file.bassm"` — rekursiv; Circular-Detection; Path-Traversal-Schutz |
+| **A-MGR** Asset Manager | Konverter-Fenster; PNG→.raw; WAV→.raw; Palette-Pipeline; Click-to-Load; Datei-Watcher |
+| **LANG-D** Rnd + Abs | `Rnd(n)` Xorshift32 via `rnd.s`; `Abs(n)` inline 3-Instr.; beide als `call_expr`-Builtins |
+| **LANG-E** Xor / Shl / Shr | Bitweises XOR (`eori.l`/`eor.l`), Linksshift (`lsl.l`), arithmetischer Rechtsshift (`asr.l`); Präzedenz Xor=Or, Shl/Shr=Mul |
+| **TOOL-IDE Budget** | CPU-Cycle + Chip-RAM Lebensbalken im Editor; `budget.js` statische Analyse; Hauptloop-Erkennung; For-Multiplikation; Gradient-Bars grün→rot mit Glow-Effekt |
 
 ---
 
-## 📋 Geplante Milestones — Ziel: 100% Amiga-Game-Complete
+## 🎯 Kritischer Pfad — Ziel: Spielbares Amiga-Game
+
+Die Milestones sind **in Ausführungsreihenfolge** sortiert. Jede Stufe baut auf der
+vorherigen auf. Innerhalb einer Stufe gilt die Reihenfolge der Einträge als Priorität.
 
 ---
 
-### PERF — Code-Optimierungen
-> **Voraussetzung für komplexe Demos:** Ohne Optimierungen sind 50+ Objekte oder
-> Effekt-Loops zu CPU-intensiv für stabile 50 fps.
+## Stufe 1 — Sprach-Grundlagen *(Game-Complete-Blocker)*
 
-#### ✅ PERF-A — Direkte Bedingungssprünge (`Bcc` statt `Scc`) 🟡 Mittel
-**Jede `If`/`While`-Condition spart 4 Instruktionen:**
-```m68k
-; vorher:    cmp.l d1,d0 / slt d0 / ext.w d0 / ext.l d0 / tst.l d0 / beq.w .L1
-; nachher:   cmp.l #10,d0 / bge.w .L1                (PERF-B + PERF-A kombiniert)
-```
-- `[x]` `_genCondBranch(expr, falseLbl, lines)` in `codegen.js`
-- `[x]` `_genIf` und `_genWhile` rufen `_genCondBranch` statt `_genExpr` auf
-- `[x]` Fallback auf `_genExpr + tst.l + beq.w` für boolesche Ausdrücke als Wert
-
-#### ✅ PERF-B — Stack-Eliminierung für einfache Ausdrücke 🟡 Mittel
-**`x+1`, `x+dx`, `x<320` ohne Push/Pop:**
-```m68k
-; vorher:    move.l d0,-(sp) / move.l _var_x,d0 / move.l (sp)+,d1 / add.l d1,d0
-; nachher:   move.l _var_x,d0 / addq.l #1,d0      (addq für 1..8)
-; nachher:   move.l _var_x,d0 / add.l _var_dx,d0  (Memory-Operand)
-```
-- `[x]` `_isSimpleExpr(expr)` / `_simpleOperand(expr)` Hilfsmethoden
-- `[x]` `_genBinop`: +/- ohne Push/Pop; `addq`/`subq` für 1..8
-- `[x]` `_genBinop` Comparison-Pfad: `cmp.l` direkt ohne Push/Pop
+> **Ziel:** Ein echtes interaktives Spiel schreiben können.
+> Nach Stufe 1: Space Invaders, Breakout, Pong — vollständig umsetzbar.
 
 ---
 
-### ✅ M6 — Text & Palette-Animation
-
-- `[x]` `text.s`: `_Text(a0=str, d0=x, d1=y)` — CPU-Rendering, 8×8 Font, per-Plane per-Row
-  - Shift-Trick: `lsl.w #8 / lsr.w d6` → hi/lo-part ohne Extra-Register
-  - SET: `or.b`; CLR: `not.w + and.b`; Newline `$0A`: x=0, y+=8; Bounds-Check
-  - `INCLUDE "font8x8.s"` am Anfang — 768 Byte Fontdaten in DATA_C Chip-RAM
-- `[x]` `_NPrint` — no-op (Blitz2D-Kompatibilität)
-- `[x]` CodeGen: `Text x,y,"string"` → String inline eingebettet + `jsr _Text`
-- `[x]` **Runtime `PaletteColor n,r,g,b`** mit Variablen/Ausdrücken als Argumente
-  (`_SetPaletteColorRGB` in `palette.s`; CodeGen fällt auf Compile-Time-Pfad zurück wenn alle Literal)
-- `[ ]` **`LoadPalette arr`** — alle 32 Palette-Einträge aus einem Integer-Array setzen;
-  `palette.s`-Fragment: Schleife `COLOR00+n*2` aus Array füllen
-
----
-
-### ✅ M-COPPER — Copper-Rastereffekte
-
-- `[x]` **`CopperColor y, r, g, b`** — setzt `COLOR00` an Rasterzeile `y` im Back-Copper
-  - CodeGen: Raster-Einträge (`WAIT+MOVE COLOR00`) in beide Copper-Listen eingebettet
-  - `_gfx_raster_a` / `_gfx_raster_b` — XDEF-Labels für Laufzeit-Patching
-  - `_SetRasterColor(d0=y, d1=ocs_word)` + `_SetRasterColorRGB(d0=y, d1=r, d2=g, d3=b)` in `copper_raster.s`
-  - Compile-Time-Pfad (alle Literale) + Runtime-Pfad (Variablen/Ausdrücke)
-  - `GFXRASTER EQU min(H, 212)` — nutzbare PAL-Rasterzeilen
-  - Nur wenn `CopperColor` verwendet: kein Overhead für Programme ohne Rastereffekt
-- `[x]` **Rasterbalken-Demo** im Sample — animierter RGB-Gradient über 212 Zeilen
-- `[ ]` **Copper-Interrupt** (optional) — Level-3 Copper-Interrupt statt WAIT für exaktes Timing
-
----
-
-### M-ASSET — Asset-Loading *(Neuer Milestone)*
-> **Ohne Bitmap- und Sound-Loading ist keine vollständige Demo möglich.**
-
-#### ✅ A1 — Bitmaps einbetten und anzeigen 🟡 Mittel
-Raw-Bitplane-Daten per `INCBIN` in die Executable einbetten und per Blitter in den Back-Buffer kopieren.
-- `[x]` **`LoadImage index, "datei.raw", width, height`** — Deklaration; bettet Bild als `DATA_C`-Label ein
-  - CodeGen prepends 8-Byte-Header (`dc.w width, height, GFXDEPTH, rowbytes`) vor `INCBIN`
-  - `_DrawImage` liest Header zur Laufzeit — kein Pre-Pass, keine IPC-Roundtrip
-  - `rowbytes = ((width+15)/16)*2` (word-aligned)
-  - Asset-Pipeline: Datei aus Projektordner → tmpDir kopiert (analog zu `LoadSample`)
-  - **`.raw`-Format (Asset Manager):** `[2^depth × 2-Byte OCS-Palette-Words ($0RGB)] [planar Bitplane-Daten]`
-    — Palette-Block geht dem Bitplane-Daten voraus; `_DrawImage` überspringt Palette beim Blitten
-  - **`LoadImage 0` → auto-Palette:** CodeGen emittiert `lea _img_0,a0 / jsr _SetImagePalette`
-    — setzt alle OCS COLOR-Register direkt aus dem embedded Palette-Block der `.raw`-Datei;
-    kein explizites `PaletteColor` mehr nötig
-  - `_SetImagePalette` in `image.s`: liest depth aus 8-Byte-Header, kopiert `2^depth` OCS-Words
-    zu `_gfx_palette` (Chip-RAM) und `COLOR00..COLORn` (Hardware-Register) via `lea COLOR00(a5),a2`
-- `[x]` **`DrawImage index, x, y`** — zeichnet Bild in Back-Buffer
-  - `image.s`: `_DrawImage(d0=x, d1=y, a0=img_ptr)` — Blitter A→D, Minterm `$09F0` (D=A), pro Plane
-  - BLTDMOD = GFXBPR − rowbytes; BLTSIZE = (height<<6) | (rowbytes/2)
-  - **`x` muss word-aligned sein (x % 16 == 0)** — OCS-Blitter löscht Bit 0 von BLTDPT (Wortgrenze);
-    nicht-word-alignierte Positionen (x%16=8) werden als (x & −16) gezeichnet → Erase-Mismatch
-  - Kein Clipping; kein Transparenz-Masking (full-replace)
-- `[ ]` IFF ILBM Parser (optional, spätere Phase) — für Standard-Amiga-Bildformat
-
-#### ✅ A2 — Sound-Wiedergabe 🟡 Mittel
-Amiga hat 4 DMA-Audiokanäle (Paula). Einfachste Ebene: rohe 8-Bit-Samples.
-- `[x]` **`LoadSample index, "datei.raw"`** — Deklaration; bettet Sample per `INCBIN` als `DATA_C`-Sektion ein
-- `[x]` **`PlaySample index, channel [, period [, volume]]`**
-  - `period` + `volume` optional (Defaults: 428 ≈ 8287 Hz, 64 = Max)
-  - `sound.s`: `_PlaySample(d0=ch, a0=ptr, d1=len_words, d2=period, d3=vol)` via Paula-Register
-  - CodeGen: Index → `_snd_N`-Label; Länge als Assembler-Ausdruck `(end-start)/2`
-  - Asset-Pipeline: Dateien aus `app/assets/` → tmpDir kopiert vor vasm-Aufruf
-  - DMACON: Audio-DMA per Kanal einschalten (Bit 15=1 SET | 1<<channel)
-- `[x]` **`StopSample channel`** — Audio-DMA des Kanals ausschalten (Bit 15=0 CLR | 1<<channel)
-- `[x]` **`PlaySampleOnce index, channel [, period [, volume]]`** — Echte One-Shot-Wiedergabe:
-  Paula Double-Buffering: echte Sample-Daten in AUDx schreiben, DMA aktivieren, Fixed-Delay
-  (200× dbra ≈ 2000 Zyklen ≥ 4× maximale Latch-Zeit von 456 Zyklen), dann AUDxLCH/LCL/LEN
-  auf `_null_snd` (1 stilles Wort, Chip-RAM) umschreiben → stilles Looping nach Sampleende.
-  DMA-Stop + doppelter INTREQ-Clear vor Neustart verhindert veraltete INTREQ-Bits.
-- `[x]` **vAmiga Web Audio Pipeline** — `setupAudio()` in `preview.html`:
-  `ScriptProcessorNode(1024)` + `_wasm_set_sample_rate` + `_wasm_leftChannelBuffer`/
-  `_wasm_rightChannelBuffer` + `_wasm_update_audio(offset)` Ping-Pong;
-  `--autoplay-policy=no-user-gesture-required` in `main.js`; `Module.HEAPU32.buffer`
-  statt `Module.HEAPF32.buffer` (letzteres in diesem vAmiga-Build nicht exportiert).
-- `[ ]` **ProTracker-Modul** (spätere Phase) — `PlayModule "song.mod"` startet den PT-Player
-  - Erfordert: eingebetteten PT-Player (ca. 1 KB), VBlank-Hook für Player-Update
-  - Praktisch: fertigen PT-Player aus `startup.s` heraus aufrufen
-
----
-
-### ✅ LANG-A — Logische & Bitweise Operatoren
+### ✅ LANG-D — `Rnd` + `Abs` *(kleinster Aufwand, größter Unblocking-Effekt)*
 
 ```blitz
-If x > 0 And x < 320 Then ...      ; compound condition
-If fire Or timer > 100 Then ...
-While lives > 0 And level < 10
-    col = red And $0F               ; bitwise masking
-    flags = flags Or %00000010      ; bit set
-    If Not done Then ...
-Wend
+x = Rnd(320)              ; zufällige X-Position 0..319
+speed = Rnd(3) + 1        ; Geschwindigkeit 1..3
+dist = Abs(x2 - x1)       ; absoluter Abstand
+If Abs(vx) < 1 Then vx = 1
 ```
 
-- `[x]` `keywords-map.json`: `And`, `Or`, `Not` als Keywords registriert
-- `[x]` Parser: Präzedenzebenen `_parseOr()` → `_parseAnd()` → `_parseComparison()` (Or < And < Cmp)
-- `[x]` Parser: `Not` als Unary-Operator in `_parseUnary()` — vor `-`; constant-folding `Not 0 → -1`
-- `[x]` CodeGen `_genBinop`: `And` → `and.l d1,d0`; `Or` → `or.l d1,d0` (PERF-B: direkt wenn rechts einfach)
-- `[x]` CodeGen `_genExpr` unary: `Not` → `not.l d0`
-- `[x]` `_genCondBranch`: `And`/`Or` nutzen vorhandenen Fallback (`tst.l + beq.w`) — korrekt für -1/0 Werte
-- `[ ]` Kurzschluss-Auswertung (optional, niedrige Prio — 68000 hat keinen Branch-Predictor)
+- `[x]` **`Rnd(n)`** — Zufallszahl 0..n−1
+  - Xorshift32 {13,17,5} — 68000-sicher (Register-Shifts), Periode 2^32-1
+  - Seed 0 → auto-init aus VHPOSR (Beam-Position); unterschiedliche Sequenz pro Run
+  - Fragment `rnd.s` — nur eingebunden wenn `Rnd` verwendet wird
+  - CodeGen: `Rnd(expr)` als `call_expr`-Builtin → d1=n, JSR `_Rnd`, Ergebnis d0
+- `[x]` **`Abs(n)`** — absoluter Betrag
+  - Inline-Expansion: `tst.l d0 / bge.s / neg.l d0` — kein Fragment
+  - CodeGen: `abs`-Builtin in `call_expr` → 3 Instruktionen inline
 
 ---
 
-### ✅ LANG-B — `Mod`-Operator
+### 2. M9b — Joystick · KeyDown *(ohne Eingabe kein interaktives Programm)*
 
 ```blitz
-frame = (frame + 1) Mod 8          ; animation cycling
-x = (x + dx + 320) Mod 320         ; screen wraparound
-If ticks Mod 50 = 0 Then ...        ; every second
+If JoyUp(1)    Then y = y - 1
+If JoyDown(1)  Then y = y + 1
+If JoyLeft(1)  Then x = x - 1
+If JoyRight(1) Then x = x + 1
+If Joyfire(1)  Then Fire
+
+If KeyDown($45) Then End    ; Escape (non-blocking)
 ```
 
-- `[x]` `keywords-map.json`: `Mod` als Keyword registriert
-- `[x]` Parser: `Mod` in `_parseMulDiv()` — gleiche Präzedenz wie `*`/`/`
-- `[x]` CodeGen: `divs.w #n,d0` (PERF: literal Divisor ohne push/pop) + generic push/pop-Pfad
-  - `divs.w`: d0.l ÷ d1.w → d0.hi = Rest, d0.lo = Quotient
-  - `swap d0` → Rest in d0.lo; `ext.l d0` → 32-Bit vorzeichenbehaftet
-- Divisor muss in 16 Bit passen — für alle typischen Spielwerte (Breite, Frames, Farben) gegeben
+- `[x]` **`JoyUp(port)`**, **`JoyDown(port)`**, **`JoyLeft(port)`**, **`JoyRight(port)`** — je Boolean (-1/0)
+  - Liest `JOY0DAT`/`JOY1DAT` ($DFF00A/$DFF00C) — XOR-Decode: `move.w; lsr.w #1,d1; eor.w d0,d1`
+  - bit0=right, bit1=left, bit8=down, bit9=up (bit1/9 = raw-Bit da Bit2/10=0 bei Digitaljoystick)
+  - Inline-Expansion in codegen.js, kein Fragment nötig; `sne+ext.w+ext.l` → -1/0
+  - Runtime-Port-Fallback: `$DFF00A + port*2`
+- `[x]` **`Joyfire(port)`** — CIAAPRA ($BFE001) Bit 7 (Port 0) / Bit 6 (Port 1), active-low
+  - `not.b + btst + sne + ext` → -1 wenn gedrückt, 0 sonst; Runtime-Port-Fallback (7-port)
+- `[x]` **`KeyDown(scancode)`** — Echtzeit-Tastencheck (non-blocking)
+  - `startup.s`: `_kbd_matrix ds.b 16` (128-Bit), `_lev2_kbd_handler` setzt/löscht Bits per Key-Down/Up
+  - Handler speichert `_kbd_pending` (raw, für WaitKey) UND aktualisiert Matrix (decoded)
+  - CodeGen: inline `btst d0,(a0)` → `sne+ext.w+ext.l` → -1/0
+- `[x]` **`MouseX()`**, **`MouseY()`** — absolute Mausposition (0..GFXWIDTH-1 / 0..GFXHEIGHT-1)
+  - `JOY0DAT` ($DFF00A): Bits [15:8]=Y-Zähler, [7:0]=X-Zähler — Delta-Akkumulation per VBL
+  - `mouse.s`: `_mouse_vbl` vom Level-3-VBL-Handler aufgerufen (via `_mouse_vbl_ptr` in `startup.s`)
+  - `_MouseInit`: POTGO schreiben, JOY0DAT-Baseline, Cursor auf Bildmitte; nach `_setup_graphics` aufgerufen
+- `[x]` **`MouseDown(n)`** — `-1` wenn Taste n gehalten, `0` sonst (n=0: links, n=1: rechts)
+  - Links: CIAAPRA ($BFE001) Bit 6, active-low; Rechts: POTINP ($DFF016) Bit 10, active-low
+  - `_mouse_down_0`/`_mouse_down_1` BSS-Bytes in `mouse.s` (gesetzt im VBL-Handler)
+- `[x]` **`MouseHit(n)`** — `-1` wenn Taste seit letztem Aufruf gedrückt wurde, dann Flag löschen
+  - `_mouse_hit_0`/`_mouse_hit_1` BSS-Bytes: gesetzt beim ersten Press, gelöscht durch `MouseHit()` selbst
 
 ---
 
-### ✅ TOOL-1 — `Include` — Code aus externen Dateien einbinden
-
-```blitz
-; main.bassm
-Include "constants.bassm"
-Include "physics.bassm"
-Include "graphics_utils.bassm"
-
-Graphics 320,256,3
-; ... Hauptprogramm
-```
-
-- `[x]` PreProcessor: `expandIncludes(source, { readFile, _visited })` — rekursive Expansion
-  - Erkennt `Include "filename"` (case-insensitiv) als eigene Zeile (auch mit `;`-Kommentar)
-  - `readFile(filename)` — async Callback; Dateiname relativ zum Projektordner
-  - Circular-Detection via `Set<string>` der bereits expandierten Dateinamen
-  - Klare Fehlermeldungen: "file not found", "circular include", "requires open project"
-  - Läuft **vor** `process()` (vor Comment-Strip und Colon-Split) — im rohen Quelltext
-- `[x]` `bassm.js` `run()`: `await expandIncludes()` vor `compile()` — async Pre-Pass
-- `[x]` IPC `bassm:read-file` in `main.js`: liest Datei aus `projectDir`; Path-Traversal-Schutz
-- `[x]` `preload.js`: `readFile(payload)` via `ipcRenderer.invoke('bassm:read-file', payload)` exponiert
-- `[x]` `Include` in Docs dokumentieren (bassm_doc.md, docs.de.md, docs.en.md, README.md)
-
----
-
-### LANG-C — Zahlen als Text ausgeben *(Game-Complete-Blocker)*
-> `Text` akzeptiert nur String-Literale. Score, Lives, Timer — alles nicht anzeigbar.
-> Minimal nötig: `Str$(n)` oder `NPrint n` mit Integer-Argument.
+### 3. LANG-C — Zahlen als Text ausgeben *(Score, Leben, Timer)* ✅
 
 ```blitz
 Text 10, 10, "Score: " + Str$(score)
 Text 10, 20, "Lives:  " + Str$(lives)
-NPrint score                        ; Blitz2D-Kompatibilität
+NPrint score                        ; Blitz2D-Kompatibilität (no-op)
 ```
 
-- `[ ]` `int_to_str` Routine in `text.s` (oder eigenem Fragment): `divs.w #10` loop → Ziffern auf Stack, dann rückwärts ausgeben; negatives Vorzeichen `-` voranstellen
-- `[ ]` `Str$(n)` — Funktion: konvertiert Integer → temporären String-Puffer (`_str_buf` in BSS), gibt Adresse in d0 zurück
-- `[ ]` `NPrint x,y,n` — Prozedur: `int_to_str` + `_Text` an angegebener Position
-- `[ ]` CodeGen: `Str$(expr)` als `call_expr`; result-Adresse als String-Pointer an `_Text` weiterreichen
-- `[ ]` String-Concatenation: `"prefix" + Str$(n)` → zwei aufeinanderfolgende Text-Aufrufe; oder `NText x,y,"prefix",n` als kombinierter Befehl
+- `[x]` `_IntToStr`-Routine in `text.s`:
+  - Zwei-Schritt `divu.w #10`-Loop (32-Bit safe) → Ziffern rückwärts in `_str_buf`
+  - Negatives Vorzeichen `-` voranstellen; Ergebnis in `_str_buf` (BSS, 12 Bytes)
+- `[x]` **`Str$(n)`** — gibt Adresse des String-Puffers in d0 zurück
+  - Lexer: `$`-Suffix nach Bezeichner → IDENT `str$`
+  - CodeGen: `_genExpr` → `jsr _IntToStr` → d0 = Zeiger
+  - Verwendbar als String-Argument in `Text x,y,Str$(n)`
+- `[x]` **String-Concatenation** `"prefix" + Str$(n)`:
+  - `_flattenStrArg` zerlegt Argument rekursiv in `{lit}` / `{str_expr}` Parts
+  - `_Text` gibt neue X-Position in d0 zurück; `_text_y` BSS sichert Y über Aufrufe
+  - Multi-Part-Pfad: Y wird in `_text_y` gespeichert, jeder Part ruft `_Text` sequenziell auf
+- `[x]` **`NPrint`** — Blitz2D-Kompatibilitätsstub (no-op in Bare-Metal-Builds)
 
 ---
 
-### LANG-D — Math-Funktionen: `Rnd` + `Abs`
+### 4. LANG-F — `Repeat/Until` · `Exit` *(Kontrollfluss vollständig)* ✅
 
 ```blitz
-x = Rnd(320)              ; zufällige X-Position 0..319
-speed = Rnd(3) + 1        ; 1..3
-dist = Abs(x2 - x1)       ; absoluter Abstand
-If Abs(vx) < 1 Then vx = 1  ; Minimalgeschwindigkeit
+Repeat
+  ReadInput
+  UpdatePhysics
+  ScreenFlip
+Until lives = 0 Or level > 10
+
+For i = 0 To 63
+  If arr(i) = target Then found = i : Exit
+Next i
 ```
 
-- `[ ]` **`Rnd(n)`** — Zufallszahl 0..n−1
-  - Linearer Kongruenzgenerator: `seed = seed × 1664525 + 1013904223` (Numerical Recipes)
-  - `_rnd_seed` BSS Long; `muls.l` (68020) oder `muls.w` + Shift-Kombination (68000-safe)
-  - Rückgabe: `(seed >> 16) And $7FFF Mod n`; Codegen emittiert JSR `_Rnd` mit arg in d1
-  - Fragment `rnd.s` — nur eingebunden wenn `Rnd` verwendet wird
-- `[ ]` **`Abs(n)`** — absoluter Betrag
-  - Inline-Expansion: `tst.l d0 / bge .skip / neg.l d0`; kein Fragment nötig
-  - Codegen: `abs_expr` node → 3 Instruktionen inline
-- `[ ]` Parser: `Rnd(expr)` als `call_expr`; `Abs(expr)` als `unary_builtin`
+- `[x]` **`Repeat … Until cond`**
+  - Parser: `REPEAT` → Body → `UNTIL` → Bedingung → `{type:'repeat', cond, body}`
+  - CodeGen: `_genRepeat` — topLbl vor Body; `_genCondBranch(cond, topLbl)` am Ende
+  - Until-Bedingung: wahr = verlassen (fall-through), falsch = wiederholen (branch back)
+- `[x]` **`Exit [n]`** — verlässt n verschachtelte Schleifen (Standard: 1)
+  - `_loopStack`: While/For/Repeat pushen ihre `endLbl` vor dem Body, poppen danach
+  - `Exit n` → `bra.w _loopStack[top - n]`; Compiler-Fehler wenn Stack zu flach
 
 ---
 
-### LANG-E — Fehlende Operatoren: `Xor` · `Shl` · `Shr`
+### 5. LANG-E — `Xor` · `Shl` · `Shr` *(Hardware-Zugriff, Bit-Packing)*
 
 ```blitz
 flags = flags Xor %00000100     ; Bit 2 toggeln
@@ -257,134 +165,140 @@ x = x Shr 4                     ; schnelle Division durch 16
 mask = 1 Shl bitnum              ; Bit-Maske berechnen
 ```
 
-- `[ ]` **`Xor`** — bitweises XOR; gleiche Präzedenz wie `And`/`Or`
-  - Codegen: `eor.l d1,d0` (68k nennt es EOR, nicht XOR)
-  - Parser-Ebene: `Or < Xor < And` oder `And < Xor < Or`?
-    → Blitz2D: Xor auf gleicher Ebene wie Or (`Or`/`Xor` zwischen And und Comparison)
-- `[ ]` **`Shl`** — arithmetischer Linksshift; gleiche Präzedenz wie `*`/`/`/`Mod`
-  - Literal rechts: `asl.l #n,d0` (n≤8 direkt; n>8: loop oder `lsl.l d1,d0`)
-  - Variable rechts: Shift-Count in d1, `lsl.l d1,d0`
-- `[ ]` **`Shr`** — arithmetischer Rechtsshift (vorzeichenbehaftet: `asr.l`)
-  - Literal: `asr.l #n,d0`; Variable: `asr.l d1,d0`
-- `[ ]` PERF-B Erweiterung: `_isSimpleExpr` für Shl/Shr mit literal Shift-Count
+- `[x]` **`Xor`** — bitweises XOR; Präzedenz wie `Or`
+  - CodeGen: literal → `eori.l #n,d0`; Variable → `eor.l d1,d0`
+- `[x]` **`Shl`** — Linksshift; Präzedenz wie `*`/`/`/`Mod`
+  - Literal n=1..8: `lsl.l #n,d0`; n>8 oder Variable: Register-Form `lsl.l d1,d0`
+- `[x]` **`Shr`** — arithmetischer Rechtsshift
+  - Literal n=1..8: `asr.l #n,d0`; n>8 oder Variable: `asr.l d1,d0`
+- `[x]` PERF-B-Erweiterung: `_isSimpleExpr` für Shl/Shr mit literal Shift-Count (via literal path)
 
-> **Shl/Shr sind auf dem Amiga besonders wichtig:** OCS-Farbregister, DMA-Bits,
-> Sprite-Koordinaten, BLTCON-Felder — alle sind bit-packed. Ohne Shift-Operatoren
-> muss man mit `*` und `/` arbeiten, was auf dem 68000 deutlich langsamer ist.
+> **Besonders wichtig auf dem Amiga:** OCS-Farbregister, DMA-Bits, Sprite-Koordinaten,
+> BLTCON-Felder sind alle bit-packed. Ohne Shift-Operatoren muss man mit `*`/`/` arbeiten —
+> deutlich langsamer auf dem 68000.
 
 ---
 
-### LANG-F — Kontrollfluss-Vervollständigung: `Repeat/Until` · `Exit`
+## Stufe 2 — Daten & Hardware
+
+> **Ziel:** Tile-basierte Spiele, echte Game-Objects, vollständige Hardware-Kontrolle.
+> Nach Stufe 2: ~95% game-complete. Tile-Platformer, komplexe Spiellogik möglich.
+
+---
+
+### 6. M-SYS — `Peek` · `Poke` *(Direkter Hardware-Zugriff — "Ausflucht nach unten")*
 
 ```blitz
-; Repeat/Until — natürliche "do while"-Schleife
-Repeat
-  ReadInput
-  UpdatePhysics
-  ScreenFlip
-Until lives = 0 Or level > 10
+beam   = PeekW($DFF006) And $1FF  ; VPOSR — vertikale Strahlposition
+PokeW  $DFF180, $0F00             ; COLOR00 direkt auf Rot
+PokeL  $DFF040, bltcon            ; Blitter-Control direkt
+PokeB  $BFE001, PeekB($BFE001) And %11111110
+```
 
-; Exit — frühzeitiger Schleifenabbruch
-For i = 0 To 63
-  If arr(i) = target Then found = i : Exit
-Next i
+- `[ ]` **`PeekB/PeekW/PeekL(addr)`** — liest 1/2/4 Bytes von Adresse
+  - CodeGen: `move.l addr_expr,a0 / move.b/w/l (a0),d0`; kein Fragment
+- `[ ]` **`PokeB/PokeW/PokeL addr, val`** — schreibt Bytes
+  - CodeGen: `move.l addr,a0 / move.l val,d0 / move.b/w/l d0,(a0)`; inline
+- `[ ]` `Poke addr, val` als Alias für `PokeL` (Blitz2D-Kompatibilität)
+
+> Mit Peek/Poke kann der Programmierer alles ansprechen, was BASSM noch nicht abstrahiert —
+> kein Feature-Blocker mehr, sobald diese zwei Befehle vorhanden sind.
+
+---
+
+### 7. M-BOB — Blitter Objects *(Bewegliche Objekte über Hintergrund)*
+
+```blitz
+LoadImage 0, "bg.raw",     320, 256  ; Hintergrund (bg_buffer)
+LoadImage 1, "player.raw",  32,  32  ; Bob — player.mask wird automatisch gesucht
+LoadImage 2, "deer.raw",    24,  24  ; Bob — ohne Mask-Datei: Color 0 = transparent
+
+SetBackground 0, 0, 0   ; Image 0 ist der statische Hintergrund
 
 While 1
-  If quit Then Exit
-  UpdateGame
+    DrawBob 1, px, py   ; Hintergrund automatisch gesichert/wiederhergestellt
+    DrawBob 2, dx, dy
+    ScreenFlip          ; _FlushBobs automatisch injiziert
 Wend
 ```
 
-- `[ ]` **`Repeat … Until cond`**
-  - Parser: `REPEAT` → Body → `UNTIL` → Bedingung
-  - CodeGen: Loop-Label vor Body; `_genCondBranch(cond, loopLabel, lines)` am Ende (Sprung wenn falsch → zurück)
-  - Until-Bedingung: wahr = verlassen, falsch = wiederholen (invertierte Logik gegenüber While)
-- `[ ]` **`Exit [n]`** — verlässt n verschachtelte Schleifen (Standard: 1)
-  - CodeGen: `bra.w .loop_end_label`; braucht Label-Stack für While/For/Repeat
-  - `n > 1` selten, aber in Blitz2D dokumentiert — zunächst nur n=1 implementieren
+- `[ ]` **`SetBackground imgIdx, x, y`** — erklärt ein Image zum read-only `bg_buffer`
+  - Installiert `_bg_restore_static` in `_bg_restore_fn`; bg_buffer = Chip-RAM-Adresse des Image
+- `[ ]` **`DrawBob imgIdx, x, y`** — Eintrag in Bob-Queue (Größe = Anzahl `DrawBob`-Aufrufe im Source)
+- `[ ]` **Automatische Maske** — `img.raw` → suche `img.mask` im Projektordner
+  - Vorhanden: beide als INCBIN DATA_C; Masked Blit `D = (A AND B) OR (NOT A AND C)`
+  - Nicht vorhanden: Startup-Blitter-Pass OR aller Planes → 1-Plane-Maske in BSS_C
+  - A-MGR-Workflow: PNG-Import erzeugt `img.mask` automatisch aus Alpha-Kanal
+- `[ ]` **`bobs.s`** — Bob-Queue + `_FlushBobs` + **`_bg_restore_fn`-Mechanismus**
+  - `_bg_restore_fn: dc.l 0` — Funktionszeiger, gleiche Signatur `(d0=x, d1=y, d2=w, d3=h)`
+  - `_FlushBobs`: Restore-Pass ruft `jsr (_bg_restore_fn)` für jeden aktiven Bob
+  - Draw-Pass danach: Masked Blit Bob + Maske → `back_screen[neue_pos]`
+  - Queue-Eintrag: `{imgIdx, x, y, old_x, old_y}` — altes Frame für Restore gespeichert
+  - `_bg_restore_static`: einfacher Blitter-Copy aus statischem bg_buffer
+  - Slot für `_bg_restore_tilemap` vorbereitet → M-SCROLL installiert diese Routine
+- `[ ]` **Compiler-Injection** — `jsr _FlushBobs` automatisch vor `ScreenFlip` wenn Bob-System aktiv
 
 ---
 
-### M9b — Eingabe (Joystick · Keyboard · Maus)
+### 8. M-SCROLL — Ring-Buffer Tilemap *(scrollende Tile-Welten)*
 
 ```blitz
-; Joystick
-If Joydown(1) And %0001 Then y = y - 1  ; hoch
-If Joydown(1) And %0010 Then y = y + 1  ; runter
-If Joydown(1) And %0100 Then x = x - 1  ; links
-If Joydown(1) And %1000 Then x = x + 1  ; rechts
-If Joyfire(1) Then Fire
+LoadTilemap "world.map"         ; Dimensionen stehen in der Datei
+LoadTileset "tiles.raw", 16, 16 ; Tile-Größe; Anzahl wird aus dem Image errechnet
 
-; Tastatur (non-blocking)
-If KeyDown($45) Then End    ; Escape
-
-; Maus
-mx = MouseX : my = MouseY
-If MouseB(1) Then Click
+While 1
+    ScrollTilemap dx, dy    ; Pixel-Delta — zeichnet neue Strips, updated Scroll-HW
+    DrawBob 1, px, py       ; identisch zu statischem BG — kein Unterschied für den User
+    ScreenFlip
+Wend
 ```
 
-- `[ ]` **`Joydown(port)`** — gibt Richtungs-Bitfeld zurück (Bit 0=oben, 1=unten, 2=links, 3=rechts)
-  - Liest `JOY0DAT`/`JOY1DAT` ($DFF00A/$DFF00C) — Quadratur-Decoder
-  - Standard-Dekodierung: `right = (dat>>1) Xor dat`, dann Bits ausmaskieren
-  - CIAAPRA ($BFE001) für Up/Down (Joystick Port 1)
-- `[ ]` **`Joyfire(port)`** — Feuer-Knopf; CIAAPRA Bit 7 (Port 1) / Bit 6 (Port 2)
-- `[ ]` **`KeyDown(scancode)`** — Echtzeit-Tastencheck
-  - CIA-A Handler in `startup.s` bereits vorhanden; Erweiterung: Key-Down-Matrix statt nur `_kbd_pending`
-  - `_kbd_matrix` 8-Byte-BSS (64 Tasten); Handler setzt/löscht Bits beim Key-Down/Up
-- `[ ]` **`MouseX`** / **`MouseY`** — Maus-Delta aus JOY0DAT (Low-Byte X, High-Byte Y)
-  - Absolut-Position akkumulieren: `_mouse_x`/`_mouse_y` BSS, vom VBL-Handler geupdated
-- `[ ]` **`MouseB(n)`** — Maustaste; Bit 10 von POTGOR ($DFF016) für rechte Taste; CIAAPRA für linke
+> **Einheitliche Schnittstelle:** `DrawBob` funktioniert identisch für statische Hintergründe
+> (M-BOB) und scrollende Tilemaps (M-SCROLL). BASSM löst den Unterschied intern auf —
+> `LoadTilemap` installiert `_bg_restore_tilemap` in `_bg_restore_fn`, `SetBackground`
+> installiert `_bg_restore_static`. Für den Nutzer gibt es **keine unterschiedlichen Befehle**.
+
+- `[ ]` **Ring-Buffer in Chip-RAM**: `(320 + 32) × (256 + 32) × planes` ≈ 62 KB bei 5 Planes
+  - Feste Größe unabhängig von der Weltgröße; nur der sichtbare Bereich + 1 Tile Rand
+  - BPL1MOD = `(buffer_bytes_per_row − display_bytes_per_row)` kompensiert Puffer-Breite
+- `[ ]` **`LoadTilemap file`** — lädt Tile-Index-Daten in Fast-RAM
+  - Map-Dimensionen (Breite, Höhe) im Dateiformat eingebettet — kein Parameter nötig
+  - **Offene Design-Frage:** TileD-Support (TMX/JSON → Binär zur Buildzeit, in `main.js`)
+    oder eigener Tilemap-Editor in A-MGR (integriert, einfacheres Binärformat)?
+    Beide Wege schließen sich nicht aus: A-MGR-Editor als Primärwerkzeug + TileD-Import
+- `[ ]` **`LoadTileset file, tile_w, tile_h`** — lädt Tile-Grafiken
+  - Anzahl Tiles = `(image_w / tile_w) × (image_h / tile_h)` — aus Bilddimensionen errechnet
+  - Tiles ohne opake Pixel (alle Planes = 0 in jedem Pixel) werden automatisch ignoriert
+- `[ ]` **`ScrollTilemap dx, dy`** — Pixel-Delta scrollt den Ausschnitt
+  - Fine-Scroll (0–15 px): BPLCON1 (horizontal) / BPLxPT-Offset (vertikal) — 0 Blitter-Kosten
+  - Tile-Übergang (±16 px): neue Spalte oder Zeile per Blitter in Ring-Buffer einzeichnen
+    - Spalte (16×256×5 Planes): ~1,4 ms Blitter
+    - Zeile (320×16×5 Planes): ~3,6 ms Blitter
+  - Ring-Buffer zirkulär: neue Strip überschreibt die gegenüberliegende, jetzt unsichtbare Seite
+  - Installiert `_bg_restore_tilemap` in `_bg_restore_fn` (einmalig bei `LoadTilemap`)
+- `[ ]` **`_bg_restore_tilemap(d0=x, d1=y, d2=w, d3=h)`** — Bob-Restore aus Ring-Buffer
+  - Berechnet Ring-Buffer-Adresse: `ring_start + (y + scroll_y_mod) * buf_row + (x + scroll_x_mod) / 8`
+  - Normalfall (Bob nicht am Ring-Saum): 1 Blit
+  - Randfall (Saum schneidet Bob-Bereich): Split in bis zu 4 Teil-Blits
 
 ---
 
-### M-SYS — Direkter Hardware-Zugriff: `Peek` · `Poke`
-
-```blitz
-; Hardware-Register direkt lesen/schreiben
-beam   = PeekW($DFF006) And $1FF  ; vertikale Strahlposition (VPOSR)
-PokeW  $DFF180, $0F00             ; COLOR00 direkt auf Rot setzen
-PokeL  $DFF040, bltcon            ; Blitter-Control direkt schreiben
-
-; Chip-RAM manipulieren
-PokеB $BFE001, PeekB($BFE001) And %11111110  ; CIA-A bit0 löschen
-```
-
-- `[ ]` **`PeekB(addr)`** / **`PeekW(addr)`** / **`PeekL(addr)`** — liest 1/2/4 Bytes von Adresse
-  - Codegen: `move.l addr_expr,a0 / move.b/w/l (a0),d0`; kein Fragment
-  - Adresse kann Literal (`$DFF006`) oder Variable sein
-- `[ ]` **`PokeB addr, val`** / **`PokeW addr, val`** / **`PokeL addr, val`** — schreibt Bytes
-  - Codegen: `move.l addr,a0 / move.l val,d0 / move.b/w/l d0,(a0)`; inline
-- `[ ]` Kurzform: `Poke addr, val` als Alias für `PokeL` (Blitz2D-Kompatibilität)
-
-> **Begründung:** Mit Peek/Poke kann der Programmierer alles, was BASSM noch nicht
-> abstrahiert hat — Copper direkt patchen, Blitter-Register setzen, Custom Chips
-> jenseits der BASSM-API ansprechen. Das ist die "Ausflucht nach unten" die jede
-> Amiga-Sprache bieten muss.
-
----
-
-### M-DATA — 2D-Arrays
+### 9. M-DATA — 2D-Arrays *(Tile-Maps, Spielfelder)*
 
 ```blitz
 Dim map(19, 14)          ; 20×15 Tile-Map
 map(x, y) = TILE_WALL
 tile = map(px / 16, py / 16)
-
-Dim board(7, 7)          ; 8×8 Spielfeld
 ```
 
-- `[ ]` Parser: `Dim name(w, h)` — zweites Argument optional; AST-Node `dim2d`
-- `[ ]` CodeGen: BSS `ds.l (w+1)*(h+1)`; Index-Formel `y*(w+1)+x` inline bei jedem Zugriff
+- `[ ]` Parser: `Dim name(w, h)` — zweites Argument optional; `dim2d`-Node
+- `[ ]` CodeGen: BSS `ds.l (w+1)*(h+1)`; Indexformel `y*(w+1)+x` inline
 - `[ ]` `arr(x, y)` lesen/schreiben — gleiche Syntax wie 1D mit 2 Argumenten
 - `[ ]` Abwärtskompatibel: bestehende 1D-Syntax unverändert
 
 ---
 
-### M-TYPE — Strukturen (`Type … EndType`)
-
-> **Das wichtigste fehlende Feature für Spiele.**
-> In Blitz2D ist jedes Spiel um Types herum gebaut. Ohne Types: N parallele Arrays.
-> Mit Types: saubere Objekt-Abstraktion, lesbarer Code, wartbare Programme.
+### 10. M-TYPE — Strukturen (`Type … EndType`) *(das wichtigste fehlende Feature)*
 
 ```blitz
 Type Enemy
@@ -396,94 +310,81 @@ Type Enemy
   Field active
 EndType
 
-Dim enemies.Enemy(15)    ; 16 statische Enemy-Instanzen
+Dim enemies.Enemy(15)
 
 enemies(i)\x = Rnd(320)
-enemies(i)\y = Rnd(256)
-enemies(i)\active = 1
-
 If enemies(i)\hp <= 0 Then enemies(i)\active = 0
 ```
 
 **Implementierungsansatz: Statische Arrays von Strukturen (kein Heap)**
-- Kein `New`/`Delete` — bare-metal, kein Heap-Allocator nötig
-- `Dim name.TypeName(n)` erzeugt statisches Array von n+1 Instanzen in BSS
+- Kein `New`/`Delete` — bare-metal; `Dim name.TypeName(n)` erzeugt statisches BSS-Array
 - Feldgröße: 4 Bytes (Long) pro Feld; Struct-Größe = Feldanzahl × 4
 - `arr(i)\field` → Adresse = `base + i*structsize + fieldOffset`
 
-**Implementierungsschritte:**
-- `[ ]` Parser: `Type name … Field fname … EndType` — TypeDef-Registry im Parser
-- `[ ]` Parser: `Dim arr.TypeName(n)` — typedArray-Node; erkennt TypeName
-- `[ ]` Parser: `arr(i)\field` lesen/schreiben — `field_access`-Node
-- `[ ]` CodeGen: TypeDef-Map `{name → {fields: [...], size: n*4}}`
-- `[ ]` CodeGen: `Dim arr.Type(n)` → BSS `ds.l (n+1)*structsize`
-- `[ ]` CodeGen: `arr(i)\field` → `move.l i_expr,d0 / muls.w #structsize,d0 / add.l #fieldOffset,d0 / move.l (base,d0.l),d1`
-- `[ ]` Fehlerprüfung: unbekannter Type, unbekanntes Feld → Compiler-Fehler
+- `[x]` Parser: `Type name … Field fname … EndType` — TypeDef-Registry
+- `[x]` Parser: `Dim inst.TypeName` (Skalar) + `Dim arr.TypeName(n)` (Array) — separate AST-Nodes
+- `[x]` Parser: `inst\field` + `arr(i)\field` lesen/schreiben — `type_field_read`/`type_field_write`-Nodes
+- `[x]` CodeGen: `_typeDefs` Map `{name → {fields: string[]}}`; `_typeInstances` Map
+- `[x]` CodeGen: BSS `ds.l (n+1)*fieldCount` für Arrays; `ds.l fieldCount` für Skalare
+- `[x]` CodeGen: Index-Adressierung `muls.l #stride,d0` + `lea base,a0` + `move.l offset(a0,d0.l),d1`
+- `[x]` PERF-2: Pointer-Cache — bei wiederholtem `arr(i)\…` in einem Block wird `i*stride` einmalig berechnet und `a0` wiederverwendet
+- `[x]` Fehlerprüfung: unbekannter Type, unbekanntes Feld → Compiler-Fehler
 
 ---
 
-### M10 — Hardware-Grafik
+## Stufe 3 — Hardware-Features & Musik
+
+> **Ziel:** 100% game- und demo-complete.
+> Hardware-Sprites, Scrolling, echte Musik.
+
+---
+
+### 9. M10 — Hardware-Grafik *(Sprites + Scrolling)*
 
 ```blitz
-; Sprites (8 Hardware-Sprites à 16×Hpx, eigene Farben)
-DefSprite 0, spriteData    ; Sprite 0 aus Daten-Label definieren
-MoveSprite 0, px, py       ; Sprite 0 an Position setzen
-HideSprite 0               ; Sprite 0 ausblenden
+DefSprite 0, spriteData
+MoveSprite 0, px, py
+HideSprite 0
 
-; Hardware-Scrolling
-ScrollX 8                  ; bitplane um 8 Pixel nach links scrollen (BPLCON1)
-ScrollY 1                  ; vertikales Scrolling (BPL1MOD/BPL2MOD)
-
-; Kreis
-Circle 160, 128, 50        ; CPU Bresenham-Kreis
+ScrollX 8                  ; BPLCON1 — Fine-Scroll
+ScrollY 1                  ; BPL1MOD/BPL2MOD — Coarse-Scroll
 ```
 
-- `[ ]` **Hardware-Sprites** — 8 OCS Sprites × 16px Breite, eigene Farben, keine Blitter-/CPU-Last
-  - `sprite.s`: `_DefSprite(d0=num, a0=data_ptr)` — SPRxPT + Sprite-DMA aktivieren
+- `[ ]` **Hardware-Sprites** — 8 OCS Sprites × 16px, eigene Farben, keine CPU-Last
+  - `sprite.s`: `_DefSprite(d0=num, a0=data_ptr)` — SPRxPT + Sprite-DMA (DMACON Bit 5)
   - `_MoveSprite(d0=num, d1=x, d2=y)` — SPRxPOS/SPRxCTL patchen
   - `_HideSprite(d0=num)` — SPRxPOS=0 → unsichtbar
-  - Sprite-Daten als INCBIN oder inline in CODE-Section
-  - Sprite-DMA: DMACON Bit 5 (SPREN)
-- `[ ]` **Hardware-Scrolling** — `ScrollX n`: BPLCON1 (Fine-Scroll 0..15), BPL1MOD/BPL2MOD für Coarse-Scroll
+- `[ ]` **Hardware-Scrolling** — `ScrollX n`: BPLCON1 (Fine-Scroll 0..15); BPL1MOD/BPL2MOD
 - `[ ]` **`Circle x,y,r`** — Bresenham-Kreis in `circle.s`, nutzt `_Plot` intern
 
 ---
 
-### M-MOD — ProTracker MOD-Player *(Demo-Musik)*
+### 10. M-MOD — ProTracker MOD-Player *("Eine Demo ohne Musik ist ein Bildschirmschoner")*
 
 ```blitz
-LoadModule "mysong.mod"   ; MOD-Datei laden (INCBIN in DATA_C)
-PlayModule                 ; Abspielen starten (VBlank-Hook)
-StopModule                 ; Stoppen
+LoadModule "mysong.mod"
+PlayModule
+StopModule
 ```
 
-- `[ ]` Fertigen PT-Player als Fragment einbinden (`ptplayer.s` — öffentlich Domain, ~1KB)
+- `[ ]` Fertigen PT-Player als Fragment einbinden (`ptplayer.s` — Public Domain, ~1 KB)
 - `[ ]` VBlank-Hook in `startup.s` ruft `_mt_music` bereits auf (50 Hz) — Infrastruktur vorhanden
 - `[ ]` `LoadModule` → INCBIN DATA_C (Asset-Pipeline analog zu LoadSample)
-- `[ ]` `PlayModule` / `StopModule` → `_mt_init` / `_mt_end` in `ptplayer.s`
-- `[ ]` Paula-Kanäle 0–3 teilen sich zwischen MOD-Player und Sample-Befehlen → Kanal-Verwaltung
-
-> **Begründung:** "Eine Demo ohne Musik ist ein Bildschirmschoner." Mit ProTracker-Support
-> kann man fertige Amiga-MODs abspielen. Ohne das: nur Sample-Loops, kein richtiger Soundtrack.
+- `[ ]` `PlayModule` / `StopModule` → `_mt_init` / `_mt_end`
+- `[ ]` Paula-Kanäle 0–3: Kanal-Verwaltung zwischen MOD-Player und Sample-Befehlen
 
 ---
 
-## 🎨 Asset Manager — Tooling-Spur
+## 🎨 Asset Manager — Tooling-Spur *(parallel, nach Bedarf)*
 
-> **Unabhängig von den Sprach-Milestones.** Der Asset Manager ist ein separates Fenster
-> in der BASSM IDE und kann parallel zur Sprachentwicklung implementiert werden.
->
-> **Primäres Design-Prinzip: Palette First.**
-> Die Projektpalette ist der Ausgangspunkt — alle Bilder werden daran angepasst,
-> nicht umgekehrt. Das entspricht dem echten Amiga-Entwicklungsworkflow: erst
-> Palette definieren, dann alle Artwork-Assets daran ausrichten.
+> **Status:** Konverter-Grundlage implementiert (PNG→.raw, WAV→.raw, Palette-Pipeline,
+> Click-to-Load, Datei-Watcher). Die folgenden Milestones erweitern das Tool schrittweise.
+> **Kein Blocker für die Sprach-Milestones** — kann parallel oder zwischen Sprach-Tasks
+> implementiert werden, sobald ein konkreter Bedarf entsteht.
 
 ---
 
-### A-MGR-1 — Projektpalette *(Fundament — zuerst implementieren)*
-
-> Ohne funktionierende Projektpalette macht der Rest keinen Sinn.
-> Direkt gespiegelt zu dem was `PaletteColor` im BASSM-Programm definiert.
+### A-MGR-1 — Projektpalette *(interaktiver Editor)*
 
 ```
 ┌─ Projektpalette ─────────────────────────────────────────────┐
@@ -491,231 +392,124 @@ StopModule                 ; Stoppen
 │  ██  ██  ██  ██  ██  ██  ██  ██   Farben 8–15               │
 │  ··  ··  ··  ··  ··  ··  ··  ··   Farben 16–23 (inaktiv)    │
 │  ··  ··  ··  ··  ··  ··  ··  ··   Farben 24–31 (inaktiv)    │
-│                                                               │
-│  [Aus Bild extrahieren]  [Datei importieren]  [Aus Code]     │
 └───────────────────────────────────────────────────────────────┘
 ```
 
-**Palette-Editor:**
-- `[ ]` **32-Farb-Matrix** — OCS-Farbwähler pro Slot; Schieberegler 0–15 je Kanal (nicht 0–255)
-  - Klick auf Slot → Picker öffnet; Live-Vorschau aller geladenen Bilder aktualisiert sich sofort
+- `[ ]` **OCS-Farbwähler pro Slot** — Schieberegler 0–15 je Kanal (nicht 0–255); Live-Vorschau
 - `[ ]` **Gespeichert** als `assets/palette_<name>.json` im Projektordner
-
-**Import-Quellen:**
-- `[ ]` **Aus Bild extrahieren** — Bild laden → Median-Cut-Quantisierung auf n Farben →
-  OCS-Snap (`round(c/255*15)`) → als Projektpalette übernehmen
-- `[ ]` **Datei importieren** — `.act` (Adobe Color Table, 768 Bytes raw), `.gpl` (GIMP),
-  `.pal` (Jasc/PSP); alle haben einfache, dokumentierte Formate
-- `[ ]` **Aus BASSM-Code lesen** — `PaletteColor`-Statements in `main.bassm` parsen
-  → Palette rekonstruieren; bei Programmstart automatisch ausgeführt
-
-**Bidirektionale Code-Synchronisation:**
-- `[ ]` Palette im Editor ändern → BASSM-Code-Block generieren (Copy-Button):
-  ```blitz
-  PaletteColor 0, 0, 0, 0
-  PaletteColor 1, 15, 8, 0
-  PaletteColor 2, 0, 12, 3
-  ; ...
-  ```
-- `[ ]` Code geändert (neue `PaletteColor`-Statements) → Palette-Grid aktualisiert sich
-- `[ ]` **Export `.act`** — für externe Tools (Aseprite, Photoshop, GIMP, Inkscape)
+- `[ ]` **Aus BASSM-Code lesen** — `PaletteColor`-Statements parsen → Palette rekonstruieren
+- `[ ]` **Bidirektionale Code-Synchronisation** — Palette ändern → Copy-Button erzeugt
+  `PaletteColor`-Block; Code geändert → Grid aktualisiert sich
+- `[ ]` **Export `.act`** — für Aseprite, Photoshop, GIMP, Inkscape
 
 ---
 
-### A-MGR-2 — Bild-Konverter *(immer gegen Projektpalette)*
+### A-MGR-2 — Bild-Konverter *(erweiterte Features)*
 
-> Bilder besitzen keine eigene Palette. Sie werden an die Projektpalette angepasst.
-> Das ist kein Verlust — es ist das Amiga-Programmiermodell.
+> Grundlage (Drop-Zone, Split-View, PNG→.raw) bereits implementiert.
 
-**Eingabe:** PNG, JPEG, BMP, GIF, WebP
-**Ausgabe:** Raw Planar Bitplane `.raw` (wie `LoadImage` erwartet)
-
-```
-Quelldatei (PNG/JPEG/…)
-    → decode via jimp (pure JS, keine nativen Binaries nötig)
-    → resize auf Word-Alignment: ((w+15)/16) × 16
-    → Nearest-Color-Mapping gegen Projektpalette
-         pixel (r,g,b) → nächster Eintrag per euklidischem Abstand im OCS-RGB-Raum
-    → optional Floyd-Steinberg Fehlerverteilung
-    → Chunky → Planar:
-         für Bitplane p, Zeile y, Word w: sammle Bit p jedes der 16 Pixel → 16-Bit-Word
-    → .raw schreiben in assets/
-```
-
-**UI:**
-- `[ ]` **Drag & Drop** PNG/JPEG/BMP in das Bild-Panel
-- `[ ]` **Split-View**: Original (Echtfarben) | Mit Projektpalette (OCS, pixel-perfect, kein Smoothing)
-- `[ ]` **Fit-Qualitätsanzeige**: mittlerer Farbabstand Bild ↔ Palette (0–100%)
-  → Entscheidungshilfe: passt das Bild zur aktuellen Palette gut genug?
-  → "82% — Dithering einschalten: 91%"
-- `[ ]` **Dithering-Toggle**: keins / Floyd-Steinberg — Qualitätsunterschied direkt im Split-View sichtbar
-- `[ ]` **Ziel-Tiefe**: 1–5 Bitplanes (begrenzt genutzte Palette-Slots: 2/4/8/16/32 Farben)
-- `[ ]` **Palette-Slots-Anzeige**: welche Slots nutzt das Bild tatsächlich?
-  → "Slots 1 3 5 7 (4 von 16)" — hilft bei der Palette-Planung
-- `[ ]` **Batch-Import**: Ordner wählen → alle Bilder gegen Projektpalette konvertieren
-- `[ ]` **Generierter BASSM-Code** (Copy-Button):
-  ```blitz
-  LoadImage 0, "hero.raw", 32, 48
-  ```
-  PaletteColor-Statements kommen aus A-MGR-1, nicht pro Bild
-
-**Technologie:**
-- `jimp` (pure JS, npm) — PNG, JPEG, BMP, GIF ohne native deps
-- Planar-Konvertierung: ~30 Zeilen custom JS
-- OCS-Snap: `Math.round(c / 255 * 15)` pro Kanal, trivial
+- `[ ]` **Dithering** — Floyd-Steinberg; Qualitätsunterschied direkt im Split-View sichtbar
+- `[ ]` **Fit-Qualitätsanzeige** — mittlerer Farbabstand Bild ↔ Palette (0–100%)
+- `[ ]` **Palette-Slots-Anzeige** — "Slots 1 3 5 7 (4 von 16)"
+- `[ ]` **Batch-Import** — Ordner wählen → alle Bilder gegen Projektpalette konvertieren
+- `[ ]` **Generierter BASSM-Code** (Copy-Button): `LoadImage 0, "hero.raw", 32, 48`
 
 ---
 
-### A-MGR-3 — Sound-Konverter
+### A-MGR-3 — Sound-Konverter *(erweiterte Features)*
 
-**Eingabe:** WAV, MP3, OGG, FLAC, AIFF, M4A — alles was Chromium dekodiert
-**Ausgabe:** Raw 8-Bit Signed PCM Mono `.raw` (wie `LoadSample` erwartet)
+> Grundlage (Drop-Zone, WAV→.raw via AudioContext) bereits implementiert.
 
-```
-Quelldatei
-    → AudioContext.decodeAudioData()  — Chromium/Electron nativ, kein FFmpeg
-    → OfflineAudioContext             — Resampling auf Zielfrequenz
-    → Mono-Mix: (L + R) / 2
-    → Float32 → Int8: round(sample × 127), geclamppt auf −128..127
-    → ArrayBuffer → IPC → main.js → .raw schreiben
-```
-
-**UI:**
-- `[ ]` **Drag & Drop** Audio-Datei
 - `[ ]` **Wellenform-Visualisierung** — Canvas, Zoom, Playback-Cursor
-- `[ ]` **Period / Frequenz-Rechner** — bidirektional:
-  - Slider Period 80–65535 ↔ Frequenz-Anzeige (`freq = 3546895 / period`)
-  - Empfehlung aus Original-Samplerate: "Original 44100 Hz → empfohlener Period: 80"
-  - Presets: 428 (8287 Hz Standard), 214 (16574 Hz), 135 (26306 Hz)
-- `[ ]` **Normalisieren** — Peak auf Maximum anheben
-- `[ ]` **Stille trimmen** — Anfang/Ende unter konfigurierbarem Schwellwert abschneiden
-- `[ ]` **Vorschau-Playback** — Original vs. Konvertiert direkt über Web Audio vergleichen
-- `[ ]` **Generierter BASSM-Code** (Copy-Button):
-  ```blitz
-  LoadSample 0, "explosion.raw"
-  PlaySampleOnce 0, 1, 214, 64
-  ```
+- `[ ]` **Period / Frequenz-Rechner** — bidirektional; Presets: 428/214/135
+- `[ ]` **Normalisieren** — Peak auf Maximum
+- `[ ]` **Stille trimmen** — Anfang/Ende unter Schwellwert abschneiden
+- `[ ]` **Vorschau-Playback** — Original vs. Konvertiert via Web Audio
+- `[ ]` **Generierter BASSM-Code** (Copy-Button): `LoadSample 0, "explosion.raw"`
 
 ---
 
 ### A-MGR-4 — Mehrere Paletten / Szenen-Paletten
 
-> Ein Spiel hat oft verschiedene Paletten pro Level, Screen oder Spielzustand.
-
 ```
 assets/
-├── palette_level1.json   ← Wald — 16 Farben
-├── palette_level2.json   ← Höhle — 16 Farben
-├── palette_ui.json       ← Interface — 8 Farben
-└── [Aktive Palette: palette_level1.json]
+├── palette_level1.json
+├── palette_level2.json
+└── palette_ui.json
 ```
 
-- `[ ]` **Benannte Paletten** — mehrere Paletten pro Projekt anlegen, umbenennen, löschen, duplizieren
-- `[ ]` **Aktive Palette** — Dropdown in der Asset-Manager-Toolbar; alle Bild-Vorschauen
-  und Konvertierungen beziehen sich auf die gewählte Palette
-- `[ ]` **Bild gegen mehrere Paletten konvertieren** — aus einer Quelldatei mehrere `.raw`
-  erzeugen: `hero_forest.raw` (Palette Level1) + `hero_cave.raw` (Palette Level2)
-- `[ ]` **Palette aus Referenzbild ableiten** — Bild importieren → quantisieren → als neue
-  benannte Palette speichern (Einweg; Bild definiert Palette, danach gilt die Palette)
-- `[ ]` **Batch-Re-Quantisierung** — Projektpalette ändern → alle Assets gegen neue Palette
-  neu konvertieren (mit Vorschau und Bestätigung)
+- `[ ]` **Benannte Paletten** — anlegen, umbenennen, löschen, duplizieren
+- `[ ]` **Aktive Palette** — Dropdown; alle Vorschauen beziehen sich darauf
+- `[ ]` **Batch-Re-Quantisierung** — Palette ändern → alle Assets neu konvertieren
 
 ---
 
 ### A-MGR-5 — IDE-Integration
 
-- `[ ]` **Eigenes `BrowserWindow`** — nicht ein Panel im Editor; braucht Platz für
-  Split-View + Palette-Grid + Projektbaum
-- `[ ]` **[Assets]-Button** in der IDE-Toolbar — öffnet / fokussiert das Asset-Fenster
-- `[ ]` **Projektbaum** im Asset-Fenster:
-  - `images/` — .raw Bilder mit Thumbnail (aus erstem Frame generiert)
-  - `sounds/` — .raw Sounds mit Dauer und Wellenform-Miniatur
-  - `palettes/` — .json Paletten mit Farbbalken-Vorschau
-- `[ ]` **Drag & Drop** aus Projektbaum in Code-Editor → fügt `LoadImage`/`LoadSample`-
-  Statement an Cursor-Position ein
+- `[ ]` **Drag & Drop** aus Projektbaum in Code-Editor → fügt `LoadImage`/`LoadSample`-Statement ein
 - `[ ]` **Automatische Code-Synchronisation** beim Öffnen:
-  - Erkennt `LoadImage`/`LoadSample`-Statements → markiert referenzierte Assets im Baum
-  - Erkennt `PaletteColor`-Statements → lädt als aktive Projektpalette
-- `[ ]` **IPC-Handler** `bassm:asset-*` in `main.js`:
-  - `bassm:write-asset` — `.raw` in `assets/` schreiben
-  - `bassm:read-palette` — `palette_<name>.json` lesen/schreiben
-  - `bassm:list-assets` — Projektordner scannen
+  - `LoadImage`/`LoadSample`-Statements → markiert referenzierte Assets im Baum
+  - `PaletteColor`-Statements → lädt als aktive Projektpalette
 
 ---
 
-### ✅ M7 — Funktionen / Prozeduren
+## 🖥️ IDE — Tooling-Spur *(parallel, nach Bedarf)*
 
-**Blitz2D Signatur-Konvention:**
-- `Function name(param, …)` — **mit Klammern** = Funktion mit Rückgabewert
-- `Function name param, …` — **ohne Klammern** = Prozedur (kein Rückgabewert)
-
-**Stack-Frame (LINK/UNLK):**
-```
-8(a6)  = param[0]   (erster Parameter)
-12(a6) = param[1]   …
--4(a6) = local[0]   (erste lokale Variable)
--8(a6) = local[1]   …
-```
-
-- `[x]` Parser: `Function name(params)` … `EndFunction` (`hasReturn=true`)
-- `[x]` Parser: `Function name params` … `EndFunction` (`hasReturn=false`, Prozedur)
-- `[x]` Parser: User-Prozedur-Aufruf `name arg1, arg2` (Statement ohne Klammern)
-- `[x]` Parser: Funktionsaufruf `name(arg1, arg2)` in Ausdrücken (`call_expr`)
-- `[x]` Parser: `Return [expr]`
-- `[x]` CodeGen: Separate `SECTION func_name,CODE` pro Funktion; `_func_name:` XDEF
-- `[x]` CodeGen: LINK a6,#-n / UNLK a6; Caller-Cleanup nach JSR
-- `[x]` CodeGen: Parameter-Zugriff via positiver Frame-Offset `8(a6)`, `12(a6)` …
-- `[x]` CodeGen: Lokale Variablen via negativem Frame-Offset `-4(a6)`, `-8(a6)` …
-- `[x]` CodeGen: `_varRef(name)` — global BSS oder Frame-relative Adressierung
-- `[x]` Fehlerprüfung: Prozedur in Ausdrucks-Kontext → Compiler-Fehler
-- `[x]` Fehlerprüfung: `Return expr` in Prozedur → Compiler-Fehler
+> **Kein Blocker für Sprach- oder Grafik-Milestones.** IDE-Features verbessern den
+> Entwicklungskomfort und sind die Grundlage der späteren Gamification der gesamten IDE.
 
 ---
 
-### PERF-C — Optionale Variablen-Typisierung *(niedrige Prio, Expert-Feature)*
-> **Hintergrund:** Alle Variablen sind derzeit 32-Bit Long (`ds.l`). `move.w` spart
-> ~4 Zyklen gegenüber `move.l` auf dem 68000; der Hauptgewinn liegt in kleinerem
-> Chip-RAM-Verbrauch (BSS). Automatische Typinferenz ist nicht zuverlässig machbar,
-> da der Wertebereich von Variablen (z.B. Koordinaten, die sich per `x = x + dx`
-> verändern) zur Compile-Zeit nicht bekannt ist. Daher: **optionales Opt-in-Suffix**,
-> der User muss es nie verwenden.
+### TOOL-IDE-1 — Budget-Bars *(Lebensbalken für CPU + Chip-RAM)* ✅
+
+- `[x]` **`budget.js`** — statische Analyse des BASSM-Quellcodes
+  - `Graphics w,h,n` → Frame-Budget (141 800 Cycles @ 50 Hz) + Screen-Buffer-RAM
+  - `LoadImage` → Chip-RAM-Verbrauch (DATA_C-Größe aus w×h×planes)
+  - `LoadSample` → unbekannte Größe → `+`-Marker
+  - Hauptloop-Erkennung: erstes While/Repeat das `ScreenFlip` enthält
+  - `For i=0 To N` mit Literalgrenzen → innere Kosten × N multipliziert
+  - Cycle-Kosten-Tabelle: `Cls`, `Box`, `DrawImage` (nach Bildgröße), `Plot`, `Line`, `Text`, `CopperColor`, `ScreenFlip`
+- `[x]` **Gradient-Bars** im Editor-Footer (22→30 px Strip unter Monaco)
+  - Farbverlauf `#00cc44 → #88cc00 → #ccaa00 → cc5500 → #cc1111` — clip bei aktueller Breite
+  - Klassen `ok` / `warn` / `crit` (< 65 % / < 88 % / ≥ 88 %) auf Track-Element
+  - Glow: `box-shadow` auf Track (nicht Fill) → kein Clip durch `overflow: hidden`
+  - CSS-Transition `0.4s cubic-bezier` für sanfte Animation beim Tippen
+  - Debounce 600 ms; update auch bei Projekt-Open und File-Load
+
+---
+
+### TOOL-IDE-2 — IDE-Gamification *(geplant)*
+
+- `[ ]` **Amiga-Style Skin** — Toolbar, Panels, Scrollbalken im OCS-Look
+- `[ ]` **Weitere Budget-Metriken** — Blitter-Zeit separiert von CPU-Zeit; CHIP vs. FAST RAM
+- `[ ]` **Compile-Fehler als "Crash"-Animation** — kurze visuelle Rückmeldung
+- `[ ]` **Score-Anzeige** — Gamification-Konzept für Cycle-Effizienz (optional / experimental)
+
+---
+
+## PERF & Niedrige Priorität
+
+### PERF-C — Optionale Variablen-Typisierung *(Expert-Feature, kein Blocker)*
 
 ```blitz
-; Ohne Suffix: Long (default, immer sicher)
-x = 100
-dx = 3
-
-; Optionale Suffixe für Experten:
-col.b = 1      ; Byte  — ds.b, move.b (0..255)
-px.w  = 160    ; Word  — ds.w, move.w (−32768..32767)
-total.l = 0    ; Long  — ds.l, move.l (explizit, wie default)
-
-; Arrays ebenfalls typisierbar:
-Dim bx.w(7)    ; Word-Array statt Long-Array
+col.b = 1      ; Byte  — ds.b, move.b
+px.w  = 160    ; Word  — ds.w, move.w
+total.l = 0    ; Long  — ds.l (default)
 ```
 
-**Implementierungsaufwand: 🔴 Hoch**
-- Lexer: Suffix `.b`/`.w`/`.l` am IDENT-Token erkennen (Punkt ist aktuell kein Operator)
-- Parser: Typ-Info in `assign`-, `dim`-, `array_assign`/`array_read`-Nodes übertragen
-- CodeGen: Variable-Registry `Map<name, {type, size}>` statt nur `Set<name>`
-- `_genExpr` / `_genBinop`: `move.b`/`move.w`/`move.l` je nach Typ; sign-extend bei
-  Promotion (`ext.w d0` + `ext.l d0` für Byte→Long in Ausdrücken)
-- BSS: `ds.b`/`ds.w`/`ds.l` je nach Typ; Byte/Word müssen word-aligned sein (`even`)
-- Typpromotion-Regel: kleiner Typ + großer Typ → Long (sicher, kein stiller Überlauf)
-- `[ ]` Suffix-Erkennung im Lexer
+**Aufwand: 🔴 Hoch** — Lexer, Parser, CodeGen, BSS, Typpromotion alle betroffen.
+
+- `[ ]` Suffix `.b`/`.w`/`.l` im Lexer erkennen
 - `[ ]` Typ-Propagation durch Parser-AST
-- `[ ]` Typisierter CodeGen (BSS + Lade/Speicher-Instruktionen)
-- `[ ]` Typpromotion in `_genBinop`
+- `[ ]` Typisierter CodeGen + Typpromotion in `_genBinop`
 
 ---
 
-### PERF-low — Niedrige Priorität
+### PERF-low
 
-- `[ ]` **Short Branches** (`.s` statt `.w`): minimaler Effekt auf 68000, kein Cache
-- `[ ]` **Register-Caching** (häufige Variablen in d2–d7 halten): erst nach M7 sinnvoll
-  (braucht Scope-Analyse und Spill-Logik an jsr-Grenzen)
-- `[ ]` **Subroutinen-Argumente direkt in Register** (statt Push/movem): spart Stack-Overhead
-  bei einfachen Argumenten zu `Box`, `Line`, `Rect`
+- `[ ]` **Short Branches** (`.s` statt `.w`): minimaler Effekt auf 68000
+- `[ ]` **Register-Caching** (d2–d7): erst nach vollständiger Sprache sinnvoll; braucht Scope-Analyse
+- `[ ]` **Subroutinen-Argumente direkt in Register** statt Push/movem
 
 ---
 
@@ -723,7 +517,15 @@ Dim bx.w(7)    ; Word-Array statt Long-Array
 
 - `[ ]` `name$ = "text"`, Konkatenation `a$ + b$`
 - `[ ]` `Len(s$)`, `Left$`, `Mid$`, `Right$`
-- `[ ]` `Val(s$)`, `Str$(n)`
+- `[ ]` `Val(s$)`, `Str$(n)` (String-Variablen-Variante; `Str$(n)` für Integer-Ausgabe bereits via LANG-C implementiert)
+
+---
+
+### Optionale Hardware-Features
+
+- `[ ]` **LoadPalette arr** — alle 32 Palette-Einträge aus Integer-Array setzen
+- `[ ]` **Copper-Interrupt** — Level-3 für exaktes Raster-Timing (statt WAIT-Abfragen)
+- `[ ]` **IFF ILBM Parser** — Standard-Amiga-Bildformat direkt laden
 
 ---
 
@@ -731,73 +533,50 @@ Dim bx.w(7)    ; Word-Array statt Long-Array
 
 - `[~]` **OS-Restore (vAmiga/AROS)**: Nach Programmende dunkelgrauer Screen statt
   Workbench. `LoadView(saved)+RethinkDisplay` implementiert aber unzureichend.
-  → Hypothesen in `MEMORY.md`.
+  → Hypothesen in `MEMORY.md`. Niedrige Prio — betrifft nur den Entwicklungskomfort.
 
 ---
 
-## Kritischer Pfad — Ziel: 100% Amiga-Game-Complete
-
-### Aktueller Stand
-
-```
-✅ Kern-Pipeline       vasm · vlink · vAmiga · IPC · Editor
-✅ Grafik              Cls · Box · Line · Rect · Plot · CopperColor · Double-Buffer
-✅ Farbe               Color · PaletteColor (runtime) · ClsColor
-✅ Text                Text x,y,"str" — 8×8 Font, CPU, newline
-✅ Sound               PlaySample · PlaySampleOnce · StopSample · Paula DMA
-✅ Bitmaps             LoadImage · DrawImage · Blitter A→D
-✅ Kontrollfluss       If/ElseIf/Else · While · For/Step · Select/Case
-✅ Funktionen          Function/Proc · Stack-Frame · lokale Vars · Return
-✅ Arrays (1D)         Dim arr(n) · arr(i) lesen/schreiben
-✅ Operatoren          + - * / Mod And Or Not · alle Vergleiche
-✅ Eingabe (blocking)  WaitKey
-✅ Code-Organisation   Include · Statement-Separator ·
-✅ Timing              WaitVbl · Delay · ScreenFlip
-```
-
-### Stufe 1 — Sprach-Grundlagen für Spiele (Blocker)
-
-```
-LANG-C  Str$(n)          Zahlen anzeigen — Score, Leben, Timer
-LANG-D  Rnd(n) + Abs(n)  Zufall + Betrag — ohne Rnd kein Spiel
-LANG-E  Xor + Shl + Shr  Fehlende Operatoren — Hardware-Zugriff, Bit-Packing
-LANG-F  Repeat + Exit    Kontrollfluss vollständig
-M9b     Joydown/Key/Maus Echte Eingabe — kein interaktives Programm ohne das
-```
-
-→ **Nach Stufe 1: ~80% game-complete.** Einfache Spiele wie Space Invaders,
-  Breakout, Tetris (ohne Tile-Map) sind vollständig umsetzbar.
-
-### Stufe 2 — Hardware und Daten
-
-```
-M-SYS   Peek/Poke        Direkter Hardware-Zugriff — "Ausflucht nach unten"
-M-DATA  2D-Arrays        Tile-Maps, Spielfelder, Matrizen
-M-TYPE  Type-Strukturen  Game-Objekte — das wichtigste fehlende Feature für echte Spiele
-```
-
-→ **Nach Stufe 2: ~95% game-complete.** Tile-basierte Spiele, komplexe Game-Objects,
-  vollständige Hardware-Kontrolle möglich.
-
-### Stufe 3 — Hardware-Features und Musik
-
-```
-M10     Sprites          Hardware-Sprites (8 OCS, eigene Farben, keine CPU-Last)
-M10     Scrolling        BPLCON1 + MOD — klassischer Scrolltext, Parallax
-M-MOD   ProTracker       MOD-Player — echte Demo-Musik statt Sample-Loops
-```
-
-→ **Nach Stufe 3: 100% game- und demo-complete.**
-
----
-
-### Nicht umgesetzt (bewusste Entscheidung)
+## Nicht umgesetzt — bewusste Entscheidungen
 
 | Feature | Grund |
 |---------|-------|
-| `GoTo` / `GoSub` | Spaghetti-Code-Förderung; Functions + Exit reichen |
-| Floating-Point | 68000 ohne FPU — zu langsam für Echtzeit; Amiga-Spiele nutzen Fixed-Point |
+| `GoTo` / `GoSub` | Spaghetti-Code; Functions + Exit reichen |
+| Floating-Point | 68000 ohne FPU — zu langsam; Amiga-Spiele nutzen Fixed-Point |
 | String-Variablen (M11) | `Str$` + statische Strings decken 95% der Game-Anforderungen |
-| Dynamische Speicherverwaltung (`New`/`Delete`) | Heap auf Amiga ist komplex; statische Arrays + Type ausreichend |
-| Rekursion (tief) | Stack auf Amiga begrenzt; Algorithmen iterativ umsetzbar |
-| Register-Caching (PERF-C) | Nur nach vollständiger Sprache sinnvoll; minimaler Nutzen vs. Aufwand |
+| Dynamische Speicherverwaltung | Heap auf Amiga komplex; statische Arrays + Type ausreichend |
+| Kurzschluss-Auswertung (And/Or) | 68000 hat keinen Branch-Predictor — minimaler Vorteil |
+| Rekursion (tief) | Stack begrenzt; Algorithmen iterativ umsetzbar |
+
+---
+
+## Übersicht: Kritischer Pfad
+
+```
+✅ Kern + Grafik + Sound + Bitmaps + Funktionen + Arrays + Operatoren + Include + Asset Manager
+
+Stufe 1 — Sprach-Grundlagen:
+  [x] LANG-D   Rnd + Abs
+  [x] M9b      JoyUp/Down/Left/Right + Joyfire + KeyDown + MouseX/Y/Down/Hit
+  [x] LANG-C   Str$(n)
+  [x] LANG-F   Repeat + Exit
+  [x] LANG-E   Xor + Shl + Shr
+  → ~80% game-complete: Space Invaders, Breakout, Pong möglich
+
+Stufe 2 — Daten & Hardware:
+  [ ] M-SYS    Peek + Poke
+  [ ] M-BOB    DrawBob + SetBackground + Masken + _bg_restore_fn
+  [ ] M-SCROLL Ring-Buffer Tilemap + ScrollTilemap + _bg_restore_tilemap
+  [ ] M-DATA   2D-Arrays
+  [x] M-TYPE   Type-Strukturen
+  → ~95% game-complete: Tile-Platformer, komplexe Game-Objects
+
+Stufe 3 — Hardware-Features & Musik:
+  [ ] M10      Sprites + Scrolling
+  [ ] M-MOD    ProTracker
+  → 100% game- und demo-complete
+
+IDE-Tooling-Spur (parallel):
+  [x] TOOL-IDE-1   Budget-Bars CPU + Chip-RAM
+  [ ] TOOL-IDE-2   IDE-Gamification
+```

@@ -87,6 +87,7 @@ While 1
     EndIf
 
     DrawImage 0, b(i)\x And -16, b(i)\y
+    Plot MouseX(), MouseY()
   Next i
 
   ; History vorschieben — snapped Draw-x speichern, nicht Physics-x

@@ -8,6 +8,7 @@ import { PreProcessor } from './preprocessor.js';
 import { Lexer }        from './lexer.js';
 import { Parser }       from './parser.js';
 import { CodeGen }      from './codegen.js';
+import { analyzeBudget } from './budget.js';
 
 class BASSM {
 
@@ -136,8 +137,69 @@ function scheduleOutlineUpdate() {
     clearTimeout(_outlineTimer);
     _outlineTimer = setTimeout(() => {
         const ed = window._monacoEditor;
-        if (ed) renderOutline(buildOutline(ed.getValue()));
+        if (ed) {
+            renderOutline(buildOutline(ed.getValue()));
+        }
     }, 400);
+}
+
+// ── Budget bars ───────────────────────────────────────────────────────────────
+
+let _budgetTimer = null;
+function scheduleBudgetUpdate() {
+    clearTimeout(_budgetTimer);
+    _budgetTimer = setTimeout(() => {
+        const ed = window._monacoEditor;
+        if (ed) renderBudget(analyzeBudget(ed.getValue()));
+    }, 600);
+}
+
+function renderBudget(result) {
+    const cpuTrack = document.getElementById('budget-cpu-track');
+    const cpuFill  = document.getElementById('budget-cpu-fill');
+    const cpuPct   = document.getElementById('budget-cpu-pct');
+    const memTrack = document.getElementById('budget-mem-track');
+    const memFill  = document.getElementById('budget-mem-fill');
+    const memPct   = document.getElementById('budget-mem-pct');
+    const hint     = document.getElementById('budget-hint');
+
+    if (!result) {
+        cpuTrack.className  = 'budget-track';
+        cpuFill.style.width = '0%';
+        cpuPct.textContent  = '—';   cpuPct.className = 'budget-pct';
+        memTrack.className  = 'budget-track';
+        memFill.style.width = '0%';
+        memPct.textContent  = '—';   memPct.className = 'budget-pct';
+        hint.textContent    = '';
+        return;
+    }
+
+    const cpuRatio = result.cyclesUsed  / result.cyclesTotal;
+    const memRatio = result.chipRamUsed / result.chipRamTotal;
+    const cpuCls   = _budgetClass(cpuRatio);
+    const memCls   = _budgetClass(memRatio);
+
+    // Glow on track (outside overflow:hidden — not clipped)
+    cpuTrack.className  = 'budget-track ' + cpuCls;
+    cpuFill.style.width = Math.min(cpuRatio * 100, 100) + '%';
+    cpuPct.textContent  = '~' + Math.round(cpuRatio * 100) + '%';
+    cpuPct.className    = 'budget-pct ' + cpuCls;
+
+    memTrack.className  = 'budget-track ' + memCls;
+    memFill.style.width = Math.min(memRatio * 100, 100) + '%';
+    memPct.textContent  = '~' + Math.round(memRatio * 100) + '%' + (result.chipRamPlus ? '+' : '');
+    memPct.className    = 'budget-pct ' + memCls;
+
+    const warnings = [];
+    if (cpuRatio > 1.0) warnings.push('CPU overbudget');
+    if (memRatio > 1.0) warnings.push('CHIP RAM voll');
+    hint.textContent = warnings.join('  ');
+}
+
+function _budgetClass(ratio) {
+    if (ratio < 0.65) return 'ok';
+    if (ratio < 0.88) return 'warn';
+    return 'crit';
 }
 
 // ── Project Tree ──────────────────────────────────────────────────────────────
@@ -218,8 +280,13 @@ new ResizeObserver(updateEmulatorBounds)
 
 (function pollForEditor() {
     if (window._monacoEditor) {
-        window._monacoEditor.onDidChangeModelContent(scheduleOutlineUpdate);
-        renderOutline(buildOutline(window._monacoEditor.getValue()));
+        window._monacoEditor.onDidChangeModelContent(() => {
+            scheduleOutlineUpdate();
+            scheduleBudgetUpdate();
+        });
+        const src = window._monacoEditor.getValue();
+        renderOutline(buildOutline(src));
+        renderBudget(analyzeBudget(src));
     } else {
         setTimeout(pollForEditor, 50);
     }
