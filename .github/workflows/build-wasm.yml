@@ -39,7 +39,6 @@ jobs:
           mkdir -p dist-wasm
           cp emulator/vAmigaWeb/build/vAmiga.wasm dist-wasm/
           cp emulator/vAmigaWeb/build/vAmiga.js   dist-wasm/
-          cp emulator/vAmigaWeb/build/vAmiga.html dist-wasm/preview.html
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
