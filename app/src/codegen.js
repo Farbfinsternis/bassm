@@ -70,6 +70,8 @@ export class CodeGen {
         this._funcCtx       = null;       // non-null when generating a function body
         this._usesRnd       = false;      // true if any Rnd() call present
         this._usesMouse     = false;      // true if any MouseX/Y/Down/Hit used
+        this._usesBobs      = false;      // true if any DrawBob/SetBackground used
+        this._maskAssets    = new Map();  // index (int) → { filename, label }
         this._loopStack     = [];         // stack of endLabels for Exit — push on loop entry, pop on exit
 
         // ── Locate and validate the Graphics statement ────────────────────────
@@ -84,6 +86,9 @@ export class CodeGen {
 
         if (W !== 320) {
             throw new Error(`Graphics width ${W} not supported — only 320px lores OCS.`);
+        }
+        if (H < 1 || H > 256) {
+            throw new Error(`Graphics height ${H} out of range — must be 1–256 for OCS PAL lores.`);
         }
         if (D < 1 || D > 6) {
             throw new Error(`Graphics depth ${D} out of range — must be 1–6 bitplanes.`);
@@ -131,6 +136,9 @@ export class CodeGen {
             const maxLines = Math.min(H, 256 - vStart);
             out.push(`${pad('GFXRASTER',12)} EQU ${maxLines}`);
         }
+        if (this._usesBobs) {
+            out.push(`${pad('BOBS_MAX',12)} EQU 32`);
+        }
         out.push('');
 
         // Fragment INCLUDEs
@@ -154,8 +162,11 @@ export class CodeGen {
         if (this._usesSound) {
             out.push('        INCLUDE "sound.s"');
         }
-        if (this._usesImage) {
+        if (this._usesImage || this._usesBobs) {
             out.push('        INCLUDE "image.s"');
+        }
+        if (this._usesBobs) {
+            out.push('        INCLUDE "bobs.s"');
         }
         if (this._usesRnd) {
             out.push('        INCLUDE "rnd.s"');
@@ -340,6 +351,18 @@ export class CodeGen {
             out.push('');
         }
 
+        // ── Mask data (chip RAM, raw 1bpp transparency masks for DrawBob) ─────
+        // Format: raw bitplane-layout bytes, height × rowbytes bytes, no header.
+        // Must be in chip RAM (Blitter A channel pointer must be chip RAM).
+        for (const [, { filename, label: lbl }] of this._maskAssets) {
+            out.push(`        SECTION ${lbl}_sec,DATA_C`);
+            out.push(`        XDEF    ${lbl}`);
+            out.push(`${lbl}:`);
+            out.push(`        INCBIN  "${filename}"`);
+            out.push(`        EVEN`);
+            out.push('');
+        }
+
         return out.join('\n');
     }
 
@@ -352,6 +375,7 @@ export class CodeGen {
         return [
             ...[...this._audioSamples.values()].map(e => e.filename),
             ...[...this._imageAssets.values()].map(e => e.filename),
+            ...[...this._maskAssets.values()].map(e => e.filename),
         ];
     }
 
@@ -408,10 +432,51 @@ export class CodeGen {
                             // rowbytes: bytes per row, word-aligned
                             const rowbytes = Math.ceil(Math.ceil(width / 8) / 2) * 2;
                             this._imageAssets.set(idxArg.value, {
-                                filename: fileArg.value, label: lbl, width, height, rowbytes
+                                filename: fileArg.value, label: lbl, width, height, rowbytes,
+                                isAnim: false, frameCount: 1
                             });
                         }
                     }
+                }
+                if (stmt.name === 'loadanimimage') {
+                    // LoadAnimImage n,"f.raw",fw,fh,count — animated sprite strip
+                    // Same 8-byte header format as LoadImage; count is compile-time only.
+                    this._usesImage = true;
+                    const idxArg    = stmt.args[0];
+                    const fileArg   = stmt.args[1];
+                    const wArg      = stmt.args[2];
+                    const hArg      = stmt.args[3];
+                    const countArg  = stmt.args[4];
+                    if (idxArg?.type === 'int' && fileArg?.type === 'string' &&
+                        wArg?.type === 'int'   && hArg?.type  === 'int' &&
+                        countArg?.type === 'int') {
+                        if (!this._imageAssets.has(idxArg.value)) {
+                            const lbl        = `_img_${this._imageAssets.size}`;
+                            const width      = wArg.value;
+                            const height     = hArg.value;
+                            const frameCount = countArg.value;
+                            const rowbytes   = Math.ceil(Math.ceil(width / 8) / 2) * 2;
+                            this._imageAssets.set(idxArg.value, {
+                                filename: fileArg.value, label: lbl, width, height, rowbytes,
+                                isAnim: true, frameCount
+                            });
+                        }
+                    }
+                }
+                if (stmt.name === 'loadmask') {
+                    this._usesBobs = true;
+                    const idxArg  = stmt.args[0];
+                    const fileArg = stmt.args[1];
+                    if (idxArg?.type === 'int' && fileArg?.type === 'string') {
+                        if (!this._maskAssets.has(idxArg.value)) {
+                            const lbl = `_mask_${this._maskAssets.size}`;
+                            this._maskAssets.set(idxArg.value, { filename: fileArg.value, label: lbl });
+                        }
+                    }
+                }
+                if (stmt.name === 'setbackground' || stmt.name === 'drawbob') {
+                    this._usesBobs = true;
+                    this._usesImage = true;   // bobs.s calls _DrawImageFrame — image.s must be present
                 }
                 for (const arg of stmt.args) {
                     this._collectVarsInExpr(arg, varSet);
@@ -732,11 +797,18 @@ export class CodeGen {
                 }
                 break;
 
+            case 'loadanimimage':
+                // LoadAnimImage index,"f.raw",fw,fh,count — data only; INCBIN at end.
+                // No runtime code needed; frame count used only by codegen for DrawImage/DrawBob.
+                break;
+
             case 'drawimage': {
-                // DrawImage index, x, y
+                // DrawImage index, x, y [, frame]
                 //   index must be an integer literal (resolved at compile time)
-                //   x, y may be any expression
-                // Calling convention: a0=img_ptr, d0=x, d1=y → jsr _DrawImage
+                //   x, y, frame may be any expression
+                //   frame (optional, default 0) — requires LoadAnimImage
+                // Convention: a0=imgptr, d0=x, d1=y → jsr _DrawImage  (frame 0)
+                //             a0=imgptr, d0=x, d1=y, d2=frame → jsr _DrawImageFrame
                 const imgIdxArg = stmt.args[0];
                 if (!imgIdxArg || imgIdxArg.type !== 'int')
                     throw new Error(`DrawImage: index must be an integer literal (line ${stmt.line})`);
@@ -744,16 +816,40 @@ export class CodeGen {
                 if (!imgEntry)
                     throw new Error(`DrawImage: image index ${imgIdxArg.value} not loaded — use LoadImage first (line ${stmt.line})`);
 
-                const xExpr = stmt.args[1] ?? { type: 'int', value: 0 };
-                const yExpr = stmt.args[2] ?? { type: 'int', value: 0 };
+                const xExpr    = stmt.args[1] ?? { type: 'int', value: 0 };
+                const yExpr    = stmt.args[2] ?? { type: 'int', value: 0 };
+                const frameArg = stmt.args[3]; // undefined = no frame argument
 
-                // Evaluate y first, push, then evaluate x → d0, pop y → d1
-                this._genExpr(yExpr, lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExpr(xExpr, lines);
-                lines.push('        move.l  (sp)+,d1');
-                lines.push(`        lea     ${imgEntry.label},a0`);
-                lines.push('        jsr     _DrawImage');
+                if (!frameArg) {
+                    // Original 3-arg path — jsr _DrawImage (clears d2 internally)
+                    this._genExpr(yExpr, lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExpr(xExpr, lines);
+                    lines.push('        move.l  (sp)+,d1');
+                    lines.push(`        lea     ${imgEntry.label},a0`);
+                    lines.push('        jsr     _DrawImage');
+                } else if (frameArg.type === 'int') {
+                    // Literal frame — moveq #N,d2  (zero Laufzeit-Overhead für N=0..7)
+                    this._genExpr(yExpr, lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExpr(xExpr, lines);
+                    lines.push('        move.l  (sp)+,d1');
+                    lines.push(`        moveq   #${frameArg.value},d2`);
+                    lines.push(`        lea     ${imgEntry.label},a0`);
+                    lines.push('        jsr     _DrawImageFrame');
+                } else {
+                    // Variable frame — eval frame→push, eval y→push, eval x→d0
+                    // pop y→d1, pop frame→d2
+                    this._genExpr(frameArg, lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExpr(yExpr, lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExpr(xExpr, lines);
+                    lines.push('        move.l  (sp)+,d1');
+                    lines.push('        move.l  (sp)+,d2');
+                    lines.push(`        lea     ${imgEntry.label},a0`);
+                    lines.push('        jsr     _DrawImageFrame');
+                }
                 break;
             }
 
@@ -834,6 +930,7 @@ export class CodeGen {
             }
 
             case 'screenflip':
+                if (this._usesBobs) lines.push('        jsr     _FlushBobs');
                 lines.push('        jsr     _ScreenFlip');
                 break;
 
@@ -1036,6 +1133,113 @@ export class CodeGen {
                 this._genExprArg(stmt, 0, 'Box x', lines);
                 lines.push('        movem.l (sp)+,d1-d3');
                 lines.push('        jsr     _Box');
+                break;
+            }
+
+            case 'pokeb':
+            case 'pokew':
+            case 'pokel':
+            case 'poke': {
+                // PokeB/W/L addr, val — write byte/word/longword to arbitrary address.
+                // Poke is an alias for PokeL (Blitz2D convention).
+                //
+                // Three codegen paths (fastest to most general):
+                //   1. Both literal → move.sz #val,$ADDR          (single instruction)
+                //   2. Literal addr → eval val→d0, move.sz d0,$ADDR
+                //   3. Runtime addr → eval addr→d0, push; eval val→d0; pop→a0; move.sz d0,(a0)
+                const sz      = stmt.name === 'pokeb' ? 'b' : stmt.name === 'pokew' ? 'w' : 'l';
+                const addrArg = stmt.args[0] ?? { type: 'int', value: 0 };
+                const valArg  = stmt.args[1] ?? { type: 'int', value: 0 };
+                if (addrArg.type === 'int' && valArg.type === 'int') {
+                    // Path 1: both literal — single instruction
+                    const hex = '$' + (addrArg.value >>> 0).toString(16).toUpperCase();
+                    lines.push(`        move.${sz}  #${valArg.value},${hex}`);
+                } else if (addrArg.type === 'int') {
+                    // Path 2: literal addr, runtime val — eval val, absolute store
+                    const hex = '$' + (addrArg.value >>> 0).toString(16).toUpperCase();
+                    this._genExprArg(stmt, 1, `Poke${sz.toUpperCase()} val`, lines);
+                    lines.push(`        move.${sz}  d0,${hex}`);
+                } else {
+                    // Path 3: runtime addr — save addr on stack, eval val, pop addr→a0
+                    this._genExpr(addrArg, lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExprArg(stmt, 1, `Poke${sz.toUpperCase()} val`, lines);
+                    lines.push('        move.l  (sp)+,a0');
+                    lines.push(`        move.${sz}  d0,(a0)`);
+                }
+                break;
+            }
+
+            case 'setbackground': {
+                // SetBackground index — register a full-screen image as the background.
+                // _SetBackground(a0=imgptr) computes _bg_bpl_ptr and installs _bg_restore_static.
+                const idxArg = stmt.args[0];
+                if (!idxArg || idxArg.type !== 'int')
+                    throw new Error(`SetBackground: index must be an integer literal (line ${stmt.line})`);
+                const bgEntry = this._imageAssets.get(idxArg.value);
+                if (!bgEntry)
+                    throw new Error(`SetBackground: image index ${idxArg.value} not loaded — use LoadImage first (line ${stmt.line})`);
+                lines.push(`        lea     ${bgEntry.label},a0`);
+                lines.push('        jsr     _SetBackground');
+                break;
+            }
+
+            case 'loadmask':
+                // LoadMask index, "file.mask" — registered in _collectVars; no runtime code.
+                break;
+
+            case 'drawbob': {
+                // DrawBob index, x, y [, frame]
+                //   index must be an integer literal
+                //   x, y, frame may be any expression; frame defaults to 0
+                // Calling convention: _AddBob(a0=imgptr, a1=maskptr|0, d0=x, d1=y, d2=frame)
+                const idxArg = stmt.args[0];
+                if (!idxArg || idxArg.type !== 'int')
+                    throw new Error(`DrawBob: index must be an integer literal (line ${stmt.line})`);
+                const imgEntry = this._imageAssets.get(idxArg.value);
+                if (!imgEntry)
+                    throw new Error(`DrawBob: image index ${idxArg.value} not loaded — use LoadImage first (line ${stmt.line})`);
+                const maskEntry = this._maskAssets.get(idxArg.value);
+
+                const xExpr    = stmt.args[1] ?? { type: 'int', value: 0 };
+                const yExpr    = stmt.args[2] ?? { type: 'int', value: 0 };
+                const frameArg = stmt.args[3]; // undefined = no frame (default 0)
+
+                // _AddBob always needs d2=frame.  For the no-frame / frame-0 path,
+                // evaluate y→push, x→d0, pop y→d1, then moveq #0,d2 (1 instruction).
+                // For a variable frame, push frame first, then y, then x, pop into d1/d2.
+                if (!frameArg || (frameArg.type === 'int' && frameArg.value === 0)) {
+                    // Common path: no frame or literal 0
+                    this._genExpr(yExpr, lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExpr(xExpr, lines);
+                    lines.push('        move.l  (sp)+,d1');
+                    lines.push('        moveq   #0,d2');
+                } else if (frameArg.type === 'int') {
+                    // Literal non-zero frame
+                    this._genExpr(yExpr, lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExpr(xExpr, lines);
+                    lines.push('        move.l  (sp)+,d1');
+                    lines.push(`        moveq   #${frameArg.value},d2`);
+                } else {
+                    // Variable frame — push frame, push y, eval x→d0, pop y→d1, pop frame→d2
+                    this._genExpr(frameArg, lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExpr(yExpr, lines);
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExpr(xExpr, lines);
+                    lines.push('        move.l  (sp)+,d1');
+                    lines.push('        move.l  (sp)+,d2');
+                }
+                // Set a0/a1 AFTER expression eval (_genExpr uses a0 internally)
+                lines.push(`        lea     ${imgEntry.label},a0`);
+                if (maskEntry) {
+                    lines.push(`        lea     ${maskEntry.label},a1`);
+                } else {
+                    lines.push('        move.l  #0,a1');
+                }
+                lines.push('        jsr     _AddBob');
                 break;
             }
 
@@ -1590,6 +1794,189 @@ export class CodeGen {
                 if (expr.name === 'str$') {
                     this._genExpr(expr.args[0] ?? { type: 'int', value: 0 }, lines);
                     lines.push('        jsr     _IntToStr');    // d0 = string ptr
+                    break;
+                }
+
+                // ── PeekB/PeekW/PeekL(addr) — direct memory/hardware read ───────
+                // All three sizes are fully inlined (no fragment needed).
+                // Literal addr: direct absolute addressing (1–2 instructions).
+                // Runtime addr: eval addr→d0, load into a0, then read via (a0).
+                // PeekB zero-extends (0–255); PeekW sign-extends; PeekL full 32-bit.
+                {
+                    const peekSz = { peekb: 'b', peekw: 'w', peekl: 'l' };
+                    if (Object.prototype.hasOwnProperty.call(peekSz, expr.name)) {
+                        const sz      = peekSz[expr.name];
+                        const addrArg = expr.args[0] ?? { type: 'int', value: 0 };
+                        if (addrArg.type === 'int') {
+                            const hex = '$' + (addrArg.value >>> 0).toString(16).toUpperCase();
+                            if (sz === 'b') {
+                                lines.push('        moveq   #0,d0');
+                                lines.push(`        move.b  ${hex},d0`);
+                            } else if (sz === 'w') {
+                                lines.push(`        move.w  ${hex},d0`);
+                                lines.push('        ext.l   d0');
+                            } else {
+                                lines.push(`        move.l  ${hex},d0`);
+                            }
+                        } else {
+                            this._genExpr(addrArg, lines);
+                            lines.push('        move.l  d0,a0');
+                            if (sz === 'b') {
+                                lines.push('        moveq   #0,d0');
+                                lines.push('        move.b  (a0),d0');
+                            } else if (sz === 'w') {
+                                lines.push('        move.w  (a0),d0');
+                                lines.push('        ext.l   d0');
+                            } else {
+                                lines.push('        move.l  (a0),d0');
+                            }
+                        }
+                        break;
+                    }
+                }
+
+                // ── RectsOverlap(x1,y1,w1,h1, x2,y2,w2,h2) → -1/0 ─────────────
+                // Pure inline AABB test.  No fragment, no JSR.
+                // Push all 8 args; movem.l (sp)+,d0-d7 loads them in reverse:
+                //   d0=h2  d1=w2  d2=y2  d3=x2  d4=h1  d5=w1  d6=y1  d7=x1
+                // a1 saves x1 across test1→test2; a2 saves y1 across test3→test4.
+                if (expr.name === 'rectsoverlap') {
+                    if (expr.args.length < 8)
+                        throw new Error('RectsOverlap: requires 8 arguments (x1,y1,w1,h1,x2,y2,w2,h2)');
+                    for (const arg of expr.args) {
+                        this._genExpr(arg, lines);
+                        lines.push('        move.l  d0,-(sp)');
+                    }
+                    lines.push('        movem.l (sp)+,d0-d7');
+                    // d0=h2, d1=w2, d2=y2, d3=x2, d4=h1, d5=w1, d6=y1, d7=x1
+                    const rfLbl = this._nextLabel();
+                    const reLbl = this._nextLabel();
+                    lines.push('        move.l  d7,a1');       // a1 = x1
+                    lines.push('        add.l   d5,d7');       // d7 = x1+w1
+                    lines.push('        cmp.l   d3,d7');       // x1+w1 vs x2
+                    lines.push(`        ble.s   ${rfLbl}`);
+                    lines.push('        add.l   d1,d3');       // d3 = x2+w2
+                    lines.push('        cmp.l   a1,d3');       // x2+w2 vs x1
+                    lines.push(`        ble.s   ${rfLbl}`);
+                    lines.push('        move.l  d6,a2');       // a2 = y1
+                    lines.push('        add.l   d4,d6');       // d6 = y1+h1
+                    lines.push('        cmp.l   d2,d6');       // y1+h1 vs y2
+                    lines.push(`        ble.s   ${rfLbl}`);
+                    lines.push('        add.l   d0,d2');       // d2 = y2+h2
+                    lines.push('        cmp.l   a2,d2');       // y2+h2 vs y1
+                    lines.push(`        ble.s   ${rfLbl}`);
+                    lines.push('        moveq   #-1,d0');
+                    lines.push(`        bra.s   ${reLbl}`);
+                    lines.push(`${rfLbl}:`);
+                    lines.push('        moveq   #0,d0');
+                    lines.push(`${reLbl}:`);
+                    break;
+                }
+
+                // ── ImagesOverlap(img1,x1,y1, img2,x2,y2) → -1/0 ───────────────
+                // Reads w/h from image headers (compile-time labels); then same
+                // inline AABB as RectsOverlap.
+                // Push x2,y2,x1,y1; movem→d0-d3 (d0=y1,d1=x1,d2=y2,d3=x2? no ↓)
+                //   push order: x1,y1,x2,y2 → d0=y2,d1=x2,d2=y1,d3=x1
+                //   d4=w1,d5=h1,d6=w2,d7=h2 from headers.
+                if (expr.name === 'imagesoverlap') {
+                    if (expr.args.length < 6)
+                        throw new Error('ImagesOverlap: requires 6 arguments (img1,x1,y1,img2,x2,y2)');
+                    const idx1a = expr.args[0], idx2a = expr.args[3];
+                    if (!idx1a || idx1a.type !== 'int')
+                        throw new Error('ImagesOverlap: arg 0 (img1) must be an integer literal');
+                    if (!idx2a || idx2a.type !== 'int')
+                        throw new Error('ImagesOverlap: arg 3 (img2) must be an integer literal');
+                    const ast1 = this._imageAssets.get(idx1a.value);
+                    const ast2 = this._imageAssets.get(idx2a.value);
+                    if (!ast1) throw new Error(`ImagesOverlap: no image at index ${idx1a.value}`);
+                    if (!ast2) throw new Error(`ImagesOverlap: no image at index ${idx2a.value}`);
+                    // Push x1, y1, x2, y2 (in that order → d0=y2, d1=x2, d2=y1, d3=x1)
+                    for (const argIdx of [1, 2, 4, 5]) {
+                        this._genExpr(expr.args[argIdx], lines);
+                        lines.push('        move.l  d0,-(sp)');
+                    }
+                    lines.push('        movem.l (sp)+,d0-d3');
+                    // d0=y2, d1=x2, d2=y1, d3=x1 — load dims from headers
+                    lines.push(`        move.w  ${ast1.label}+0,d4`);
+                    lines.push('        ext.l   d4');           // d4 = w1
+                    lines.push(`        move.w  ${ast1.label}+2,d5`);
+                    lines.push('        ext.l   d5');           // d5 = h1
+                    lines.push(`        move.w  ${ast2.label}+0,d6`);
+                    lines.push('        ext.l   d6');           // d6 = w2
+                    lines.push(`        move.w  ${ast2.label}+2,d7`);
+                    lines.push('        ext.l   d7');           // d7 = h2
+                    // AABB: x1+w1>x2 AND x2+w2>x1 AND y1+h1>y2 AND y2+h2>y1
+                    const ifLbl = this._nextLabel();
+                    const ieLbl = this._nextLabel();
+                    lines.push('        move.l  d3,a1');       // a1 = x1
+                    lines.push('        add.l   d4,d3');       // d3 = x1+w1
+                    lines.push('        cmp.l   d1,d3');       // x1+w1 vs x2
+                    lines.push(`        ble.s   ${ifLbl}`);
+                    lines.push('        add.l   d6,d1');       // d1 = x2+w2
+                    lines.push('        cmp.l   a1,d1');       // x2+w2 vs x1
+                    lines.push(`        ble.s   ${ifLbl}`);
+                    lines.push('        move.l  d2,a2');       // a2 = y1
+                    lines.push('        add.l   d5,d2');       // d2 = y1+h1
+                    lines.push('        cmp.l   d0,d2');       // y1+h1 vs y2
+                    lines.push(`        ble.s   ${ifLbl}`);
+                    lines.push('        add.l   d7,d0');       // d0 = y2+h2
+                    lines.push('        cmp.l   a2,d0');       // y2+h2 vs y1
+                    lines.push(`        ble.s   ${ifLbl}`);
+                    lines.push('        moveq   #-1,d0');
+                    lines.push(`        bra.s   ${ieLbl}`);
+                    lines.push(`${ifLbl}:`);
+                    lines.push('        moveq   #0,d0');
+                    lines.push(`${ieLbl}:`);
+                    break;
+                }
+
+                // ── ImageRectOverlap(img,x,y, rx,ry,rw,rh) → -1/0 ──────────────
+                // img w/h from header; rect dims from args; same inline AABB.
+                // Push x,y,rx,ry,rw,rh (6 exprs) → movem→d0-d5:
+                //   d0=rh, d1=rw, d2=ry, d3=rx, d4=y, d5=x
+                //   d6=img_w, d7=img_h from header.
+                if (expr.name === 'imagerectoverlap') {
+                    if (expr.args.length < 7)
+                        throw new Error('ImageRectOverlap: requires 7 arguments (img,x,y,rx,ry,rw,rh)');
+                    const imgIdxA = expr.args[0];
+                    if (!imgIdxA || imgIdxA.type !== 'int')
+                        throw new Error('ImageRectOverlap: arg 0 (img) must be an integer literal');
+                    const imgAst = this._imageAssets.get(imgIdxA.value);
+                    if (!imgAst) throw new Error(`ImageRectOverlap: no image at index ${imgIdxA.value}`);
+                    // Push x,y,rx,ry,rw,rh in order (→ d0=rh,d1=rw,d2=ry,d3=rx,d4=y,d5=x)
+                    for (const argIdx of [1, 2, 3, 4, 5, 6]) {
+                        this._genExpr(expr.args[argIdx], lines);
+                        lines.push('        move.l  d0,-(sp)');
+                    }
+                    lines.push('        movem.l (sp)+,d0-d5');
+                    // d0=rh, d1=rw, d2=ry, d3=rx, d4=y, d5=x — load img dims
+                    lines.push(`        move.w  ${imgAst.label}+0,d6`);
+                    lines.push('        ext.l   d6');           // d6 = img_w
+                    lines.push(`        move.w  ${imgAst.label}+2,d7`);
+                    lines.push('        ext.l   d7');           // d7 = img_h
+                    // AABB: x+w>rx AND rx+rw>x AND y+h>ry AND ry+rh>y
+                    const ioLbl = this._nextLabel();
+                    const ioELbl = this._nextLabel();
+                    lines.push('        move.l  d5,a1');       // a1 = x
+                    lines.push('        add.l   d6,d5');       // d5 = x+img_w
+                    lines.push('        cmp.l   d3,d5');       // x+w vs rx
+                    lines.push(`        ble.s   ${ioLbl}`);
+                    lines.push('        add.l   d1,d3');       // d3 = rx+rw
+                    lines.push('        cmp.l   a1,d3');       // rx+rw vs x
+                    lines.push(`        ble.s   ${ioLbl}`);
+                    lines.push('        move.l  d4,a2');       // a2 = y
+                    lines.push('        add.l   d7,d4');       // d4 = y+img_h
+                    lines.push('        cmp.l   d2,d4');       // y+h vs ry
+                    lines.push(`        ble.s   ${ioLbl}`);
+                    lines.push('        add.l   d0,d2');       // d2 = ry+rh
+                    lines.push('        cmp.l   a2,d2');       // ry+rh vs y
+                    lines.push(`        ble.s   ${ioLbl}`);
+                    lines.push('        moveq   #-1,d0');
+                    lines.push(`        bra.s   ${ioELbl}`);
+                    lines.push(`${ioLbl}:`);
+                    lines.push('        moveq   #0,d0');
+                    lines.push(`${ioELbl}:`);
                     break;
                 }
 

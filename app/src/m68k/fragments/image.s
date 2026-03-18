@@ -71,10 +71,13 @@
 ;
 ; CODEGEN CONTRACT
 ;   Eval y → d0 → push; eval x → d0; pop y → d1; lea _img_N,a0; jsr _DrawImage
+;   For animated images (frame ≠ 0): set d2=frame, then jsr _DrawImageFrame
 ;
-;   On entry:   d0.l = x  (pixel x, must be WORD-aligned: x%16 == 0)
-;               d1.l = y  (pixel y)
-;               a0   = pointer to image data (header + bitplane data)
+;   On entry (_DrawImage):      d0.l=x, d1.l=y, a0=imgptr  (frame 0)
+;   On entry (_DrawImageFrame): d0.l=x, d1.l=y, a0=imgptr, d2.l=frame
+;
+;   NOTE: frame_size = depth × height × rowbytes must be < 65536 bytes.
+;   This holds for all practical animated sprites (e.g. 64×64×5 = 2560 bytes).
 ;
 ; ── REGISTER CONVENTION ─────────────────────────────────────────────────────
 ;   a5 = $DFF000  (established by startup.s — must not be changed)
@@ -84,90 +87,101 @@
         SECTION image_code,CODE
 
 
-; ── _DrawImage ────────────────────────────────────────────────────────────────
+; ── _DrawImage / _DrawImageFrame ─────────────────────────────────────────────
 ;
-; Blits a planar image to the current back buffer using the Blitter (A→D copy).
+; Blits one frame of a planar image to the current back buffer (Blitter A→D).
 ;
-; Args:   d0.l = x  (pixel position, must be byte-aligned)
+; _DrawImage      — draws frame 0, backward-compatible (ignores d2)
+; _DrawImageFrame — draws frame d2 (0 = first frame, same result as _DrawImage)
+;
+; Args:   d0.l = x  (pixel position, must be WORD-aligned: x%16 == 0)
 ;         d1.l = y
-;         a0   = pointer to image data (8-byte header + bitplane data)
+;         a0   = pointer to image data (8-byte header + palette + bitplane data)
+;         d2.l = frame index  (_DrawImageFrame only; _DrawImage sets d2=0)
 ; Trashes: nothing (saves/restores d0-d7/a0-a3)
 
         XDEF    _DrawImage
+        XDEF    _DrawImageFrame
+
 _DrawImage:
+        clr.l   d2                  ; frame 0 — fall through to _DrawImageFrame
+
+_DrawImageFrame:
         movem.l d0-d7/a0-a3,-(sp)
 
-        ; ── Read header ───────────────────────────────────────────────────────
-        ;   d3 = width  (pixels — not needed for blitter, skip)
+        ; ── Read 8-byte header ────────────────────────────────────────────────
+        ;   d3 = width  (scratch — will be reused for frame-offset computation)
         ;   d4 = height
         ;   d5 = depth
         ;   d6 = rowbytes
-        move.w  (a0)+,d3            ; width (unused after this)
-        move.w  (a0)+,d4            ; height
-        move.w  (a0)+,d5            ; depth
-        move.w  (a0)+,d6            ; rowbytes
+        move.w  (a0)+,d3            ; d3.w = width  (scratch; overwritten below)
+        move.w  (a0)+,d4            ; d4.w = height
+        move.w  (a0)+,d5            ; d5.w = depth
+        move.w  (a0)+,d6            ; d6.w = rowbytes
         ; a0 now points to the embedded palette block — skip it.
-        ; Palette size = (1 << depth) * 2 bytes.  Use d7 (free until plane_size below).
         moveq   #1,d7
-        lsl.l   d5,d7               ; d7 = 1 << depth  (number of palette entries)
-        add.l   d7,d7               ; d7 *= 2           (byte count)
-        add.l   d7,a0               ; a0 = start of bitplane data
+        lsl.l   d5,d7               ; d7 = 1 << depth
+        add.l   d7,d7               ; d7 = palette bytes
+        add.l   d7,a0               ; a0 = bitplane-0 data start (frame 0)
 
-        ; ── Source plane size = height * rowbytes ─────────────────────────────
+        ; ── Plane size = height × rowbytes ────────────────────────────────────
         move.w  d4,d7
-        mulu.w  d6,d7               ; d7.l = plane_size (fits 32-bit for h<1024, rb<64)
+        mulu.w  d6,d7               ; d7.l = plane_size
+
+        ; ── Frame offset = d2 × depth × plane_size ───────────────────────────
+        ; Uses d3 (width no longer needed) as scratch.
+        ; frame_size = depth × plane_size  (must fit in 16 bits — see note above)
+        move.w  d5,d3               ; d3.w = depth
+        mulu.w  d7,d3               ; d3.l = depth × plane_size = frame_size_bytes
+        mulu.w  d2,d3               ; d3.l = frame × frame_size_bytes = frame_offset
+        add.l   d3,a0               ; a0 = bitplane-0 data start for frame d2
 
         ; ── BLTSIZE = (height << 6) | (rowbytes >> 1) ────────────────────────
         move.w  d4,d2
         lsl.w   #6,d2               ; d2 = height << 6
         move.w  d6,d3
-        lsr.w   #1,d3               ; d3 = rowbytes / 2  (words per row)
+        lsr.w   #1,d3               ; d3 = rowbytes / 2
         or.w    d3,d2               ; d2.w = BLTSIZE
 
         ; ── Destination pointer: _back_planes_ptr + y*GFXBPR + x/8 ───────────
-        move.l  _back_planes_ptr,a2 ; a2 = back buffer base (plane 0)
-        mulu.w  #GFXBPR,d1          ; d1 = y * GFXBPR  (≤ 255*40 = 10200, fits 32-bit)
-        add.l   d1,a2               ; a2 += y * GFXBPR
-        lsr.l   #3,d0               ; d0 = x / 8 (byte offset)
-        add.l   d0,a2               ; a2 = dest in plane 0 at (x,y)
+        move.l  _back_planes_ptr,a2
+        mulu.w  #GFXBPR,d1          ; d1 = y × GFXBPR
+        add.l   d1,a2
+        lsr.l   #3,d0               ; d0 = x / 8
+        add.l   d0,a2               ; a2 = dest in plane-0 at (x,y)
 
         ; ── BLTDMOD = GFXBPR - rowbytes ──────────────────────────────────────
         move.w  #GFXBPR,d3
         sub.w   d6,d3               ; d3.w = BLTDMOD
 
-        ; ── Plane loop (depth planes) ─────────────────────────────────────────
+        ; ── Plane loop ────────────────────────────────────────────────────────
         subq.w  #1,d5               ; depth - 1 for dbra
 .plane_loop:
         jsr     _WaitBlit
 
-        ; BLTCON0 = $09F0: USEA | USED | minterm $F0 (D = A — simple copy)
-        move.w  #$09F0,BLTCON0(a5)
+        move.w  #$09F0,BLTCON0(a5)  ; USEA | USED | minterm $F0 (D = A)
         clr.w   BLTCON1(a5)
         move.w  #$FFFF,BLTAFWM(a5)
         move.w  #$FFFF,BLTALWM(a5)
-        clr.w   BLTAMOD(a5)         ; source rows are packed — no gap
-        move.w  d3,BLTDMOD(a5)      ; destination modulo
+        clr.w   BLTAMOD(a5)
+        move.w  d3,BLTDMOD(a5)
 
-        ; A source pointer (write high word first, then low)
         move.l  a0,d0
         swap    d0
         move.w  d0,BLTAPTH(a5)
         swap    d0
         move.w  d0,BLTAPTL(a5)
 
-        ; D destination pointer
         move.l  a2,d0
         swap    d0
         move.w  d0,BLTDPTH(a5)
         swap    d0
         move.w  d0,BLTDPTL(a5)
 
-        ; BLTSIZE write starts the blit
         move.w  d2,BLTSIZE(a5)
 
-        ; Advance to next plane
-        add.l   d7,a0               ; source: next plane data
-        add.l   #GFXPSIZE,a2        ; destination: next screen plane
+        add.l   d7,a0               ; advance: next source plane
+        add.l   #GFXPSIZE,a2        ; advance: next screen plane
 
         dbra    d5,.plane_loop
 

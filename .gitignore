@@ -6,3 +6,6 @@ Thumbs.db
 out/
 site/
 EMULATOR.md
+CHANGELOG.dev.md
+examples/**/*.s
+examples/**/*.exe

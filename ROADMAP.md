@@ -37,6 +37,11 @@
 | **LANG-D** Rnd + Abs | `Rnd(n)` Xorshift32 via `rnd.s`; `Abs(n)` inline 3-Instr.; beide als `call_expr`-Builtins |
 | **LANG-E** Xor / Shl / Shr | Bitweises XOR (`eori.l`/`eor.l`), Linksshift (`lsl.l`), arithmetischer Rechtsshift (`asr.l`); Präzedenz Xor=Or, Shl/Shr=Mul |
 | **TOOL-IDE Budget** | CPU-Cycle + Chip-RAM Lebensbalken im Editor; `budget.js` statische Analyse; Hauptloop-Erkennung; For-Multiplikation; Gradient-Bars grün→rot mit Glow-Effekt |
+| **PERF-PEEP** Peephole-Optimizer | 5 Regeln (Text-basiert, Sliding Window, Multi-Pass bis stabil): R1 Store-Reload, R2 `cmp.l #0→tst.l`, R3 For-Doppel-Load, R4 Binop-Push-Pop→direkter Speicheroperand, R5 2-Arg-Push-Pop; Safety: Label-Guards; ~5% Einsparung/Frame für boing.s |
+| **M-SYS** Peek / Poke | `PeekB/W/L(addr)` inline (literal→direkt, runtime→via a0); `PokeB/W/L/Poke addr,val` mit 3-Pfad-Optimierung (beide literal → 1 Instr.; literal addr → eval+absolut-Store; runtime addr → push/eval/pop→a0); vollständig inline, kein Fragment |
+| **M-BOB** Blitter Objects | `SetBackground imgIdx`, `LoadMask imgIdx,"f.mask"`, `DrawBob imgIdx,x,y`; `bobs.s` mit 3-Queue-System (_bobs_new/_old_a/_old_b); `_FlushBobs` auto-injiziert vor ScreenFlip; `_bg_restore_static` (BLTCON0=$09F0); `_BltBobMasked` (BLTCON0=$0FCA, Minterm $CA); Fallback auf `_DrawImage` ohne Maske |
+| **M-COLL** Kollisionserkennung | `RectsOverlap(x1,y1,w1,h1,x2,y2,w2,h2)`, `ImagesOverlap(img1,x1,y1,img2,x2,y2)`, `ImageRectOverlap(img,x,y,rx,ry,rw,rh)`; alle vollständig inline; 8/4/6 Args per Stack + movem; Header-Dimensionen zur Compile-Time; a1/a2 als Scratch |
+| **M-ANIM** Sprite-Animation | `LoadAnimImage n,"f.raw",fw,fh,count`; `DrawImage n,x,y,frame` (optional); `DrawBob n,x,y,frame` (optional); `_DrawImageFrame(d2=frame)` + `_DrawImageFrame` Fall-Through in image.s; `_BltBobMaskedFrame(d2=frame)` in bobs.s; Bob-Slot 12→16 Bytes; Frame-Offset = `frame×depth×plane_size`; Restore-Pass frame-agnostisch |
 
 ---
 
@@ -195,25 +200,30 @@ PokeL  $DFF040, bltcon            ; Blitter-Control direkt
 PokeB  $BFE001, PeekB($BFE001) And %11111110
 ```
 
-- `[ ]` **`PeekB/PeekW/PeekL(addr)`** — liest 1/2/4 Bytes von Adresse
-  - CodeGen: `move.l addr_expr,a0 / move.b/w/l (a0),d0`; kein Fragment
-- `[ ]` **`PokeB/PokeW/PokeL addr, val`** — schreibt Bytes
-  - CodeGen: `move.l addr,a0 / move.l val,d0 / move.b/w/l d0,(a0)`; inline
-- `[ ]` `Poke addr, val` als Alias für `PokeL` (Blitz2D-Kompatibilität)
+- `[x]` **`PeekB/PeekW/PeekL(addr)`** — liest 1/2/4 Bytes von Adresse
+  - Literal addr: direkte absolute Adressierung (1–2 Instruktionen, kein a0)
+  - Runtime addr: eval→d0, `move.l d0,a0`, dann `move.sz (a0),d0`
+  - PeekB: zero-extend (0–255); PeekW: sign-extend (`ext.l`); PeekL: volle 32 Bit; kein Fragment
+- `[x]` **`PokeB/PokeW/PokeL addr, val`** — schreibt Bytes/Word/Long
+  - Beide literal → `move.sz #val,$ADDR` (1 Instruktion)
+  - Literal addr + runtime val → eval val→d0, `move.sz d0,$ADDR`
+  - Runtime addr → eval addr→d0, push; eval val→d0; pop→a0; `move.sz d0,(a0)`
+- `[x]` `Poke addr, val` als Alias für `PokeL` (Blitz2D-Kompatibilität)
 
 > Mit Peek/Poke kann der Programmierer alles ansprechen, was BASSM noch nicht abstrahiert —
 > kein Feature-Blocker mehr, sobald diese zwei Befehle vorhanden sind.
 
 ---
 
-### 7. M-BOB — Blitter Objects *(Bewegliche Objekte über Hintergrund)*
+### ✅ 7. M-BOB — Blitter Objects *(Bewegliche Objekte über Hintergrund)*
 
 ```blitz
-LoadImage 0, "bg.raw",     320, 256  ; Hintergrund (bg_buffer)
-LoadImage 1, "player.raw",  32,  32  ; Bob — player.mask wird automatisch gesucht
-LoadImage 2, "deer.raw",    24,  24  ; Bob — ohne Mask-Datei: Color 0 = transparent
+LoadImage 0, "bg.raw",     320, 256  ; Hintergrund
+LoadImage 1, "player.raw",  32,  32  ; Bob — ohne Maske: Direct-Copy
+LoadMask  1, "player.mask"            ; optionale 1-bpp Transparenzmaske
+LoadImage 2, "deer.raw",    24,  24  ; Bob — ohne Maske
 
-SetBackground 0, 0, 0   ; Image 0 ist der statische Hintergrund
+SetBackground 0      ; Image 0 ist der statische Hintergrund
 
 While 1
     DrawBob 1, px, py   ; Hintergrund automatisch gesichert/wiederhergestellt
@@ -222,25 +232,113 @@ While 1
 Wend
 ```
 
-- `[ ]` **`SetBackground imgIdx, x, y`** — erklärt ein Image zum read-only `bg_buffer`
-  - Installiert `_bg_restore_static` in `_bg_restore_fn`; bg_buffer = Chip-RAM-Adresse des Image
-- `[ ]` **`DrawBob imgIdx, x, y`** — Eintrag in Bob-Queue (Größe = Anzahl `DrawBob`-Aufrufe im Source)
-- `[ ]` **Automatische Maske** — `img.raw` → suche `img.mask` im Projektordner
-  - Vorhanden: beide als INCBIN DATA_C; Masked Blit `D = (A AND B) OR (NOT A AND C)`
-  - Nicht vorhanden: Startup-Blitter-Pass OR aller Planes → 1-Plane-Maske in BSS_C
-  - A-MGR-Workflow: PNG-Import erzeugt `img.mask` automatisch aus Alpha-Kanal
-- `[ ]` **`bobs.s`** — Bob-Queue + `_FlushBobs` + **`_bg_restore_fn`-Mechanismus**
-  - `_bg_restore_fn: dc.l 0` — Funktionszeiger, gleiche Signatur `(d0=x, d1=y, d2=w, d3=h)`
-  - `_FlushBobs`: Restore-Pass ruft `jsr (_bg_restore_fn)` für jeden aktiven Bob
-  - Draw-Pass danach: Masked Blit Bob + Maske → `back_screen[neue_pos]`
-  - Queue-Eintrag: `{imgIdx, x, y, old_x, old_y}` — altes Frame für Restore gespeichert
-  - `_bg_restore_static`: einfacher Blitter-Copy aus statischem bg_buffer
-  - Slot für `_bg_restore_tilemap` vorbereitet → M-SCROLL installiert diese Routine
+- `[x]` **`SetBackground imgIdx`** — erklärt ein Image zum read-only Hintergrund
+  - `_SetBackground(a0=imgptr)`: überspringt 8-Byte-Header + Palette → speichert Bitplane-0-Ptr in `_bg_bpl_ptr`; installiert `_bg_restore_static` in `_bg_restore_fn`
+- `[x]` **`LoadMask imgIdx, "file.mask"`** — optionale 1-bpp Transparenzmaske für DrawBob
+  - `_maskAssets` Map; separates DATA_C INCBIN für Chip-RAM; kein Laufzeit-Code
+- `[x]` **`DrawBob imgIdx, x, y`** — Eintrag in Bob-Queue (`_AddBob`)
+  - Slot = 12 Bytes: imgptr.l + maskptr.l + x.w + y.w; BOBS_MAX=32 Slots
+- `[x]` **`bobs.s`** — Bob-System vollständig implementiert:
+  - 3 Queues: `_bobs_new`, `_bobs_old_a`, `_bobs_old_b` (Double-Buffer-korrekt: 2-Frame-History)
+  - `_FlushBobs`: Restore → Draw → Copy → Reset; auto-injiziert vor `ScreenFlip`
+  - `_bg_restore_static`: Blitter-Copy aus statischem BG-Image (BLTCON0=$09F0)
+  - `_BltBobMasked`: 4-Kanal-Blit A=Maske/B=Bob/C=D=Screen; Minterm $CA; BLTCON0=$0FCA
+  - Kein Mask → `_DrawImage` als Fallback
+  - `_bg_restore_fn` Slot vorbereitet → M-SCROLL installiert `_bg_restore_tilemap`
 - `[ ]` **Compiler-Injection** — `jsr _FlushBobs` automatisch vor `ScreenFlip` wenn Bob-System aktiv
 
 ---
 
-### 8. M-SCROLL — Ring-Buffer Tilemap *(scrollende Tile-Welten)*
+### ✅ 8. M-COLL — Kollisionserkennung *(Physik-Grundlage jedes Spiels)*
+
+```blitz
+; Einfacher AABB-Test zweier Rechtecke — kein Fragment, vollständig inline
+If RectsOverlap(px, py, 16, 16,  ex, ey, 16, 16) Then HitEnemy i
+
+; AABB mit gespeicherter Bildgröße aus LoadImage-Header
+If ImagesOverlap(1, px, py,  2, ex, ey) Then Explode
+
+; Pixel-genaue Kollision via Blitter-AND der Masken
+If ImagesCollide(1, px, py,  2, ex, ey) Then HitEnemy i
+```
+
+- `[x]` **`RectsOverlap(x1,y1,w1,h1, x2,y2,w2,h2)`** — AABB-Test; gibt -1 (True) oder 0 zurück
+  - Pure-Math, kein Fragment — vollständig inline expandiert, kein JSR
+  - Bedingung: `x1+w1 > x2 And x2+w2 > x1 And y1+h1 > y2 And y2+h2 > y1`
+  - CodeGen: 8 Args per Stack gepusht, `movem.l (sp)+,d0-d7` → d0=h2..d7=x1; a1/a2 als Scratch für x1/y1-Sicherung
+  - Typischer Einsatz: Bullets vs. Enemies, Player vs. Platforms, Pickup-Items
+
+- `[x]` **`ImagesOverlap(img1,x1,y1, img2,x2,y2)`** — AABB mit LoadImage-Header-Dimensionen
+  - Liest `w` / `h` direkt aus den `dc.w` am Beginn des DATA_C-Labels (Offset +0 / +2)
+  - CodeGen: 4 Ausdrucks-Args gepusht, `movem.l (sp)+,d0-d3`; w1/h1/w2/h2 per `move.w lbl+0,d4` etc. aus Header
+  - Logisch äquivalent zu `RectsOverlap(x1,y1,w1,h1,x2,y2,w2,h2)`; spart Tipparbeit
+  - img-Indizes müssen Literale sein; Dimensionen werden zur Compile-Time aufgelöst
+
+- `[x]` **`ImageRectOverlap(img, x, y, rx, ry, rw, rh)`** — Image-Bounding-Box gegen statisches Rechteck
+  - Typischer Einsatz: Sprite gegen Tile-Geometrie, Level-Wände, Plattformen
+  - CodeGen: 6 Ausdrucks-Args gepusht, `movem.l (sp)+,d0-d5`; img_w/h aus Header in d6/d7
+  - Entspricht `RectsOverlap(x,y,img_w,img_h, rx,ry,rw,rh)` mit automatischen Bild-Dimensionen
+
+- `[ ]` **`ImagesCollide(img1,x1,y1, img2,x2,y2)`** — Pixel-genaue Kollision via Blitter *(Phase 2)*
+  - Blitter AND der `.mask`-Daten beider Images in einen temporären BSS-Puffer
+  - CPU-Scan danach: irgendein Wort != 0 → Treffer; kein Treffer → 0
+  - Benötigt `.mask`-Dateien (je ein Bitplane Maske, 1 Bit = undurchsichtig); A-MGR exportiert diese
+  - Kosten: First-AABB-Guard (schnell scheitern ohne Blitter) + 1–2 Blitter-Ops + CPU-Scan
+  - **Empfehlung:** `RectsOverlap`/`ImagesOverlap` reichen für ~95 % aller Spielsituationen;
+    `ImagesCollide` nur einsetzen wenn sichtbare Kollisionsungenauigkeiten auftreten (runde Sprites)
+  - Fragment `collision.s`: `_BltCollide(a0=mask1,a1=mask2,d0=x1,d1=y1,d2=x2,d2=y2,d3=w,d4=h)`
+    + `_coll_scratch ds.b MAXBOB_W*MAXBOB_H/8` (BSS, Chip-RAM); kein eigenes Screen-Byte verwendet
+
+> **Blitz2D-Analogie:** `RectsOverlap` und `ImagesOverlap`/`ImagesCollide` sind direkte
+> Übernahmen aus Blitz2D. Für BASSM entfällt der Frame-Parameter (kein Sprite-Animation noch),
+> alle anderen Argumente sind identisch.
+
+---
+
+### 9. M-ANIM — Sprite-Animation *(Laufende Figuren, Explosionen, Animierte Tiles)*
+
+```blitz
+LoadAnimImage 1, "hero.raw",    32, 32, 8   ; 8 Frames à 32×32 Pixel
+LoadAnimImage 2, "explode.raw", 16, 16, 6   ; Explosions-Sequenz
+
+; Statisches Bild — kein Hintergrund, kein BG-Restore (z.B. HUD-Sprite)
+anim = (anim + 1) Mod 8
+DrawImage 1, hx, hy, anim
+
+; Bob über Hintergrund — BG-Restore via _bg_restore_fn
+; Identisch für SetBackground (statisch) UND LoadTilemap (Ring-Buffer)
+DrawBob 1, px, py, anim
+DrawBob 2, ex, ey, explode_frame
+ScreenFlip
+```
+
+- `[x]` **`LoadAnimImage n, "f.raw", fw, fh, count`** — Blitz2D-Konvention für animierte Images
+  - Header: `dc.w fw, fh, GFXDEPTH, rowbytes` — 8 Bytes (identisch zu `LoadImage`; count nur Compile-Zeit)
+  - Frame-Layout: alle Frames sequenziell im .raw-File: Frame 0 (alle Planes) → Frame 1 → …
+  - `LoadImage` bleibt unverändert — keine Rückwärts-Kompatibilitätsprobleme
+  - A-MGR: **Strip-Import** — PNG-Sprite-Sheet (N×fw breit) → Frame-für-Frame in planares Raw *(TODO)*
+
+- `[x]` **`DrawImage n, x, y, frame`** — optionaler 4. Parameter
+  - `_DrawImage`: `clr.l d2` + Fall-Through auf `_DrawImageFrame` (XDEF in image.s)
+  - `_DrawImageFrame(d2=frame)`: Frame-Offset = `d2 × depth × plane_size` (in image.s)
+  - Literal frame: `moveq #N,d2; jsr _DrawImageFrame` — null Overhead für N=0..7
+  - Variable frame: push/pop-Kette → `jsr _DrawImageFrame`
+
+- `[x]` **`DrawBob n, x, y, frame`** — optionaler 4. Parameter
+  - Bob-Slot jetzt 16 Bytes: imgptr.l + maskptr.l + x.w + y.w + frame.w + padding.w
+  - `_AddBob(d2=frame)`: frame aus `8(sp)` gelesen (saved d2 im movem-Frame)
+  - `_BltBobMaskedFrame(d2=frame)`: Frame-Offset vor BLTSIZE; Maske konstant (gleiche Silhouette)
+  - **Restore-Pass frame-agnostisch**: `_bg_restore_fn` → w×h-Rechteck, unabhängig vom Frame
+
+> **Hintergrund-Unabhängigkeit:** Der Restore-Pass stellt ein Rechteck wieder her — er liest
+> keine Bild-Semantik, nur rohe Pixel. Animated Bobs funktionieren deshalb auf **statischem
+> Hintergrund** (M-BOB) und **Tilemap-Ring-Buffer** (M-SCROLL) ohne jeden Unterschied.
+> Der `_bg_restore_fn`-Zeiger abstrahiert den Hintergrundtyp vollständig — kein separater
+> `DrawAnimBob` oder `DrawBobOnTilemap` nötig.
+
+---
+
+### 10. M-SCROLL — Ring-Buffer Tilemap *(scrollende Tile-Welten)*
 
 ```blitz
 LoadTilemap "world.map"         ; Dimensionen stehen in der Datei
@@ -283,7 +381,7 @@ Wend
 
 ---
 
-### 9. M-DATA — 2D-Arrays *(Tile-Maps, Spielfelder)*
+### 11. M-DATA — 2D-Arrays *(Tile-Maps, Spielfelder)*
 
 ```blitz
 Dim map(19, 14)          ; 20×15 Tile-Map
@@ -298,7 +396,7 @@ tile = map(px / 16, py / 16)
 
 ---
 
-### 10. M-TYPE — Strukturen (`Type … EndType`) *(das wichtigste fehlende Feature)*
+### 12. M-TYPE — Strukturen (`Type … EndType`) *(das wichtigste fehlende Feature)*
 
 ```blitz
 Type Enemy
@@ -564,8 +662,10 @@ Stufe 1 — Sprach-Grundlagen:
   → ~80% game-complete: Space Invaders, Breakout, Pong möglich
 
 Stufe 2 — Daten & Hardware:
-  [ ] M-SYS    Peek + Poke
-  [ ] M-BOB    DrawBob + SetBackground + Masken + _bg_restore_fn
+  [x] M-SYS    Peek + Poke
+  [x] M-BOB    DrawBob + SetBackground + LoadMask + _bg_restore_fn + bobs.s
+  [x] M-COLL   RectsOverlap + ImagesOverlap + ImageRectOverlap (ImagesCollide Phase 2)
+  [x] M-ANIM   LoadAnimImage + DrawImage/DrawBob frame-Argument; _DrawImageFrame + _BltBobMaskedFrame
   [ ] M-SCROLL Ring-Buffer Tilemap + ScrollTilemap + _bg_restore_tilemap
   [ ] M-DATA   2D-Arrays
   [x] M-TYPE   Type-Strukturen

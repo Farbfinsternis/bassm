@@ -8,6 +8,7 @@ import { PreProcessor } from './preprocessor.js';
 import { Lexer }        from './lexer.js';
 import { Parser }       from './parser.js';
 import { CodeGen }      from './codegen.js';
+import { Peephole }     from './peephole.js';
 import { analyzeBudget } from './budget.js';
 
 class BASSM {
@@ -16,6 +17,7 @@ class BASSM {
         this._preProcessor = new PreProcessor();
         this._parser       = new Parser();
         this._codegen      = new CodeGen();
+        this._peephole     = new Peephole();
         this._lexer        = null;  // created after async config load
     }
 
@@ -52,7 +54,7 @@ class BASSM {
         const ast    = this._parser.parse(tokens);
         const asm    = this._codegen.generate(ast);
 
-        return asm;
+        return this._peephole.optimize(asm);
     }
 
     /**
@@ -341,6 +343,17 @@ bassm.init()
 
             try {
                 const { asm } = await bassm.run(source, _projectDir);
+
+                // Save generated assembly next to the source file for code review
+                if (_projectDir) {
+                    const asmFile = _currentFile.replace(/\.bassm$/i, '.s');
+                    await window.electronAPI.saveSource({
+                        projectDir: _projectDir,
+                        filename:   asmFile,
+                        source:     asm,
+                    });
+                }
+
                 logLine('── Generated assembly ──────────────────', 'info');
                 logLine(asm);
                 status.textContent = 'Running';

@@ -1,0 +1,162 @@
+Graphics 320, 256, 4
+
+Dim bricks(49)
+Dim erase_brick(49)
+
+; Alle Steine initialisieren (1 = aktiv, 0 = zerstoert)
+For i = 0 To 49
+  bricks(i) = 1
+  erase_brick(i) = 0
+Next i
+
+px = 140
+bx = 160 : by = 120
+bdx = 2 : bdy = 3
+
+; History Positionen fuer Double Buffering (2 Frames alt)
+px_h0 = px : px_h1 = px
+bx_h0 = bx : by_h0 = by
+bx_h1 = bx : by_h1 = by
+
+; --- Initiales Zeichnen der Steine und des Hintergrunds in BEIDE Buffer ---
+For buffer = 1 To 2
+  Cls
+  
+  ; --- Statischer Hintergrund-Farbverlauf via Copper ---
+  rc = 0 : bc = 15
+  For zeile = 0 To 211
+    CopperColor zeile, 0, 0, bc
+    
+    ; Farbe alle paar Zeilen wechseln, um dicke Balken zu erzeugen
+    If (zeile Mod 14) = 0
+      bc = bc - 1
+      If bc < 0 Then bc = 15
+    EndIf
+  Next zeile
+
+  For i = 0 To 49
+    row = i / 10
+    col = i Mod 10
+    c = (row Mod 4) + 3
+    Color c
+    Box col * 32 + 1, row * 10 + 20 + 1, 30, 8
+  Next i
+  ScreenFlip
+Next buffer
+
+While 1
+
+  ; --- Zeichne alten Zustand schwarz (loeschen) ---
+  Color 0
+  
+  ; Loesche Ball (Zustand von vor zwei Frames, also h1)
+  Box bx_h1, by_h1, 4, 4
+  
+  ; Loesche Paddle (Zustand von vor zwei Frames, also h1)
+  Box px_h1, 240, 40, 8
+  
+  ; --- Erledigte Bricks in diesem Buffer loeschen ---
+  For i = 0 To 49
+    If erase_brick(i) > 0
+      row = i / 10
+      col = i Mod 10
+      Box col * 32 + 1, row * 10 + 20 + 1, 30, 8
+      erase_brick(i) = erase_brick(i) - 1
+    EndIf
+  Next i
+
+  ; --- Paddle Logik ---
+  px = MouseX() - 20
+  If px < 0 Then px = 0
+  If px > 280 Then px = 280
+
+  ; --- Ball Bewegung ---
+  bx = bx + bdx
+  by = by + bdy
+
+  ; --- Wandkollisionen ---
+  If bx < 0
+    bx = 0
+    bdx = -bdx
+  EndIf
+  
+  If bx > 316
+    bx = 316
+    bdx = -bdx
+  EndIf
+  
+  If by < 0
+    by = 0
+    bdy = -bdy
+  EndIf
+  
+  ; Ball geht unten aus dem Bild -> Reset
+  If by > 256
+    ; Alte Positionen in beiden Buffern manuell loeschen
+    Color 0
+    Box bx_h0, by_h0, 4, 4
+    Box bx_h1, by_h1, 4, 4
+    
+    bx = 160 : by = 120
+    bdx = 2 : bdy = 3
+    bx_h0 = bx : by_h0 = by
+    bx_h1 = bx : by_h1 = by
+  EndIf
+
+  ; --- Paddle Kollision ---
+  If by + 4 >= 240 And by <= 248 And bx + 4 >= px And bx <= px + 40
+    by = 236
+    bdy = -bdy
+    
+    ; Leichter Drall abhaengig davon, wo der Ball das Paddle trifft
+    If bx < px + 10
+      bdx = -3
+    ElseIf bx > px + 30
+      bdx = 3
+    ElseIf bdx < 0
+      bdx = -2
+    Else
+      bdx = 2
+    EndIf
+  EndIf
+
+  ; --- Brick Kollision ---
+  hit = 0
+  For i = 0 To 49
+    If bricks(i) = 1 And hit = 0
+      row = i / 10
+      col = i Mod 10
+      brickX = col * 32
+      brickY = row * 10 + 20
+      
+      ; AABB Kollision
+      If bx + 4 >= brickX And bx <= brickX + 32 And by + 4 >= brickY And by <= brickY + 10
+        bricks(i) = 0
+        ; Zerstörten Brick für zwei Frames zum Loeschen vormerken
+        erase_brick(i) = 2
+        
+        bdy = -bdy
+        hit = 1
+      EndIf
+    EndIf
+  Next i
+
+  ; --- Zeichne neues Paddle ---
+  Color 2 ; Rot
+  Box px, 240, 40, 8
+
+  ; --- Zeichne neuen Ball ---
+  Color 1 ; Weiss
+  Box bx, by, 4, 4
+  
+  ; --- Update History fuer Double Buffering ---
+  px_h1 = px_h0
+  px_h0 = px
+  
+  bx_h1 = bx_h0
+  by_h1 = by_h0
+  bx_h0 = bx
+  by_h0 = by
+
+  ScreenFlip
+Wend

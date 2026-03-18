@@ -204,5 +204,80 @@
             { "name": "x",     "type": "integer" },
             { "name": "y",     "type": "integer" }
         ]
+    },
+    {
+        "name": "PokeB",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "addr", "type": "integer" },
+            { "name": "val",  "type": "integer" }
+        ]
+    },
+    {
+        "name": "PokeW",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "addr", "type": "integer" },
+            { "name": "val",  "type": "integer" }
+        ]
+    },
+    {
+        "name": "PokeL",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "addr", "type": "integer" },
+            { "name": "val",  "type": "integer" }
+        ]
+    },
+    {
+        "name": "Poke",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "addr", "type": "integer" },
+            { "name": "val",  "type": "integer" }
+        ]
+    },
+    {
+        "name": "SetBackground",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "index", "type": "integer" }
+        ]
+    },
+    {
+        "name": "LoadMask",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "index", "type": "integer" },
+            { "name": "file",  "type": "string"  }
+        ]
+    },
+    {
+        "name": "DrawBob",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "index", "type": "integer" },
+            { "name": "x",     "type": "integer" },
+            { "name": "y",     "type": "integer" }
+        ]
+    },
+    {
+        "name": "LoadAnimImage",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "index",  "type": "integer" },
+            { "name": "file",   "type": "string"  },
+            { "name": "width",  "type": "integer" },
+            { "name": "height", "type": "integer" },
+            { "name": "count",  "type": "integer" }
+        ]
     }
 ]

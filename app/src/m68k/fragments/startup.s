@@ -521,6 +521,7 @@ _null_copper:
         XDEF    _front_is_a
         XDEF    _gfx_planes
         XDEF    _gfx_planes_b
+        XDEF    _scr_bpr
 
 _saved_sp:          ds.l    1   ; stack pointer on entry — restored by offload.s
 _saved_intena:      ds.w    1   ; INTENAR snapshot   — restored by offload.s
@@ -540,3 +541,4 @@ _front_is_a:        ds.b    1   ; 0 = copper A is front (buffer A displayed), 1 
         EVEN
 _gfx_planes:        ds.l    1   ; chip-RAM ptr — buffer A (AllocMem'd at startup)
 _gfx_planes_b:      ds.l    1   ; chip-RAM ptr — buffer B (AllocMem'd at startup)
+_scr_bpr:           ds.w    1   ; effective bytes-per-row for drawing (default=GFXBPR; RING_BPR when scroll active)

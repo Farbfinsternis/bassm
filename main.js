@@ -275,6 +275,11 @@ ipcMain.handle('bassm:assemble', (_event, payload) => {
           const data = fs.readFileSync(outFile);
           fs.mkdirSync(OUT_DIR, { recursive: true });
           fs.copyFileSync(outFile, path.join(OUT_DIR, 'bassm_out.exe'));
+          
+          if (projectDir) {
+            fs.copyFileSync(outFile, path.join(projectDir, 'bassm_out.exe'));
+          }
+
           resolve({ ok: true, data });
         } catch (readErr) {
           resolve({ ok: false, error: readErr.message });

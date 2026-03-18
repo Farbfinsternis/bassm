@@ -1,49 +1,39 @@
-; BASSM Demo -- 8 Blob-Sprites + Rasterbalken + Sound
-; Sprites via DrawImage (planar .raw, depth=3, 8 Farben)
-; DrawImage erfordert word-aligniertes x (OCS Blitter rundet BLTDPT auf Wortgrenze)
-; -> And -16 beim Zeichnen, NICHT And -8 (sonst Geister-Pixel links)
-; Erase-before-Draw: 2-Frame-History fuer geisterfreies Loeschen
+; BASSM Demo — 8 Blobs + Rasterbalken + DrawBob + Kollision
+;
+; DrawBob + SetBackground: _FlushBobs loescht nur die 8x16x16 Blob-Bereiche
+;   (gezielter BG-Restore statt Fullscreen-Cls — spart ~35% Frame-Budget).
+;   background.raw = 320x256 all-black; Kupfer liefert die Farbe.
+;
+; ImagesOverlap: 28 Blob-Blob AABB-Tests pro Frame, vollstaendig inline,
+;   kein JSR, kein Fragment — pure cmp.l-Kaskade aus Header-Dimensionen.
+;
 Graphics 320,256,3
 
 LoadSample 0, "sounds/boing.raw"
-LoadImage  0, "images/blob.raw", 16, 16
+LoadImage  0, "images/blob.raw",       16,  16
+LoadImage  1, "images/background.raw", 320, 256
 
 ; Palette wird automatisch aus blob.raw geladen (LoadImage 0 => _SetImagePalette)
+; Image 1 (background) hat keine sichtbare Palette — alles schwarz, Kupfer liefert Farbe
+
+SetBackground 1       ; gezielter BG-Restore (16x16 pro Bob) statt Fullscreen-Cls
 
 Type Ball
-  Field x, y, dx, dy
-  Field ox, oy
-  Field ox2, oy2
+  Field x, y, dx, dy           ; ox/oy/ox2/oy2 entfallen — Bob-System erledigt Erase
 EndType
 
 Dim b.Ball(7)
 
-b(0)\x=8   : b(0)\y=20  : b(0)\dx=3  : b(0)\dy=2
-b(1)\x=96  : b(1)\y=50  : b(1)\dx=-4 : b(1)\dy=3
-b(2)\x=200 : b(2)\y=30  : b(2)\dx=2  : b(2)\dy=-3
-b(3)\x=48  : b(3)\y=150 : b(3)\dx=-3 : b(3)\dy=-2
-b(4)\x=248 : b(4)\y=100 : b(4)\dx=4  : b(4)\dy=2
-b(5)\x=128 : b(5)\y=200 : b(5)\dx=-2 : b(5)\dy=4
-b(6)\x=80  : b(6)\y=120 : b(6)\dx=5  : b(6)\dy=-3
-b(7)\x=280 : b(7)\y=180 : b(7)\dx=-3 : b(7)\dy=5
+b(0)\x=1   : b(0)\y=1  : b(0)\dx=1  : b(0)\dy=1
+b(1)\x=10  : b(1)\y=1  : b(1)\dx=-1 : b(1)\dy=1
+b(2)\x=27 : b(2)\y=1  : b(2)\dx=1  : b(2)\dy=-1
+b(3)\x=44  : b(3)\y=1 : b(3)\dx=-1 : b(3)\dy=-1
+b(4)\x=62 : b(4)\y=1 : b(4)\dx=1  : b(4)\dy=1
+b(5)\x=89 : b(5)\y=1 : b(5)\dx=-1 : b(5)\dy=1
+b(6)\x=105  : b(6)\y=1 : b(6)\dx=1  : b(6)\dy=-1
+b(7)\x=125 : b(7)\y=1 : b(7)\dx=-1 : b(7)\dy=1
 
-; History mit word-alignierten Draw-Positionen vorbelegen
-For i = 0 To 7
-  b(i)\ox  = b(i)\x And -16 : b(i)\oy  = b(i)\y
-  b(i)\ox2 = b(i)\x And -16 : b(i)\oy2 = b(i)\y
-Next i
-
-; Titel in beide Buffer zeichnen (Double-Buffer braucht 2x ScreenFlip)
-Color 1
-Text 8, 4, "BASSM DEMO  * AMIGA OCS *"
-Color 6
-Text 8, 236, "CODE: BASSM COMPILER  FONT: 8X8"
-ScreenFlip
-Color 1
-Text 8, 4, "BASSM DEMO  * AMIGA OCS *"
-Color 6
-Text 8, 236, "CODE: BASSM COMPILER  FONT: 8X8"
-
+hits = 0
 t = 0
 
 While 1
@@ -58,13 +48,8 @@ While 1
     gc = gc - 1 : If gc < 0  : gc = 15 : EndIf
   Next line
 
-  ; Alte Blob-Positionen loeschen (2 Frames zurueck)
-  Color 0
-  For i = 0 To 7
-    Box b(i)\ox2, b(i)\oy2, 16, 16
-  Next i
-
-  ; Blobs bewegen, an Raendern abprallen, zeichnen
+  ; Blobs bewegen, Wand-Kollision, per DrawBob einreihen
+  ; And -16 snappt x auf Wortgrenze (OCS-Blitter-Anforderung)
   For i = 0 To 7
     b(i)\x = b(i)\x + b(i)\dx
     b(i)\y = b(i)\y + b(i)\dy
@@ -86,15 +71,31 @@ While 1
       PlaySampleOnce 0, 0
     EndIf
 
-    DrawImage 0, b(i)\x And -16, b(i)\y
-    Plot MouseX(), MouseY()
+    DrawBob 0, b(i)\x And -16, b(i)\y
   Next i
 
-  ; History vorschieben — snapped Draw-x speichern, nicht Physics-x
-  For i = 0 To 7
-    b(i)\ox2 = b(i)\ox         : b(i)\oy2 = b(i)\oy
-    b(i)\ox  = b(i)\x And -16  : b(i)\oy  = b(i)\y
+  ; Blob-Blob Kollisionserkennung — 28 Paare, alle inline AABB
+  ; ImagesOverlap liest 16x16 aus dem blob.raw-Header zur Compile-Zeit
+  For i = 0 To 6
+    For j = i + 1 To 7
+      If ImagesOverlap(0, b(i)\x, b(i)\y, 0, b(j)\x, b(j)\y)
+        ; Geschwindigkeiten tauschen (elastischer Stoss)
+        tmp = b(i)\dx : b(i)\dx = b(j)\dx : b(j)\dx = tmp
+        tmp = b(i)\dy : b(i)\dy = b(j)\dy : b(j)\dy = tmp
+        hits = hits + 1
+        PlaySampleOnce 0, 1
+      EndIf
+    Next j
   Next i
 
+  ; HUD
+  Color 7
+  Text 8,   4, "BASSM DEMO  * AMIGA OCS *"
+  Text 8, 236, "HITS: " + Str$(hits)
+
+  ; _FlushBobs wird hier automatisch injiziert:
+  ;   Step 1 — _bg_restore_static loescht 8x16x16 aus background.raw
+  ;   Step 2 — Alle neuen Bobs zeichnen
   ScreenFlip
+
 Wend
