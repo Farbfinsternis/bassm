@@ -72,6 +72,7 @@ export class CodeGen {
         this._usesMouse     = false;      // true if any MouseX/Y/Down/Hit used
         this._usesBobs      = false;      // true if any DrawBob/SetBackground used
         this._maskAssets    = new Map();  // index (int) → { filename, label }
+        this._fontAssets    = new Map();  // index (int) → { filename, label, chars, charW, charH }
         this._loopStack     = [];         // stack of endLabels for Exit — push on loop entry, pop on exit
 
         // ── Locate and validate the Graphics statement ────────────────────────
@@ -363,6 +364,31 @@ export class CodeGen {
             out.push('');
         }
 
+        // ── Font data (fast RAM — CPU renderer, no Blitter access needed) ──────
+        // Storage: byte-padded per-glyph, 1 byte/row, left-justified with zero
+        // padding for charW < 8.  numPlanes planes stored sequentially.
+        // Each font also gets a 128-byte lookup table: charCode → glyph index,
+        // $FF means the character is not in this font (→ skip rendering).
+        for (const [, { filename, label: lbl, chars }] of this._fontAssets) {
+            // Build lookup table: charCode (0–127) → glyph index; 0xFF = not in font
+            const lookup = new Uint8Array(128).fill(0xFF);
+            for (let i = 0; i < chars.length; i++) {
+                const code = chars.charCodeAt(i);
+                if (code < 128) lookup[code] = i;
+            }
+            const lookupDc = Array.from(lookup).join(',');
+
+            out.push(`        SECTION ${lbl}_sec,DATA`);
+            out.push(`        XDEF    ${lbl}`);
+            out.push(`${lbl}:`);
+            out.push(`        INCBIN  "${filename}"`);
+            out.push(`        EVEN`);
+            out.push(`        XDEF    ${lbl}_lookup`);
+            out.push(`${lbl}_lookup:`);
+            out.push(`        dc.b    ${lookupDc}`);
+            out.push('');
+        }
+
         return out.join('\n');
     }
 
@@ -376,7 +402,18 @@ export class CodeGen {
             ...[...this._audioSamples.values()].map(e => e.filename),
             ...[...this._imageAssets.values()].map(e => e.filename),
             ...[...this._maskAssets.values()].map(e => e.filename),
+            ...[...this._fontAssets.values()].map(e => e.filename),
         ];
+    }
+
+    /**
+     * Returns font asset metadata for numPlanes validation in main.js.
+     * Each entry: { filename, numChars, charH }
+     */
+    getFontAssets() {
+        return [...this._fontAssets.values()].map(({ filename, chars, charH }) => ({
+            filename, numChars: chars.length, charH
+        }));
     }
 
     // ── Variable collection (pre-pass) ────────────────────────────────────────
@@ -471,6 +508,27 @@ export class CodeGen {
                         if (!this._maskAssets.has(idxArg.value)) {
                             const lbl = `_mask_${this._maskAssets.size}`;
                             this._maskAssets.set(idxArg.value, { filename: fileArg.value, label: lbl });
+                        }
+                    }
+                }
+                if (stmt.name === 'loadfont') {
+                    const idxArg   = stmt.args[0];
+                    const charsArg = stmt.args[1];
+                    const fileArg  = stmt.args[2];
+                    const wArg     = stmt.args[3];
+                    const hArg     = stmt.args[4];
+                    if (idxArg?.type === 'int' && charsArg?.type === 'string' &&
+                        fileArg?.type === 'string' && wArg?.type === 'int' && hArg?.type === 'int') {
+                        const charW = wArg.value;
+                        const charH = hArg.value;
+                        if (charW > 8)
+                            throw new Error(`LoadFont: charW darf maximal 8 sein (${charW} angegeben) — Zeile ${stmt.line}`);
+                        if (!this._fontAssets.has(idxArg.value)) {
+                            const lbl = `_font_${this._fontAssets.size}`;
+                            this._fontAssets.set(idxArg.value, {
+                                filename: fileArg.value, label: lbl,
+                                chars: charsArg.value, charW, charH
+                            });
                         }
                     }
                 }
@@ -785,6 +843,11 @@ export class CodeGen {
                 // No assembly code emitted; INCBIN sections appear at end of generate().
                 break;
 
+            case 'loadfont':
+                // LoadFont index, "chars", "file", charW, charH — pre-registered in _collectVars.
+                // No assembly code emitted; INCBIN + lookup table at end of generate().
+                break;
+
             case 'loadimage':
                 // LoadImage 0 automatically applies the image's embedded palette at runtime.
                 // Other indices: no code emitted (data only, INCBIN at end of generate()).
@@ -1075,6 +1138,42 @@ export class CodeGen {
 
             case 'nprint': {
                 // Blitz2D compatibility stub — no-op in bare-metal builds
+                break;
+            }
+
+            case 'usefont': {
+                const idxArg = stmt.args[0];
+                const lc = this._labelCount++;
+                if (!idxArg) {
+                    // UseFont (no arg) — reset to built-in 8×8 font
+                    lines.push('        ; UseFont — built-in font');
+                    lines.push('        move.w  #8,_active_font_charW');
+                    lines.push('        move.w  #8,_active_font_charH');
+                    lines.push('        move.w  #7,_active_font_charH_m1');
+                    lines.push('        move.l  #_font8x8,_active_font_data');
+                    lines.push('        lea     _builtin_font_lookup,a0');
+                    lines.push('        lea     _active_font_lookup,a1');
+                    lines.push('        moveq   #31,d0');
+                    lines.push(`.uf_${lc}:  move.l  (a0)+,(a1)+`);
+                    lines.push(`        dbra    d0,.uf_${lc}`);
+                } else {
+                    if (idxArg.type !== 'int')
+                        throw new Error(`UseFont: Index muss ein Integer-Literal sein (Zeile ${stmt.line})`);
+                    const fontEntry = this._fontAssets.get(idxArg.value);
+                    if (!fontEntry)
+                        throw new Error(`UseFont: Font ${idxArg.value} nicht geladen — LoadFont zuerst aufrufen (Zeile ${stmt.line})`);
+                    const { label: lbl, charW, charH } = fontEntry;
+                    lines.push(`        ; UseFont ${idxArg.value} — ${fontEntry.filename}`);
+                    lines.push(`        move.w  #${charW},_active_font_charW`);
+                    lines.push(`        move.w  #${charH},_active_font_charH`);
+                    lines.push(`        move.w  #${charH - 1},_active_font_charH_m1`);
+                    lines.push(`        move.l  #${lbl},_active_font_data`);
+                    lines.push(`        lea     ${lbl}_lookup,a0`);
+                    lines.push('        lea     _active_font_lookup,a1');
+                    lines.push('        moveq   #31,d0');
+                    lines.push(`.uf_${lc}:  move.l  (a0)+,(a1)+`);
+                    lines.push(`        dbra    d0,.uf_${lc}`);
+                }
                 break;
             }
 

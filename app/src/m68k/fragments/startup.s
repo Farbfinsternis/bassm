@@ -277,6 +277,9 @@ start:
         bsr     _WaitVBL
 
 ; ── 11. Run the generated program ────────────────────────────────────────────
+        ; Initialise active font descriptor to built-in 8×8 font (text.s).
+        jsr     _text_init
+
         ; codegen.js emits a subroutine labelled _main_program containing
         ; the translated Blitz2D statements. Returning from it (or calling
         ; jmp _exit from inside it) triggers the offload.s cleanup.

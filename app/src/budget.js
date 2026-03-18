@@ -53,12 +53,20 @@ export function analyzeBudget(source) {
     // LoadSample — file size unknown at parse time
     if (/^\s*LoadSample\b/im.test(source)) chipRamPlus = true;
 
+    // LoadFont — data goes into normal (fast) RAM, not chip RAM; no chip RAM cost.
+    // Collect charH per font index for accurate Text cycle estimation.
+    const fontMap = {};  // idx → charH
+    const fontRE = /^\s*LoadFont\s+(\d+)\s*,\s*"[^"]*"\s*,\s*"[^"]*"\s*,\s*(\d+)\s*,\s*(\d+)/img;
+    while ((m = fontRE.exec(source)) !== null) {
+        fontMap[parseInt(m[1])] = { charW: parseInt(m[2]), charH: parseInt(m[3]) };
+    }
+
     // ── Cycles (main loop) ────────────────────────────────────────────────────
 
     const lines      = source.split('\n');
     const loopLines  = _extractMainLoop(lines);
     const cyclesUsed = loopLines.length > 0
-        ? _estimateCycles(loopLines, imageMap, gfxW, gfxH, planes)
+        ? _estimateCycles(loopLines, imageMap, fontMap, gfxW, gfxH, planes)
         : 0;
 
     return {
@@ -94,13 +102,23 @@ function _extractMainLoop(lines) {
 
 // ── Cycle estimation ──────────────────────────────────────────────────────────
 
-function _estimateCycles(lines, imageMap, gfxW, gfxH, planes) {
+function _estimateCycles(lines, imageMap, fontMap, gfxW, gfxH, planes) {
     let total = 0;
     let i = 0;
+    let activeFontCharH = 8;  // built-in font default
 
     while (i < lines.length) {
         const line = lines[i];
         const trim = line.trim();
+
+        // Track UseFont to update active charH for Text cost
+        const useFontM = /^UseFont\s+(\d+)/i.exec(trim);
+        if (useFontM) {
+            const idx = parseInt(useFontM[1]);
+            if (fontMap[idx]) activeFontCharH = fontMap[idx].charH;
+        } else if (/^UseFont\s*$/i.test(trim)) {
+            activeFontCharH = 8;  // reset to built-in
+        }
 
         // For loop with literal bounds — multiply inner cost by iteration count
         const forM = /^For\s+\w+\s*=\s*(-?\d+)\s+To\s+(-?\d+)(?:\s+Step\s+(-?\d+))?/i.exec(trim);
@@ -118,18 +136,18 @@ function _estimateCycles(lines, imageMap, gfxW, gfxH, planes) {
                 if (depth > 0) forBody.push(lines[j]);
                 j++;
             }
-            total += count * _estimateCycles(forBody, imageMap, gfxW, gfxH, planes);
+            total += count * _estimateCycles(forBody, imageMap, fontMap, gfxW, gfxH, planes);
             i = j;
             continue;
         }
 
-        total += _estimateLineCycles(trim, imageMap, gfxW, gfxH, planes);
+        total += _estimateLineCycles(trim, imageMap, gfxW, gfxH, planes, activeFontCharH);
         i++;
     }
     return total;
 }
 
-function _estimateLineCycles(trim, imageMap, gfxW, gfxH, planes) {
+function _estimateLineCycles(trim, imageMap, gfxW, gfxH, planes, activeFontCharH = 8) {
     if (!trim || /^;/.test(trim)) return 0;
 
     const wpl = Math.ceil(gfxW / 16);  // blitter words per scanline
@@ -166,8 +184,10 @@ function _estimateLineCycles(trim, imageMap, gfxW, gfxH, planes) {
 
     if (/^Text\b/i.test(trim)) {
         // Best-effort: measure the first string literal; fall back to 12 chars
-        const m = /"([^"]*)"/i.exec(trim);
-        return (m ? Math.max(m[1].length, 4) : 12) * 400;
+        // Cost scales with charH: more rows per glyph = more CPU work
+        const strM  = /"([^"]*)"/i.exec(trim);
+        const chars = strM ? Math.max(strM[1].length, 4) : 12;
+        return chars * Math.round(400 * (activeFontCharH / 8));
     }
 
     // ── Cheap commands ────────────────────────────────────────────────────────

@@ -279,5 +279,25 @@
             { "name": "height", "type": "integer" },
             { "name": "count",  "type": "integer" }
         ]
+    },
+    {
+        "name": "LoadFont",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "index",  "type": "integer" },
+            { "name": "chars",  "type": "string"  },
+            { "name": "file",   "type": "string"  },
+            { "name": "charW",  "type": "integer" },
+            { "name": "charH",  "type": "integer" }
+        ]
+    },
+    {
+        "name": "UseFont",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "index",  "type": "integer", "optional": true }
+        ]
     }
 ]

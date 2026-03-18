@@ -193,6 +193,37 @@
         statusEl.textContent = 'Reset';
       };
 
+      // ── Mouse input → Amiga port 1 ─────────────────────────────────────
+      // Forwards host mouse movements to the emulated JOY0DAT counter
+      // (wasm_mouse takes dx/dy deltas; wasm_mouse_button: 0=left, 1=right).
+      let _prevMouseX = null, _prevMouseY = null;
+
+      canvas.addEventListener('mousemove', (e) => {
+        if (!Module._wasm_mouse) return;
+        if (_prevMouseX !== null) {
+          const dx = e.clientX - _prevMouseX;
+          const dy = e.clientY - _prevMouseY;
+          if (dx !== 0 || dy !== 0) Module._wasm_mouse(0, dx, dy);
+        }
+        _prevMouseX = e.clientX;
+        _prevMouseY = e.clientY;
+      });
+
+      canvas.addEventListener('mouseleave', () => {
+        _prevMouseX = null;
+        _prevMouseY = null;
+      });
+
+      canvas.addEventListener('mousedown', (e) => {
+        if (Module._wasm_mouse_button)
+          Module._wasm_mouse_button(0, e.button === 2 ? 1 : 0, 1);
+      });
+
+      canvas.addEventListener('mouseup', (e) => {
+        if (Module._wasm_mouse_button)
+          Module._wasm_mouse_button(0, e.button === 2 ? 1 : 0, 0);
+      });
+
       // ── Electron IPC bridge ──────────────────────────────────────────────
       // The preload script exposes window.electronAPI
       if (window.electronAPI) {

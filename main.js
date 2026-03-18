@@ -227,11 +227,11 @@ ipcMain.on('emulator:status', (_event, text) => {
 });
 
 // Renderer → main: assemble m68k source with vasmm68k_mot
-// Accepts { asm: string, assetFiles: string[], projectDir?: string }
-// Returns { ok: true, data: Buffer } or { ok: false, error: string }
+// Accepts { asm: string, assetFiles: string[], fontAssets?: [...], projectDir?: string }
+// Returns { ok: true, data: Buffer, warnings: string[] } or { ok: false, error: string }
 ipcMain.handle('bassm:assemble', (_event, payload) => {
   return new Promise((resolve) => {
-    const { asm: asmText, assetFiles = [], projectDir } = payload;
+    const { asm: asmText, assetFiles = [], fontAssets = [], projectDir } = payload;
     // Asset root: project folder when open, app/assets/ for the built-in demo.
     // Filenames may be relative paths (e.g. "sounds/boing.raw") — directory
     // structure is mirrored into tmpDir so INCBIN resolves them correctly.
@@ -251,6 +251,22 @@ ipcMain.handle('bassm:assemble', (_event, payload) => {
         resolve({ ok: false, error: `Asset not found: ${filename} (expected at ${src})` });
         return;
       }
+    }
+
+    // Validate font numPlanes: warn if > 2 (CPU text with 5 planes is ~5x slower)
+    const warnings = [];
+    for (const { filename, numChars, charH } of fontAssets) {
+      try {
+        const src      = path.join(assetSrcDir, filename);
+        const fileSize = fs.statSync(src).size;
+        const bytesPerPlane = numChars * charH;
+        if (bytesPerPlane > 0 && fileSize % bytesPerPlane === 0) {
+          const numPlanes = fileSize / bytesPerPlane;
+          if (numPlanes > 2) {
+            warnings.push(`LoadFont "${filename}": ${numPlanes} Planes erkannt — CPU-Text kostet ~${numPlanes}x mehr. Empfehlung: LoadImage + DrawImage für bunten Text verwenden.`);
+          }
+        }
+      } catch (_) { /* file not found — vasm wird den Fehler melden */ }
     }
 
     fs.writeFileSync(srcFile, asmText, 'utf8');
@@ -280,7 +296,7 @@ ipcMain.handle('bassm:assemble', (_event, payload) => {
             fs.copyFileSync(outFile, path.join(projectDir, 'bassm_out.exe'));
           }
 
-          resolve({ ok: true, data });
+          resolve({ ok: true, data, warnings });
         } catch (readErr) {
           resolve({ ok: false, error: readErr.message });
         }

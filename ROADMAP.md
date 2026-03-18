@@ -38,6 +38,7 @@
 | **LANG-E** Xor / Shl / Shr | Bitweises XOR (`eori.l`/`eor.l`), Linksshift (`lsl.l`), arithmetischer Rechtsshift (`asr.l`); Präzedenz Xor=Or, Shl/Shr=Mul |
 | **TOOL-IDE Budget** | CPU-Cycle + Chip-RAM Lebensbalken im Editor; `budget.js` statische Analyse; Hauptloop-Erkennung; For-Multiplikation; Gradient-Bars grün→rot mit Glow-Effekt |
 | **PERF-PEEP** Peephole-Optimizer | 5 Regeln (Text-basiert, Sliding Window, Multi-Pass bis stabil): R1 Store-Reload, R2 `cmp.l #0→tst.l`, R3 For-Doppel-Load, R4 Binop-Push-Pop→direkter Speicheroperand, R5 2-Arg-Push-Pop; Safety: Label-Guards; ~5% Einsparung/Frame für boing.s |
+| **M-FONT** Custom Fonts | `LoadFont idx,chars,file,charW,charH` + `UseFont [n]`; charW ≤ 8 (Null-Padding transparent); `numPlanes` aus Dateigröße; IDE-Warnung bei >2 Planes; 128-Byte-Lookup-Tabelle; `_text_init` in startup; generalisierter `_Text`-Renderer mit `_active_font_*` BSS-Vars |
 | **M-SYS** Peek / Poke | `PeekB/W/L(addr)` inline (literal→direkt, runtime→via a0); `PokeB/W/L/Poke addr,val` mit 3-Pfad-Optimierung (beide literal → 1 Instr.; literal addr → eval+absolut-Store; runtime addr → push/eval/pop→a0); vollständig inline, kein Fragment |
 | **M-BOB** Blitter Objects | `SetBackground imgIdx`, `LoadMask imgIdx,"f.mask"`, `DrawBob imgIdx,x,y`; `bobs.s` mit 3-Queue-System (_bobs_new/_old_a/_old_b); `_FlushBobs` auto-injiziert vor ScreenFlip; `_bg_restore_static` (BLTCON0=$09F0); `_BltBobMasked` (BLTCON0=$0FCA, Minterm $CA); Fallback auf `_DrawImage` ohne Maske |
 | **M-COLL** Kollisionserkennung | `RectsOverlap(x1,y1,w1,h1,x2,y2,w2,h2)`, `ImagesOverlap(img1,x1,y1,img2,x2,y2)`, `ImageRectOverlap(img,x,y,rx,ry,rw,rh)`; alle vollständig inline; 8/4/6 Args per Stack + movem; Header-Dimensionen zur Compile-Time; a1/a2 als Scratch |
@@ -338,7 +339,39 @@ ScreenFlip
 
 ---
 
-### 10. M-SCROLL — Ring-Buffer Tilemap *(scrollende Tile-Welten)*
+### 10. M-FONT — Custom Fonts *(Spiel-eigene Schriftarten)*
+
+```blitz
+LoadFont 0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!?.", "hud.raw",   8, 12
+LoadFont 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", "title.raw", 8, 16
+
+UseFont 0                            ; aktiviert Font 0 für alle folgenden Text-Aufrufe
+Text 10, 20, "SCORE: " + Str$(score)
+Text 10, 40, "LIVES: " + Str$(lives)
+
+UseFont                              ; zurück zum Built-in Font
+Text 10, 200, "press fire to continue"
+```
+
+**Designprinzipien:**
+- `charW` muss ≤ 8 sein — Glyphen werden links-justiert mit Null-Padding auf 8 Bit gespeichert (1 Byte/Zeile); die Padding-Bits sind in beiden Render-Pfaden transparent (OR 0 = no-op; AND $FF = no-op); Phase 2 kann charW ≤ 16 ergänzen
+- `numPlanes` aus Dateigröße: `fileSize / (numChars × charH)` — 1 Byte/Zeile/Glyph, kein Parameter nötig
+- IDE-Warnung wenn `numPlanes > 2`: CPU-Text mit 5 Planes kostet ~5× mehr — `LoadImage` + `DrawImage` bevorzugen
+- Built-in Font (8×8, 96 Zeichen) hat keinen User-Index; `UseFont` ohne Argument reaktiviert ihn
+- Kein `FreeFont` — alles wird beim Start geladen und bleibt bis Programmende
+- Font-Daten in `SECTION DATA` (kein Chip-RAM) — identisch zum eingebauten font8x8
+
+- `[x]` **FONT-1** — `commands-map.json`: `LoadFont` (5 Params: idx, chars, file, charW, charH) + `UseFont` (0–1 Params)
+- `[x]` **FONT-2** — `codegen.js _collectVars`: `_fontAssets` Map registrieren; `numPlanes` aus Dateigröße errechnen (`fileSize / (numChars × charH)`); Compiler-Fehler bei `charW > 8`; IDE-Warnung bei `numPlanes > 2`
+- `[x]` **FONT-3** — `codegen.js generate()`: `SECTION DATA` INCBIN pro Font; 128-Byte-Lookup-Tabelle aus `chars`-String emittieren (`$FF` = Zeichen nicht im Font); Font-Dateien in `tmpDir` kopieren (analog zu Sound-Assets in bassm.js / main.js)
+- `[x]` **FONT-4** — `text.s`: BSS-Variablen `_active_font_charW`, `_active_font_charH`, `_active_font_charH_m1`, `_active_font_data`, `_active_font_lookup` (128 B); Built-in Lookup-Tabelle (Codes 32–127 → Index 0–95, rest → `$FF`) in DATA; Pre-Initialisierung auf font8x8-Werte
+- `[x]` **FONT-5** — `text.s _Text`: Char-Lookup auf `_active_font_lookup` umstellen (`move.b _active_font_lookup(d4.w),d4` → `$FF` → skip); Glyph-Pointer `_active_font_data + idx × charH` (`muls.w` statt `lsl.l #3`); Row-Count aus `_active_font_charH_m1`; X-Advance aus `_active_font_charW`
+- `[x]` **FONT-6** — `codegen.js UseFont`: `UseFont n` emittiert Lookup-Copy (128 Bytes) + `_active_font_charW/H/charH_m1/data` Update; `UseFont` (kein Arg) emittiert Reset auf Built-in Werte
+- `[x]` **FONT-7** — `budget.js`: `LoadFont` in Analyse aufnehmen (DATA → kein Chip-RAM-Verbrauch); Cycle-Kosten von `Text` bei `charH ≠ 8` anpassen
+
+---
+
+### 11. M-SCROLL — Ring-Buffer Tilemap *(scrollende Tile-Welten)*
 
 ```blitz
 LoadTilemap "world.map"         ; Dimensionen stehen in der Datei
@@ -381,7 +414,7 @@ Wend
 
 ---
 
-### 11. M-DATA — 2D-Arrays *(Tile-Maps, Spielfelder)*
+### 12. M-DATA — 2D-Arrays *(Tile-Maps, Spielfelder)*
 
 ```blitz
 Dim map(19, 14)          ; 20×15 Tile-Map
@@ -396,7 +429,7 @@ tile = map(px / 16, py / 16)
 
 ---
 
-### 12. M-TYPE — Strukturen (`Type … EndType`) *(das wichtigste fehlende Feature)*
+### 13. M-TYPE — Strukturen (`Type … EndType`) *(das wichtigste fehlende Feature)*
 
 ```blitz
 Type Enemy
@@ -666,6 +699,7 @@ Stufe 2 — Daten & Hardware:
   [x] M-BOB    DrawBob + SetBackground + LoadMask + _bg_restore_fn + bobs.s
   [x] M-COLL   RectsOverlap + ImagesOverlap + ImageRectOverlap (ImagesCollide Phase 2)
   [x] M-ANIM   LoadAnimImage + DrawImage/DrawBob frame-Argument; _DrawImageFrame + _BltBobMaskedFrame
+  [x] M-FONT   LoadFont + UseFont + text.s Generalisierung (variabler charH, Lookup-Tabelle)
   [ ] M-SCROLL Ring-Buffer Tilemap + ScrollTilemap + _bg_restore_tilemap
   [ ] M-DATA   2D-Arrays
   [x] M-TYPE   Type-Strukturen

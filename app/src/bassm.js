@@ -72,12 +72,14 @@ class BASSM {
         const expanded = await this._preProcessor.expandIncludes(source, { readFile });
 
         // 1. Blitz2D → m68k assembly
-        const asm = this.compile(expanded);
+        const asm        = this.compile(expanded);
         const assetFiles = this._codegen.getAssetRefs();
+        const fontAssets = this._codegen.getFontAssets();
 
         // 2. Assemble with vasmm68k_mot via Electron IPC
-        const result = await window.electronAPI.assemble({ asm, assetFiles, projectDir });
+        const result = await window.electronAPI.assemble({ asm, assetFiles, fontAssets, projectDir });
         if (!result.ok) throw new Error(result.error);
+        for (const w of (result.warnings || [])) logLine(`Warnung: ${w}`, 'warn');
 
         // 3. Send HUNK binary to emulator — triggers reset + boot from virtual disk
         window.electronAPI.emulator.send({ type: 'load-exe', data: result.data });

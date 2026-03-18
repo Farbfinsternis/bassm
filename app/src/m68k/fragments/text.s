@@ -80,7 +80,27 @@
 ; ============================================================================
 
 
-        INCLUDE "font8x8.s"             ; chip-RAM font data (_font8x8)
+        INCLUDE "font8x8.s"             ; built-in font data (_font8x8)
+
+; ── Built-in font lookup table ────────────────────────────────────────────────
+; charCode (0–127) → glyph index into _font8x8; $FF = not in font.
+; Printable ASCII 32–127: index = charCode - 32  (direct mapping).
+; Codes 0–31: $FF (control characters, not renderable).
+
+        SECTION text_data,DATA
+
+        XDEF    _builtin_font_lookup
+_builtin_font_lookup:
+        ; codes 0–31: not in font
+        dc.b    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+        dc.b    $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+        ; codes 32–127: index = code - 32  (0..95)
+        dc.b    0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+        dc.b    16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+        dc.b    32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47
+        dc.b    48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63
+        dc.b    64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79
+        dc.b    80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95
 
         SECTION text_code,CODE
 
@@ -94,6 +114,28 @@
 ;         d0.l = X position in pixels  (0 .. GFXWIDTH-1)
 ;         d1.l = Y position in pixels  (0 .. GFXHEIGHT-1)
 ; Trashes: nothing visible (saves d2-d7/a1-a4; d0, d1, a0 are input)
+
+; ── _text_init ────────────────────────────────────────────────────────────────
+;
+; Initialises the active font descriptor to the built-in 8×8 font.
+; Called once from _setup_graphics in startup.s before the main program runs.
+; Trashes: a0, a1, d0
+
+        XDEF    _text_init
+_text_init:
+        move.w  #8,_active_font_charW
+        move.w  #8,_active_font_charH
+        move.w  #7,_active_font_charH_m1
+        move.l  #_font8x8,_active_font_data
+        ; Copy built-in lookup table (128 bytes = 32 longs) to active descriptor
+        lea     _builtin_font_lookup,a0
+        lea     _active_font_lookup,a1
+        moveq   #31,d0
+.ti_loop:
+        move.l  (a0)+,(a1)+
+        dbra    d0,.ti_loop
+        rts
+
 
         XDEF    _Text
 _Text:
@@ -117,11 +159,14 @@ _Text:
         bra.w   .txt_char
 
 .txt_not_nl:
-        ; ── Skip non-printable ASCII ──────────────────────────────────────
-        cmp.b   #32,d4
-        blt.w   .txt_advance           ; < SPACE → skip
+        ; ── Lookup: charCode → glyph index via active font table ─────────
+        ; d4 = char code (0–127); table[d4] = glyph index, $FF = not in font
         cmp.b   #127,d4
-        bgt.w   .txt_advance           ; > DEL  → skip
+        bgt.w   .txt_advance           ; > 127 → skip (non-ASCII)
+        lea     _active_font_lookup,a4
+        move.b  (a4,d4.w),d4          ; d4 = glyph index (byte)
+        cmp.b   #$FF,d4
+        beq.w   .txt_advance           ; not in this font → skip
 
         ; ── y bounds check ───────────────────────────────────────────────
         tst.l   d3
@@ -135,11 +180,12 @@ _Text:
         cmp.l   #GFXWIDTH,d2
         bge.w   .txt_advance           ; x >= width → skip this char
 
-        ; ── Glyph pointer: a4 = _font8x8 + (char - 32) * 8 ──────────────
-        sub.l   #32,d4                 ; char index (0-95)
-        lsl.l   #3,d4                  ; × 8  (8 bytes per glyph)
-        lea     _font8x8,a4
-        add.l   d4,a4                  ; a4 = base of 8 glyph row bytes
+        ; ── Glyph pointer: a4 = _active_font_data + idx * charH ──────────
+        ; d4.b holds the glyph index (0-extended to long via move.b above)
+        and.l   #$FF,d4                ; zero-extend byte → long
+        muls.w  _active_font_charH,d4  ; d4 = idx × charH  (bytes to glyph start)
+        move.l  _active_font_data,a4
+        add.l   d4,a4                  ; a4 = base of charH glyph row bytes
 
         ; ── byte_offset = y * GFXBPR + (x >> 3) ──────────────────────────
         move.l  d3,d5
@@ -160,7 +206,7 @@ _Text:
 .txt_plane:
         move.l  a4,a1                  ; a1 = glyph row ptr (reset each plane)
         lea     (a2,d5.l),a3           ; a3 = row-0 dest byte for this plane
-        moveq   #7,d4                  ; d4 = row counter (dbra 7..0 = 8 rows)
+        move.w  _active_font_charH_m1,d4  ; d4 = charH-1 (dbra counts charH rows)
 
         btst    #0,d7
         beq.s   .txt_plane_clr
@@ -198,7 +244,7 @@ _Text:
         dbra    d0,.txt_plane          ; loop over all planes
 
 .txt_advance:
-        addq.l  #8,d2                  ; advance x by font cell width (8 px)
+        add.w   _active_font_charW,d2  ; advance x by font cell width
         bra.w   .txt_char              ; fetch next character
 
 .txt_done:
@@ -314,3 +360,19 @@ _IntToStr:
         XDEF    _text_y
 _str_buf:       ds.b    12              ; max "-2147483648\0"
 _text_y:        ds.l    1               ; Y scratch for multi-part Text calls
+
+; ── Active font descriptor ────────────────────────────────────────────────────
+; Initialised to built-in font values by _text_init (called from startup.s).
+; UseFont N updates these variables to switch the active font at runtime.
+
+        XDEF    _active_font_charW
+        XDEF    _active_font_charH
+        XDEF    _active_font_charH_m1
+        XDEF    _active_font_data
+        XDEF    _active_font_lookup
+_active_font_charW:     ds.w    1       ; character width  in pixels (1–8)
+_active_font_charH:     ds.w    1       ; character height in pixels
+_active_font_charH_m1:  ds.w    1       ; charH - 1  (for dbra row loop)
+                        ds.w    1       ; padding — keeps _active_font_data long-aligned
+_active_font_data:      ds.l    1       ; pointer to glyph data (byte-padded, 1 byte/row)
+_active_font_lookup:    ds.l    32      ; 128-byte lookup: charCode → glyph index ($FF=skip)
