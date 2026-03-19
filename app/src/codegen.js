@@ -58,6 +58,7 @@ export class CodeGen {
         // Reset per-compilation state
         this._labelCount    = 0;
         this._arrays        = new Map();  // name → size Expr (populated by _collectVars)
+        this._arrays2d      = new Map();  // name → { sizeW, sizeH } Exprs (2D arrays)
         this._usesRaster    = false;      // true if any CopperColor command present
         this._usesSound     = false;      // true if any LoadSample command present
         this._audioSamples  = new Map();  // index (int) → { filename, label }
@@ -223,7 +224,7 @@ export class CodeGen {
         // ── DATA & BSS SECTIONS (Must come after CODE for WinUAE compatibility) ──
 
         // User variable BSS — one longword per scalar integer variable
-        if (varNames.size > 0 || this._arrays.size > 0 || this._typeInstances.size > 0) {
+        if (varNames.size > 0 || this._arrays.size > 0 || this._arrays2d.size > 0 || this._typeInstances.size > 0) {
             out.push('        SECTION user_vars,BSS');
             for (const name of varNames) {
                 out.push(`_var_${name}:    ds.l    1`);
@@ -234,6 +235,14 @@ export class CodeGen {
                     throw new Error(`Dim ${name}: array size must be an integer literal`);
                 }
                 out.push(`_arr_${name}:    ds.l    ${sizeExpr.value + 1}`);
+            }
+            // 2D Arrays: Dim arr(w,h) → (w+1)*(h+1) longwords; index = y*(w+1)+x
+            for (const [name, dims] of this._arrays2d) {
+                if (dims.sizeW.type !== 'int' || dims.sizeH.type !== 'int') {
+                    throw new Error(`Dim ${name}: 2D array sizes must be integer literals`);
+                }
+                const count = (dims.sizeW.value + 1) * (dims.sizeH.value + 1);
+                out.push(`_arr_${name}:    ds.l    ${count}`);
             }
             // Type instances: AoS layout — fieldCount longwords per instance
             for (const [instName, inst] of this._typeInstances) {
@@ -411,8 +420,8 @@ export class CodeGen {
      * Each entry: { filename, numChars, charH }
      */
     getFontAssets() {
-        return [...this._fontAssets.values()].map(({ filename, chars, charH }) => ({
-            filename, numChars: chars.length, charH
+        return [...this._fontAssets.values()].map(({ filename, chars, charW, charH }) => ({
+            filename, numChars: chars.length, charW, charH
         }));
     }
 
@@ -429,9 +438,15 @@ export class CodeGen {
                 this._collectVarsInExpr(stmt.expr, varSet);
             } else if (stmt.type === 'dim') {
                 this._arrays.set(stmt.name, stmt.size);
+            } else if (stmt.type === 'dim2d') {
+                this._arrays2d.set(stmt.name, { sizeW: stmt.sizeW, sizeH: stmt.sizeH });
             } else if (stmt.type === 'array_assign') {
                 this._collectVarsInExpr(stmt.index, varSet);
                 this._collectVarsInExpr(stmt.expr,  varSet);
+            } else if (stmt.type === 'array2d_assign') {
+                this._collectVarsInExpr(stmt.indexX, varSet);
+                this._collectVarsInExpr(stmt.indexY, varSet);
+                this._collectVarsInExpr(stmt.expr,   varSet);
             } else if (stmt.type === 'type_def') {
                 this._typeDefs.set(stmt.name, { fields: stmt.fields });
             } else if (stmt.type === 'dim_typed') {
@@ -517,19 +532,24 @@ export class CodeGen {
                     const fileArg  = stmt.args[2];
                     const wArg     = stmt.args[3];
                     const hArg     = stmt.args[4];
-                    if (idxArg?.type === 'int' && charsArg?.type === 'string' &&
-                        fileArg?.type === 'string' && wArg?.type === 'int' && hArg?.type === 'int') {
-                        const charW = wArg.value;
-                        const charH = hArg.value;
-                        if (charW > 8)
-                            throw new Error(`LoadFont: charW darf maximal 8 sein (${charW} angegeben) — Zeile ${stmt.line}`);
-                        if (!this._fontAssets.has(idxArg.value)) {
-                            const lbl = `_font_${this._fontAssets.size}`;
-                            this._fontAssets.set(idxArg.value, {
-                                filename: fileArg.value, label: lbl,
-                                chars: charsArg.value, charW, charH
-                            });
-                        }
+                    if (idxArg?.type !== 'int')
+                        throw new Error(`LoadFont: erstes Argument (Index) muss ein Integer-Literal sein — Zeile ${stmt.line}`);
+                    if (charsArg?.type !== 'string')
+                        throw new Error(`LoadFont: zweites Argument (Zeichensatz) muss ein String-Literal sein — Zeile ${stmt.line}`);
+                    if (fileArg?.type !== 'string')
+                        throw new Error(`LoadFont: drittes Argument (Dateiname) muss ein String-Literal sein — Zeile ${stmt.line}`);
+                    if (wArg?.type !== 'int' || hArg?.type !== 'int')
+                        throw new Error(`LoadFont: Syntax ist LoadFont index, "chars", "file.raw", charW, charH — charW/charH fehlen oder sind keine Ganzzahlen (Zeile ${stmt.line})`);
+                    const charW = wArg.value;
+                    const charH = hArg.value;
+                    if (charW > 8)
+                        throw new Error(`LoadFont: charW darf maximal 8 sein (${charW} angegeben) — Zeile ${stmt.line}`);
+                    if (!this._fontAssets.has(idxArg.value)) {
+                        const lbl = `_font_${this._fontAssets.size}`;
+                        this._fontAssets.set(idxArg.value, {
+                            filename: fileArg.value, label: lbl,
+                            chars: charsArg.value, charW, charH
+                        });
                     }
                 }
                 if (stmt.name === 'setbackground' || stmt.name === 'drawbob') {
@@ -659,7 +679,7 @@ export class CodeGen {
         }
 
         // ── Dim / Type / Function definition — declaration only, no code ─────
-        if (stmt.type === 'dim' || stmt.type === 'type_def' ||
+        if (stmt.type === 'dim' || stmt.type === 'dim2d' || stmt.type === 'type_def' ||
             stmt.type === 'dim_typed' || stmt.type === 'dim_typed_array' ||
             stmt.type === 'function_def') {
             return lines;
@@ -705,6 +725,28 @@ export class CodeGen {
             this._genExpr(stmt.expr, lines);
             lines.push(`        move.l  d0,-(sp)`);
             this._genExpr(stmt.index, lines);
+            lines.push(`        asl.l   #2,d0`);
+            lines.push(`        lea     _arr_${stmt.name},a0`);
+            lines.push(`        add.l   d0,a0`);
+            lines.push(`        move.l  (sp)+,(a0)`);
+            return lines;
+        }
+
+        // ── 2D array assignment: arr(x, y) = expr ────────────────────────────
+        // flat = y*(sizeW+1)+x;  byte_off = flat*4
+        // eval expr → push; eval y → d0 → multiply by stride → push; eval x → d0
+        // add (sp)+ → d0 = y*stride+x; asl.l #2,d0; lea+add; move.l (sp)+,(a0)
+        if (stmt.type === 'array2d_assign') {
+            const dims = this._arrays2d.get(stmt.name);
+            if (!dims) throw new Error(`Undeclared 2D array '${stmt.name}' (line ${stmt.line})`);
+            const stride = dims.sizeW.value + 1;
+            this._genExpr(stmt.expr, lines);
+            lines.push(`        move.l  d0,-(sp)`);
+            this._genExpr(stmt.indexY, lines);
+            if (stride !== 1) this._emitMultiplyByConst(stride, lines);
+            lines.push(`        move.l  d0,-(sp)`);
+            this._genExpr(stmt.indexX, lines);
+            lines.push(`        add.l   (sp)+,d0`);
             lines.push(`        asl.l   #2,d0`);
             lines.push(`        lea     _arr_${stmt.name},a0`);
             lines.push(`        add.l   d0,a0`);
@@ -862,7 +904,14 @@ export class CodeGen {
 
             case 'loadanimimage':
                 // LoadAnimImage index,"f.raw",fw,fh,count — data only; INCBIN at end.
-                // No runtime code needed; frame count used only by codegen for DrawImage/DrawBob.
+                // Index 0: apply embedded palette at runtime (same as LoadImage).
+                if (stmt.args[0]?.type === 'int' && stmt.args[0].value === 0) {
+                    const slot = this._imageAssets.get(0);
+                    if (slot) {
+                        lines.push(`        lea     ${slot.label},a0`);
+                        lines.push(`        jsr     _SetImagePalette`);
+                    }
+                }
                 break;
 
             case 'drawimage': {
@@ -882,6 +931,9 @@ export class CodeGen {
                 const xExpr    = stmt.args[1] ?? { type: 'int', value: 0 };
                 const yExpr    = stmt.args[2] ?? { type: 'int', value: 0 };
                 const frameArg = stmt.args[3]; // undefined = no frame argument
+
+                if (frameArg && !imgEntry.isAnim)
+                    throw new Error(`DrawImage: frame argument requires LoadAnimImage (image ${imgIdxArg.value} was loaded with LoadImage) — line ${stmt.line}`);
 
                 if (!frameArg) {
                     // Original 3-arg path — jsr _DrawImage (clears d2 internally)
@@ -2088,8 +2140,23 @@ export class CodeGen {
                         );
                     }
                     this._emitFunctionCall(expr.name, expr.args, lines);
+                } else if (this._arrays2d.has(expr.name)) {
+                    // 2D array read: flat = y*(sizeW+1)+x
+                    const dims   = this._arrays2d.get(expr.name);
+                    const stride = dims.sizeW.value + 1;
+                    const indexX = expr.args[0] ?? { type: 'int', value: 0 };
+                    const indexY = expr.args[1] ?? { type: 'int', value: 0 };
+                    this._genExpr(indexY, lines);
+                    if (stride !== 1) this._emitMultiplyByConst(stride, lines);
+                    lines.push(`        move.l  d0,-(sp)`);
+                    this._genExpr(indexX, lines);
+                    lines.push(`        add.l   (sp)+,d0`);
+                    lines.push(`        asl.l   #2,d0`);
+                    lines.push(`        lea     _arr_${expr.name},a0`);
+                    lines.push(`        add.l   d0,a0`);
+                    lines.push(`        move.l  (a0),d0`);
                 } else {
-                    // Array read: treat args[0] as index
+                    // 1D array read: treat args[0] as index
                     const index = expr.args[0] ?? { type: 'int', value: 0 };
                     this._genExpr(index, lines);
                     lines.push(`        asl.l   #2,d0`);

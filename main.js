@@ -70,12 +70,11 @@ app.whenReady().then(() => {
 // ── Asset Manager Window ───────────────────────────────────────────────────
 let assetManagerWindow = null;
 
-function createAssetManagerWindow(projectDir) {
+function createAssetManagerWindow(projectDir, preloadFile) {
   if (assetManagerWindow && !assetManagerWindow.isDestroyed()) {
     assetManagerWindow.focus();
-    if (projectDir) {
-      assetManagerWindow.webContents.send('assets:set-project', { projectDir });
-    }
+    if (projectDir)  assetManagerWindow.webContents.send('assets:set-project',  { projectDir });
+    if (preloadFile) assetManagerWindow.webContents.send('assets:preload-file', { projectDir, preloadFile });
     return;
   }
 
@@ -95,9 +94,10 @@ function createAssetManagerWindow(projectDir) {
 
   assetManagerWindow.loadFile('app/asset-manager.html');
 
-  if (projectDir) {
+  if (projectDir || preloadFile) {
     assetManagerWindow.webContents.once('did-finish-load', () => {
-      assetManagerWindow.webContents.send('assets:set-project', { projectDir });
+      if (projectDir)  assetManagerWindow.webContents.send('assets:set-project',  { projectDir });
+      if (preloadFile) assetManagerWindow.webContents.send('assets:preload-file', { projectDir, preloadFile });
     });
   }
 
@@ -105,8 +105,8 @@ function createAssetManagerWindow(projectDir) {
 }
 
 // Renderer (editor) → main: open or focus the Asset Manager window
-ipcMain.on('bassm:open-asset-manager', (_event, { projectDir } = {}) => {
-  createAssetManagerWindow(projectDir || null);
+ipcMain.on('bassm:open-asset-manager', (_event, { projectDir, preloadFile } = {}) => {
+  createAssetManagerWindow(projectDir || null, preloadFile || null);
 });
 
 // Renderer (asset manager) → main: list assets in project directory
@@ -253,17 +253,57 @@ ipcMain.handle('bassm:assemble', (_event, payload) => {
       }
     }
 
-    // Validate font numPlanes: warn if > 2 (CPU text with 5 planes is ~5x slower)
+    // Convert font .raw files from OCS spritesheet format to glyph-major format.
+    //
+    // The Asset Manager produces OCS planar .raw files:
+    //   [palette: (1<<depth)*2 bytes] [plane0: rows×rowbytes] [plane1: ...] ...
+    // text.s expects glyph-major packed data (no palette, 1 byte/row per glyph):
+    //   [glyph0_row0, glyph0_row1, ..., glyph0_rowH-1, glyph1_row0, ...]
+    //
+    // Detection: if (fileSize - paletteSize) is divisible by (charH × rowbytes)
+    // and the resulting plane count equals depth → it's OCS format → convert.
+    // Otherwise the file is assumed to already be in glyph-major format.
     const warnings = [];
-    for (const { filename, numChars, charH } of fontAssets) {
+    for (const { filename, numChars, charW, charH } of fontAssets) {
       try {
         const src      = path.join(assetSrcDir, filename);
-        const fileSize = fs.statSync(src).size;
-        const bytesPerPlane = numChars * charH;
-        if (bytesPerPlane > 0 && fileSize % bytesPerPlane === 0) {
-          const numPlanes = fileSize / bytesPerPlane;
+        const dst      = path.join(tmpDir, filename);
+        const fileData = fs.readFileSync(src);
+        const rowbytes = Math.ceil((numChars * charW) / 16) * 2;
+
+        // Auto-detect OCS palette size
+        let paletteSize = 0;
+        for (let d = 1; d <= 5; d++) {
+          const palSize   = (1 << d) * 2;
+          const remaining = fileData.length - palSize;
+          if (remaining > 0 && remaining % (charH * rowbytes) === 0) {
+            const planes = remaining / (charH * rowbytes);
+            if (planes === d) { paletteSize = palSize; break; }
+          }
+        }
+
+        if (paletteSize > 0) {
+          // OCS spritesheet → glyph-major conversion (plane 0 only)
+          const converted = Buffer.alloc(numChars * charH);
+          for (let i = 0; i < numChars; i++) {
+            for (let r = 0; r < charH; r++) {
+              // For charW ≤ 8: extract charW bits starting at pixel column (i * charW)
+              let val = 0;
+              for (let b = 0; b < charW; b++) {
+                const pixelIdx = i * charW + b;
+                const srcByte  = fileData[paletteSize + r * rowbytes + (pixelIdx >> 3)];
+                if (srcByte & (1 << (7 - (pixelIdx & 7)))) val |= (1 << (7 - b));
+              }
+              converted[i * charH + r] = val;
+            }
+          }
+          fs.mkdirSync(path.dirname(dst), { recursive: true });
+          fs.writeFileSync(dst, converted);
+
+          // Warn if font has > 2 planes (we only use plane 0; extra planes are wasted)
+          const numPlanes = (fileData.length - paletteSize) / (charH * rowbytes);
           if (numPlanes > 2) {
-            warnings.push(`LoadFont "${filename}": ${numPlanes} Planes erkannt — CPU-Text kostet ~${numPlanes}x mehr. Empfehlung: LoadImage + DrawImage für bunten Text verwenden.`);
+            warnings.push(`LoadFont "${filename}": ${numPlanes}-Plane-Font — nur Plane 0 wird für Text verwendet. Für bunten Text lieber LoadImage + DrawImage nutzen.`);
           }
         }
       } catch (_) { /* file not found — vasm wird den Fehler melden */ }
@@ -381,6 +421,18 @@ ipcMain.handle('bassm:write-asset', (_event, { projectDir, subdir, filename, dat
   }
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(outFile, Buffer.from(data));
+});
+
+// Renderer (asset manager) → main: show OS save dialog, then write the file.
+// Accepts { defaultPath: string, filters: Array<{name,extensions}>, data: number[] }
+// Returns { saved: true, filePath: string } | { saved: false }
+ipcMain.handle('bassm:save-asset-dialog', async (_event, { defaultPath, filters = [], data }) => {
+  const win = BrowserWindow.getFocusedWindow();
+  const result = await dialog.showSaveDialog(win, { defaultPath, filters });
+  if (result.canceled || !result.filePath) return { saved: false };
+  fs.mkdirSync(path.dirname(result.filePath), { recursive: true });
+  fs.writeFileSync(result.filePath, Buffer.from(data));
+  return { saved: true, filePath: result.filePath };
 });
 
 // Renderer → main: recursively scan project directory

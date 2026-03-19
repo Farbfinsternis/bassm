@@ -271,6 +271,12 @@
           Module.HEAPU8.set(buf, ptr);
           const r = Module.ccall('wasm_loadFile','string',['string','number','number','number'],['program.exe', ptr, buf.byteLength, 0]);
           Module._free(ptr); console.log('[preview] wasm_loadFile result=', r || '(ok)');
+          // Warp-Boot: AROS bootet mit maximalem Tempo für 150 PAL-Frames (~3 Sek.
+          // Emulationszeit), danach stoppt Warp automatisch.  Das softReset() aus
+          // wasm_configure ist harmlos — der nachfolgende hardReset übernimmt.
+          Module.ccall('wasm_configure','string',['string','string'],['warp_to_frame','150']);
+          // Sicherstellen dass nach dem Warp echtes A500-Tempo gilt (kein Overclocking).
+          Module.ccall('wasm_configure','string',['string','string'],['CPU_OVERCLOCKING','0']);
           queued_executes = 0; Module._wasm_reset(); Module._wasm_run(); startRender();
           if (window._vAmigaAudioCtx && window._vAmigaAudioCtx.state === 'suspended') window._vAmigaAudioCtx.resume();
           statusEl.textContent = 'Running — booting from disk';

@@ -100,10 +100,18 @@
 							</select>
 							Bitplanes
 						</label>
-						<label><input type="checkbox" id="chk-dither" /> Floyd-Steinberg</label>
+						<label>Dither
+							<select id="sel-dither">
+								<option value="none">None</option>
+								<option value="floyd-steinberg" selected>Floyd-Steinberg</option>
+								<option value="atkinson">Atkinson</option>
+								<option value="bayer">Bayer</option>
+							</select>
+						</label>
 						<span id="fit-quality"></span>
 						<div class="spacer"></div>
 						<button disabled id="btn-convert-image">Convert &amp; Save</button>
+						<button disabled id="btn-export-iff">Export IFF</button>
 						<button disabled id="btn-copy-image-code">Copy Code</button>
 					</div>
 				</div>
@@ -140,6 +148,8 @@
 
 		</div><!-- /main-area -->
 
-		<script src="src/asset-manager.js"></script>
+		<script src="src/image-quantizer.js"></script>
+	<script src="src/iff-writer.js"></script>
+	<script src="src/asset-manager.js"></script>
 	</body>
 </html>

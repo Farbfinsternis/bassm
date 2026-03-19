@@ -4,7 +4,7 @@ body {
     background: #0a0a0a;
     color: #ccc;
     font-family: monospace;
-    font-size: 12px;
+    font-size: 14px;
     height: 100vh;
     display: flex;
     flex-direction: column;
@@ -19,7 +19,7 @@ body {
     display: flex;
     align-items: center;
     gap: 4px;
-    height: 28px;
+    height: 32px;
     flex-shrink: 0;
 }
 
@@ -30,7 +30,7 @@ body {
     color: #999;
     border: 1px solid #333;
     border-radius: 2px;
-    font-size: 11px;
+    font-size: 14px;
     font-family: monospace;
 }
 .tab-btn:hover  { background: #2c2c2c; color: #ccc; border-color: #555; }
@@ -38,7 +38,7 @@ body {
 
 #project-name {
     margin-left: auto;
-    font-size: 11px;
+    font-size: 14px;
     color: #59a;
 }
 
@@ -63,7 +63,7 @@ body {
 
 .group-header {
     padding: 4px 8px;
-    font-size: 10px;
+    font-size: 14px;
     color: #666;
     text-transform: uppercase;
     letter-spacing: 0.07em;
@@ -75,13 +75,13 @@ body {
     gap: 4px;
 }
 .group-header:hover { color: #999; background: #181818; }
-.group-header .toggle { font-size: 8px; }
+.group-header .toggle { font-size: 10px; }
 
 .group-items { padding: 2px 0; }
 
 .asset-item {
     padding: 3px 8px 3px 20px;
-    font-size: 11px;
+    font-size: 14px;
     color: #888;
     cursor: pointer;
     white-space: nowrap;
@@ -94,16 +94,16 @@ body {
 
 /* Source files (PNG/JPG/WAV…) — not yet converted; click opens in converter */
 .asset-item-source         { color: #a88; }
-.asset-item-source::before { content: '◆ '; font-size: 8px; color: #c84; }
+.asset-item-source::before { content: '◆ '; font-size: 10px; color: #c84; }
 .asset-item-source:hover   { color: #fc8; }
 
 /* Converted files (.raw) */
 .asset-item-converted         { color: #6a8; }
-.asset-item-converted::before { content: '✓ '; font-size: 9px; color: #484; }
+.asset-item-converted::before { content: '✓ '; font-size: 11px; color: #484; }
 
 .group-empty {
     padding: 3px 8px 3px 20px;
-    font-size: 11px;
+    font-size: 14px;
     color: #444;
     font-style: italic;
 }
@@ -128,7 +128,7 @@ body {
 .tab-panel.active { display: flex; }
 
 .panel-title {
-    font-size: 13px;
+    font-size: 14px;
     color: #bbb;
     padding-bottom: 8px;
     border-bottom: 1px solid #222;
@@ -139,7 +139,7 @@ body {
 }
 
 .badge {
-    font-size: 9px;
+    font-size: 14px;
     color: #556;
     background: #1a1a2a;
     border: 1px solid #334;
@@ -177,14 +177,14 @@ body {
     position: absolute;
     bottom: 1px;
     right: 2px;
-    font-size: 7px;
+    font-size: 14px;
     color: rgba(255,255,255,0.25);
     pointer-events: none;
     line-height: 1;
 }
 
 #palette-info {
-    font-size: 11px;
+    font-size: 14px;
     color: #555;
     padding: 2px 0;
     flex-shrink: 0;
@@ -206,7 +206,7 @@ body {
 .drop-zone:hover   { border-color: #556; background: #0f1318; }
 .drop-zone.drag-over { border-color: #7bc; background: #0f1a25; }
 
-.drop-icon  { font-size: 22px; color: #446; font-family: monospace; }
+.drop-icon  { font-size: 24px; color: #446; font-family: monospace; }
 .drop-label { font-size: 12px; color: #888; }
 .drop-sub   { font-size: 10px; color: #555; }
 
@@ -228,7 +228,7 @@ body {
 }
 
 .split-label {
-    font-size: 10px;
+    font-size: 14px;
     color: #556;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -241,7 +241,6 @@ body {
     background: repeating-conic-gradient(#111 0% 25%, #181818 0% 50%) 0 0 / 16px 16px;
     border: 1px solid #222;
     image-rendering: pixelated;
-    min-height: 60px;
 }
 
 /* ── Waveform (Sounds) ── */
@@ -267,7 +266,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 11px;
+    font-size: 14px;
     color: #444;
     pointer-events: none;
 }
@@ -288,7 +287,7 @@ body {
     align-items: center;
     gap: 4px;
     color: #999;
-    font-size: 11px;
+    font-size: 14px;
     cursor: pointer;
 }
 
@@ -298,7 +297,7 @@ body {
     border: 1px solid #333;
     color: #ccc;
     font-family: monospace;
-    font-size: 11px;
+    font-size: 14px;
     padding: 1px 4px;
     border-radius: 2px;
 }
@@ -320,13 +319,13 @@ body {
 
 /* ── Buttons ── */
 button {
-    padding: 2px 10px;
+    padding: 3px 10px;
     cursor: pointer;
     background: #2a2a2a;
     color: #ccc;
     border: 1px solid #444;
     border-radius: 2px;
-    font-size: 11px;
+    font-size: 14px;
     font-family: monospace;
 }
 button:hover    { background: #3a3a3a; border-color: #666; }

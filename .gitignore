@@ -5,6 +5,7 @@ Thumbs.db
 .claude/
 out/
 site/
+img-pal-mgr/
 EMULATOR.md
 CHANGELOG.dev.md
 examples/**/*.s

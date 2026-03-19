@@ -43,6 +43,7 @@
 | **M-BOB** Blitter Objects | `SetBackground imgIdx`, `LoadMask imgIdx,"f.mask"`, `DrawBob imgIdx,x,y`; `bobs.s` mit 3-Queue-System (_bobs_new/_old_a/_old_b); `_FlushBobs` auto-injiziert vor ScreenFlip; `_bg_restore_static` (BLTCON0=$09F0); `_BltBobMasked` (BLTCON0=$0FCA, Minterm $CA); Fallback auf `_DrawImage` ohne Maske |
 | **M-COLL** Kollisionserkennung | `RectsOverlap(x1,y1,w1,h1,x2,y2,w2,h2)`, `ImagesOverlap(img1,x1,y1,img2,x2,y2)`, `ImageRectOverlap(img,x,y,rx,ry,rw,rh)`; alle vollständig inline; 8/4/6 Args per Stack + movem; Header-Dimensionen zur Compile-Time; a1/a2 als Scratch |
 | **M-ANIM** Sprite-Animation | `LoadAnimImage n,"f.raw",fw,fh,count`; `DrawImage n,x,y,frame` (optional); `DrawBob n,x,y,frame` (optional); `_DrawImageFrame(d2=frame)` + `_DrawImageFrame` Fall-Through in image.s; `_BltBobMaskedFrame(d2=frame)` in bobs.s; Bob-Slot 12→16 Bytes; Frame-Offset = `frame×depth×plane_size`; Restore-Pass frame-agnostisch |
+| **M-DATA** 2D-Arrays | `Dim map(w,h)` → BSS `ds.l (w+1)*(h+1)`; `map(x,y)` lesen/schreiben inline; Indexformel `y*(w+1)+x`; abwärtskompatibel mit 1D-Syntax; `_emitMultiplyByConst` optimiert Power-of-2-Strides zu `lsl.l` |
 
 ---
 
@@ -414,7 +415,7 @@ Wend
 
 ---
 
-### 12. M-DATA — 2D-Arrays *(Tile-Maps, Spielfelder)*
+### ✅ 12. M-DATA — 2D-Arrays *(Tile-Maps, Spielfelder)*
 
 ```blitz
 Dim map(19, 14)          ; 20×15 Tile-Map
@@ -422,10 +423,10 @@ map(x, y) = TILE_WALL
 tile = map(px / 16, py / 16)
 ```
 
-- `[ ]` Parser: `Dim name(w, h)` — zweites Argument optional; `dim2d`-Node
-- `[ ]` CodeGen: BSS `ds.l (w+1)*(h+1)`; Indexformel `y*(w+1)+x` inline
-- `[ ]` `arr(x, y)` lesen/schreiben — gleiche Syntax wie 1D mit 2 Argumenten
-- `[ ]` Abwärtskompatibel: bestehende 1D-Syntax unverändert
+- `[x]` Parser: `Dim name(w, h)` — zweites Argument optional; `dim2d`-Node
+- `[x]` CodeGen: BSS `ds.l (w+1)*(h+1)`; Indexformel `y*(w+1)+x` inline
+- `[x]` `arr(x, y)` lesen/schreiben — gleiche Syntax wie 1D mit 2 Argumenten
+- `[x]` Abwärtskompatibel: bestehende 1D-Syntax unverändert
 
 ---
 
@@ -618,6 +619,19 @@ assets/
 
 ---
 
+### TOOL-IDE-3 — Profiler *(geplant)*
+
+> **Ziel:** Echte Laufzeit-Messung pro Frame statt statischer Schätzung — exakte CPU-Last,
+> Hotspot-Erkennung, Vergleich mit Budget-Analyser-Vorhersage.
+
+- `[ ]` **Instrumentierung** — CodeGen emittiert Zähler-Reads um gemessene Blöcke (VHPOSR/VPOSR als Cycle-Zähler, oder dedizierter Timer via CIA-B)
+- `[ ]` **Daten-Rückkanal** — vAmiga-Emulator sendet Frame-Daten via IPC an Electron-Host
+- `[ ]` **IDE-Overlay** — Flamegraph oder annotierter Quellcode (Cycles/Zeile) im Monaco-Editor
+- `[ ]` **Vergleichsmodus** — Budget-Analyser-Schätzung (statisch) vs. Profiler-Messung (real) nebeneinander; Abweichungen sichtbar machen
+- `[ ]` **Hotspot-Highlight** — Zeilen über Schwellwert (z.B. > 10% Framebudget) farblich markiert
+
+---
+
 ## PERF & Niedrige Priorität
 
 ### PERF-C — Optionale Variablen-Typisierung *(Expert-Feature, kein Blocker)*
@@ -701,7 +715,7 @@ Stufe 2 — Daten & Hardware:
   [x] M-ANIM   LoadAnimImage + DrawImage/DrawBob frame-Argument; _DrawImageFrame + _BltBobMaskedFrame
   [x] M-FONT   LoadFont + UseFont + text.s Generalisierung (variabler charH, Lookup-Tabelle)
   [ ] M-SCROLL Ring-Buffer Tilemap + ScrollTilemap + _bg_restore_tilemap
-  [ ] M-DATA   2D-Arrays
+  [x] M-DATA   2D-Arrays
   [x] M-TYPE   Type-Strukturen
   → ~95% game-complete: Tile-Platformer, komplexe Game-Objects
 
@@ -713,4 +727,6 @@ Stufe 3 — Hardware-Features & Musik:
 IDE-Tooling-Spur (parallel):
   [x] TOOL-IDE-1   Budget-Bars CPU + Chip-RAM
   [ ] TOOL-IDE-2   IDE-Gamification
+  [ ] TOOL-IDE-3   Profiler (Laufzeit-Messung, Hotspot-Overlay, Vergleich mit Budget-Analyser)
+  [ ] TOOL-EMU-1   Hot Reload via Workspace-Snapshot (niedrige Prio — aktueller Workflow bereits optimal)
 ```

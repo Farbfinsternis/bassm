@@ -14,6 +14,11 @@ contextBridge.exposeInMainWorld('assetAPI', {
     // data must be a regular Array of bytes (Uint8Array → Array.from()).
     writeAsset: (payload) => ipcRenderer.invoke('bassm:write-asset', payload),
 
+    // Show OS save dialog and write the file if the user confirms.
+    // Accepts { defaultPath: string, filters: Array, data: number[] }
+    // Returns { saved: boolean, filePath?: string }
+    saveAssetWithDialog: (payload) => ipcRenderer.invoke('bassm:save-asset-dialog', payload),
+
     // Read a binary asset file from the project directory.
     // Returns a number[] (byte array) suitable for new Uint8Array(bytes).
     readAsset: (payload) => ipcRenderer.invoke('bassm:read-asset', payload),
@@ -22,6 +27,12 @@ contextBridge.exposeInMainWorld('assetAPI', {
     // callback is called with { projectDir: string }
     onSetProject: (callback) => {
         ipcRenderer.on('assets:set-project', (_e, data) => callback(data));
+    },
+
+    // Called when the editor requests a specific file to be pre-loaded into the converter.
+    // callback is called with { projectDir: string, preloadFile: string }
+    onPreloadFile: (callback) => {
+        ipcRenderer.on('assets:preload-file', (_e, data) => callback(data));
     },
 
     // Called when any file in the project directory changes externally.

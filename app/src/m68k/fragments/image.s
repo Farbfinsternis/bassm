@@ -61,8 +61,9 @@
 ;     BLTSIZE  = (height << 6) | (rowbytes / 2)
 ;
 ; CLIPPING
-;   Not implemented.  x and y must be within screen bounds, and
-;   (x + width) must not exceed GFXWIDTH.
+;   Full bounds check: silently discarded if any edge is outside screen.
+;   Partial clipping (drawing only the visible portion) is not implemented;
+;   images that straddle the screen border are skipped entirely.
 ;
 ; DEPENDENCY
 ;   startup.s — defines all Blitter register EQUs, _WaitBlit, a5 = CUSTOM.
@@ -128,8 +129,25 @@ _DrawImageFrame:
         move.w  d4,d7
         mulu.w  d6,d7               ; d7.l = plane_size
 
+        ; ── Bounds check — skip if any edge is outside the screen ─────────────
+        ; d3 (pixel width from header) is still valid here — the frame-offset
+        ; section BELOW reuses d3 as scratch.  Check must come first.
+        ; a1 is free at this point; use it as scratch for x+width / y+height.
+        tst.l   d0
+        blt.w   .draw_done          ; x < 0
+        tst.l   d1
+        blt.w   .draw_done          ; y < 0
+        move.l  d0,a1
+        add.w   d3,a1               ; a1 = x + pixel_width  (d3 = width, still valid)
+        cmpa.l  #GFXWIDTH,a1
+        bgt.w   .draw_done          ; x + width > GFXWIDTH
+        move.l  d1,a1
+        add.w   d4,a1               ; a1 = y + height
+        cmpa.l  #GFXHEIGHT,a1
+        bgt.w   .draw_done          ; y + height > GFXHEIGHT
+
         ; ── Frame offset = d2 × depth × plane_size ───────────────────────────
-        ; Uses d3 (width no longer needed) as scratch.
+        ; Uses d3 (width no longer needed after bounds check above) as scratch.
         ; frame_size = depth × plane_size  (must fit in 16 bits — see note above)
         move.w  d5,d3               ; d3.w = depth
         mulu.w  d7,d3               ; d3.l = depth × plane_size = frame_size_bytes
@@ -185,6 +203,7 @@ _DrawImageFrame:
 
         dbra    d5,.plane_loop
 
+.draw_done:
         movem.l (sp)+,d0-d7/a0-a3
         rts
 

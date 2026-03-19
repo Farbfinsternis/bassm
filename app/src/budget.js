@@ -141,6 +141,42 @@ function _estimateCycles(lines, imageMap, fontMap, gfxW, gfxH, planes) {
             continue;
         }
 
+        // Block-style If/ElseIf/Else/EndIf — probabilistic weighting.
+        // Inline "If cond Then stmt" is counted as a regular statement (15 cycles).
+        // Block-style: If body weighted at 50%; If/Else: average of branches (one always runs).
+        const isBlockIf = /^If\b/i.test(trim) && !/^If\b.*\bThen\s+\S+/i.test(trim);
+        if (isBlockIf) {
+            const branches = [];
+            let currentBranch = [];
+            let hasTrailingElse = false;
+            let depth = 1, j = i + 1;
+            while (j < lines.length && depth > 0) {
+                const t = lines[j].trim();
+                if (/^If\b/i.test(t) && !/^If\b.*\bThen\s+\S+/i.test(t)) {
+                    depth++;
+                } else if (/^EndIf\b/i.test(t)) {
+                    depth--;
+                    if (depth === 0) { branches.push(currentBranch); j++; break; }
+                } else if (depth === 1 && /^ElseIf\b/i.test(t)) {
+                    branches.push(currentBranch); currentBranch = []; j++; continue;
+                } else if (depth === 1 && /^Else\b/i.test(t)) {
+                    branches.push(currentBranch); currentBranch = [];
+                    hasTrailingElse = true; j++; continue;
+                }
+                if (depth > 0) currentBranch.push(lines[j]);
+                j++;
+            }
+            const branchCosts = branches.map(b =>
+                _estimateCycles(b, imageMap, fontMap, gfxW, gfxH, planes));
+            const avgBranch  = branchCosts.reduce((a, b) => a + b, 0) / Math.max(branches.length, 1);
+            // If with trailing Else: exactly one branch always runs → use average.
+            // If without Else: condition may be false → weight body at 50%.
+            const probability = hasTrailingElse ? 1.0 : 0.5;
+            total += 15 + Math.round(avgBranch * probability);
+            i = j;
+            continue;
+        }
+
         total += _estimateLineCycles(trim, imageMap, gfxW, gfxH, planes, activeFontCharH);
         i++;
     }
@@ -160,14 +196,15 @@ function _estimateLineCycles(trim, imageMap, gfxW, gfxH, planes, activeFontCharH
     }
 
     if (/^Box\b/i.test(trim)) {
-        const m = /Box\s+\S+\s*,\s*\S+\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(trim);
+        // Match w/h as the 3rd and 4th comma-separated args; x and y may be expressions
+        const m = /Box\s+[^,]+,[^,]+,\s*(\d+)\s*,\s*(\d+)/i.exec(trim);
         const bw = m ? parseInt(m[1]) : 32, bh = m ? parseInt(m[2]) : 32;
         return planes * (Math.ceil(bw / 16) + 1) * bh * 4;
     }
 
     if (/^Rect\b/i.test(trim)) {
         // Only the outline — 4 thin blits, roughly 2 × (w+h) words
-        const m = /Rect\s+\S+\s*,\s*\S+\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(trim);
+        const m = /Rect\s+[^,]+,[^,]+,\s*(\d+)\s*,\s*(\d+)/i.exec(trim);
         const bw = m ? parseInt(m[1]) : 32, bh = m ? parseInt(m[2]) : 32;
         return planes * (bw + bh) * 2 * 4;
     }

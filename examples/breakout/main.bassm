@@ -1,5 +1,8 @@
 Graphics 320, 256, 4
 
+LoadFont 0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "images/font.raw", 8, 8
+UseFont 0
+
 Dim bricks(49)
 Dim erase_brick(49)
 
@@ -45,7 +48,7 @@ For buffer = 1 To 2
 Next buffer
 
 While 1
-
+  Cls
   ; --- Zeichne alten Zustand schwarz (loeschen) ---
   Color 0
   
@@ -158,5 +161,6 @@ While 1
   bx_h0 = bx
   by_h0 = by
 
+  Text 1, 1, "HALLO WELT"
   ScreenFlip
 Wend

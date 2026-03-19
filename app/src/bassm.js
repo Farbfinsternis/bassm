@@ -206,6 +206,38 @@ function _budgetClass(ratio) {
     return 'crit';
 }
 
+// ── Context Menu ──────────────────────────────────────────────────────────────
+
+let _ctxMenu = null;
+
+function showContextMenu(x, y, items) {
+    if (_ctxMenu) { _ctxMenu.remove(); _ctxMenu = null; }
+    const menu = document.createElement('div');
+    menu.className = 'ctx-menu';
+    for (const { label, action } of items) {
+        const item = document.createElement('div');
+        item.className   = 'ctx-item';
+        item.textContent = label;
+        item.addEventListener('click', e => {
+            e.stopPropagation();
+            menu.remove(); _ctxMenu = null;
+            action();
+        });
+        menu.appendChild(item);
+    }
+    menu.style.left = x + 'px';
+    menu.style.top  = y + 'px';
+    document.body.appendChild(menu);
+    _ctxMenu = menu;
+    // Nudge inside viewport if it overflows
+    const r = menu.getBoundingClientRect();
+    if (r.right  > window.innerWidth)  menu.style.left = (x - r.width)  + 'px';
+    if (r.bottom > window.innerHeight) menu.style.top  = (y - r.height) + 'px';
+}
+
+document.addEventListener('click',   () => { if (_ctxMenu) { _ctxMenu.remove(); _ctxMenu = null; } });
+document.addEventListener('keydown',  e => { if (e.key === 'Escape' && _ctxMenu) { _ctxMenu.remove(); _ctxMenu = null; } });
+
 // ── Project Tree ──────────────────────────────────────────────────────────────
 
 function renderProjectTree() {
@@ -237,15 +269,28 @@ function renderTreeNodes(nodes, container, depth) {
             container.appendChild(body);
         } else {
             const isBassm = node.name.endsWith('.bassm');
+            const isPng   = node.name.toLowerCase().endsWith('.png');
             const item = document.createElement('div');
             item.className = 'tree-item'
                 + (node.path === _currentFile ? ' active'      : '')
                 + (node.name === 'main.bassm' ? ' entry-point' : '')
-                + (isBassm                    ? ''             : ' tree-asset');
+                + (isBassm ? '' : isPng ? ' tree-png' : ' tree-asset');
             item.style.paddingLeft = indent + 'px';
             item.textContent = node.name;
             item.title = node.path;
             if (isBassm) item.addEventListener('click', () => loadProjectFile(node.path));
+            if (isPng) {
+                item.addEventListener('contextmenu', e => {
+                    e.preventDefault();
+                    showContextMenu(e.clientX, e.clientY, [{
+                        label: 'Convert',
+                        action: () => window.electronAPI.openAssetManager({
+                            projectDir: _projectDir,
+                            preloadFile: node.path,
+                        }),
+                    }]);
+                });
+            }
             container.appendChild(item);
         }
     }
@@ -263,6 +308,101 @@ async function loadProjectFile(filename) {
         logLine(`Cannot open ${filename}: ${err.message}`, 'error');
     }
 }
+
+// ── Pane resizing ─────────────────────────────────────────────────────────────
+
+const LEFT_MIN  = 120;  const LEFT_MAX  = 500;
+const RIGHT_MIN = 240;  const RIGHT_MAX = 700;
+
+function initPaneDivider(dividerId, panelId, side) {
+    const divider = document.getElementById(dividerId);
+    const panel   = document.getElementById(panelId);
+
+    // Restore saved width
+    const saved = localStorage.getItem('bassm-pane-' + side);
+    if (saved) panel.style.width = saved + 'px';
+
+    divider.addEventListener('mousedown', e => {
+        e.preventDefault();
+        const startX     = e.clientX;
+        const startWidth = panel.getBoundingClientRect().width;
+        const min        = side === 'left' ? LEFT_MIN  : RIGHT_MIN;
+        const max        = side === 'left' ? LEFT_MAX  : RIGHT_MAX;
+
+        divider.classList.add('dragging');
+        document.body.style.cursor     = 'col-resize';
+        document.body.style.userSelect = 'none';
+
+        function onMove(ev) {
+            const delta    = side === 'left' ? ev.clientX - startX : startX - ev.clientX;
+            const newWidth = Math.min(max, Math.max(min, startWidth + delta));
+            panel.style.width = newWidth + 'px';
+            updateEmulatorBounds();
+        }
+
+        function onUp() {
+            divider.classList.remove('dragging');
+            document.body.style.cursor     = '';
+            document.body.style.userSelect = '';
+            localStorage.setItem('bassm-pane-' + side, parseInt(panel.style.width));
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup',   onUp);
+        }
+
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup',   onUp);
+    });
+}
+
+initPaneDivider('divider-left',  'left-panel',  'left');
+initPaneDivider('divider-right', 'right-panel', 'right');
+
+// ── Vertical pane resizing (tree/outliner + emulator/console) ─────────────────
+
+const TREE_MIN    = 60;   const TREE_MAX    = 600;
+const CONSOLE_MIN = 40;   const CONSOLE_MAX = 500;
+
+function initPaneDividerH(dividerId, panelId, direction, min, max) {
+    const divider = document.getElementById(dividerId);
+    const panel   = document.getElementById(panelId);
+
+    const saved = localStorage.getItem('bassm-pane-' + panelId);
+    if (saved) panel.style.height = saved + 'px';
+
+    divider.addEventListener('mousedown', e => {
+        e.preventDefault();
+        const startY      = e.clientY;
+        const startHeight = panel.getBoundingClientRect().height;
+
+        divider.classList.add('dragging');
+        document.body.style.cursor     = 'row-resize';
+        document.body.style.userSelect = 'none';
+
+        function onMove(ev) {
+            const delta     = direction === 'down' ? ev.clientY - startY : startY - ev.clientY;
+            const newHeight = Math.min(max, Math.max(min, startHeight + delta));
+            panel.style.height = newHeight + 'px';
+            if (panelId === 'console') updateEmulatorBounds();
+        }
+
+        function onUp() {
+            divider.classList.remove('dragging');
+            document.body.style.cursor     = '';
+            document.body.style.userSelect = '';
+            localStorage.setItem('bassm-pane-' + panelId, parseInt(panel.style.height));
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup',   onUp);
+        }
+
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup',   onUp);
+    });
+}
+
+// direction 'down' = panel is above divider (dragging down = taller)
+// direction 'up'   = panel is below divider (dragging up = taller)
+initPaneDividerH('divider-tree',    'project-tree', 'down', TREE_MIN,    TREE_MAX);
+initPaneDividerH('divider-console', 'console',      'up',   CONSOLE_MIN, CONSOLE_MAX);
 
 // ── Emulator view bounds ──────────────────────────────────────────────────────
 
@@ -326,6 +466,12 @@ bassm.init()
             _projectFiles = await window.electronAPI.listFiles({ projectDir: _projectDir });
             renderProjectTree();
             renderOutline(buildOutline(result.source));
+        });
+
+        window.electronAPI.onFilesChanged(async () => {
+            if (!_projectDir) return;
+            _projectFiles = await window.electronAPI.listFiles({ projectDir: _projectDir });
+            renderProjectTree();
         });
 
         btnRun.addEventListener('click', async () => {

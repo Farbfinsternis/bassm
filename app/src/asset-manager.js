@@ -8,6 +8,7 @@ let _imageData     = null;    // current ImageData from loaded PNG
 let _imageWidth    = 0;
 let _imageHeight   = 0;
 let _imageFilename = '';
+let _imageSourceDir = '';     // project-relative dir of the source PNG ('' = project root)
 let _lastIndices   = null;    // quantized pixel → palette index
 let _lastDepth     = 3;
 
@@ -105,109 +106,8 @@ function openColorPicker(index) {
 }
 
 // ── Image conversion ──────────────────────────────────────────────────────────
-
-/** Extract up to maxColors most-frequent OCS colours from an ImageData.
- *  Slot 0 is always $000 (background/transparent). Transparent pixels
- *  (alpha < 128) are excluded from the frequency count.
- */
-function extractPalette(imageData, maxColors) {
-    const freq = new Map();
-    const d    = imageData.data;
-    for (let i = 0; i < d.length; i += 4) {
-        if (d[i + 3] < 128) continue;   // skip transparent pixels
-        const key = rgb24ToOcs(d[i], d[i + 1], d[i + 2]);
-        freq.set(key, (freq.get(key) || 0) + 1);
-    }
-    // Slot 0 is always the background colour ($000).
-    // Fill the remaining (maxColors-1) slots with the most frequent opaque colours.
-    const opaque = [...freq.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, maxColors - 1)
-        .map(([key]) => key);
-    return [0, ...opaque];
-}
-
-/** Nearest-colour mapping (OCS colour space, 4-bit per channel).
- *  Transparent pixels (alpha < 128) are always mapped to index 0.
- */
-function quantizeNearest(imageData, palette, count) {
-    const d       = imageData.data;
-    const indices = new Uint8Array(imageData.width * imageData.height);
-    for (let i = 0; i < indices.length; i++) {
-        if (d[i * 4 + 3] < 128) { indices[i] = 0; continue; }
-        const r4 = Math.round(d[i * 4]     / 255 * 15);
-        const g4 = Math.round(d[i * 4 + 1] / 255 * 15);
-        const b4 = Math.round(d[i * 4 + 2] / 255 * 15);
-        let best = 0, bestDist = Infinity;
-        for (let p = 0; p < count; p++) {
-            const pr = (palette[p] >> 8) & 0xF;
-            const pg = (palette[p] >> 4) & 0xF;
-            const pb =  palette[p]       & 0xF;
-            const d2 = (r4 - pr) ** 2 + (g4 - pg) ** 2 + (b4 - pb) ** 2;
-            if (d2 < bestDist) { bestDist = d2; best = p; if (d2 === 0) break; }
-        }
-        indices[i] = best;
-    }
-    return indices;
-}
-
-/** Floyd-Steinberg dithering in 4-bit-per-channel OCS colour space.
- *  Transparent pixels (alpha < 128) are always mapped to index 0.
- */
-function quantizeDithered(imageData, palette, count) {
-    const w  = imageData.width, h = imageData.height;
-    const d  = imageData.data;
-    const indices = new Uint8Array(w * h);
-    // Error buffer in OCS units (0–15 per channel)
-    const err = new Float32Array(w * h * 3);
-    for (let i = 0; i < w * h; i++) {
-        err[i * 3]     = Math.round(d[i * 4]     / 255 * 15);
-        err[i * 3 + 1] = Math.round(d[i * 4 + 1] / 255 * 15);
-        err[i * 3 + 2] = Math.round(d[i * 4 + 2] / 255 * 15);
-    }
-
-    for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-            const i  = y * w + x;
-
-            // Transparent pixels always map to index 0 — no error diffusion
-            if (d[i * 4 + 3] < 128) { indices[i] = 0; continue; }
-
-            const r  = Math.max(0, Math.min(15, err[i * 3]));
-            const g  = Math.max(0, Math.min(15, err[i * 3 + 1]));
-            const b  = Math.max(0, Math.min(15, err[i * 3 + 2]));
-
-            let best = 0, bestDist = Infinity;
-            for (let p = 0; p < count; p++) {
-                const pr = (palette[p] >> 8) & 0xF;
-                const pg = (palette[p] >> 4) & 0xF;
-                const pb =  palette[p]       & 0xF;
-                const d2 = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2;
-                if (d2 < bestDist) { bestDist = d2; best = p; if (d2 === 0) break; }
-            }
-            indices[i] = best;
-
-            const er = r - ((palette[best] >> 8) & 0xF);
-            const eg = g - ((palette[best] >> 4) & 0xF);
-            const eb = b - ( palette[best]       & 0xF);
-
-            const push = (dx, dy, f) => {
-                const nx = x + dx, ny = y + dy;
-                if (nx >= 0 && nx < w && ny < h) {
-                    const j = ny * w + nx;
-                    err[j * 3]     += er * f;
-                    err[j * 3 + 1] += eg * f;
-                    err[j * 3 + 2] += eb * f;
-                }
-            };
-            push(+1,  0, 7 / 16);
-            push(-1, +1, 3 / 16);
-            push( 0, +1, 5 / 16);
-            push(+1, +1, 1 / 16);
-        }
-    }
-    return indices;
-}
+// Palette generation and pixel quantization are provided by image-quantizer.js
+// (medianCutPalette, quantizeWithDither) loaded before this script.
 
 /**
  * Convert palette-index array to non-interleaved Amiga planar bitmap.
@@ -239,12 +139,10 @@ function renderPreview() {
 
     const depth      = parseInt(document.getElementById('sel-depth').value);
     const colorCount = Math.min(1 << depth, 32);
-    const dither     = document.getElementById('chk-dither').checked;
+    const ditherMode = document.getElementById('sel-dither').value;
 
     _lastDepth   = depth;
-    _lastIndices = dither
-        ? quantizeDithered(_imageData, _palette, colorCount)
-        : quantizeNearest (_imageData, _palette, colorCount);
+    _lastIndices = quantizeWithDither(_imageData, _palette, colorCount, ditherMode);
 
     // ── Original
     const co = document.getElementById('canvas-original');
@@ -287,7 +185,8 @@ function renderPreview() {
 
     updateActiveSlots(depth);
 
-    document.getElementById('btn-convert-image').disabled = !_projectDir;
+    document.getElementById('btn-convert-image').disabled  = false;
+    document.getElementById('btn-export-iff').disabled     = false;
     document.getElementById('btn-copy-image-code').disabled = false;
 }
 
@@ -325,6 +224,10 @@ async function loadSourceImageFromProject(item) {
     zone.querySelector('.drop-sub').textContent   = '';
     try {
         const bytes = await window.assetAPI.readAsset({ projectDir: _projectDir, path: item.path });
+        // Record the project-relative directory so Convert & Save defaults there.
+        const normalized = item.path.replace(/\\/g, '/');
+        const slashIdx   = normalized.lastIndexOf('/');
+        _imageSourceDir  = slashIdx >= 0 ? normalized.slice(0, slashIdx) : '';
         const blob  = new Blob([new Uint8Array(bytes)]);
         const file  = new File([blob], item.name);
         await onImageDropped(file);
@@ -347,12 +250,12 @@ async function onImageDropped(file) {
         _imageHeight   = height;
         _imageFilename = file.name.replace(/\.[^.]+$/, '') + '.raw';
 
-        // First image sets the palette
+        // First image auto-generates palette using Median Cut + CIEDE2000
         if (!_paletteIsSet) {
             const depth      = parseInt(document.getElementById('sel-depth').value);
             const colorCount = Math.min(1 << depth, 32);
-            const extracted  = extractPalette(imageData, colorCount);
-            for (let i = 0; i < 32; i++) _palette[i] = extracted[i] ?? 0;
+            const generated  = medianCutPalette(imageData, colorCount);
+            for (let i = 0; i < 32; i++) _palette[i] = generated[i] ?? 0;
             _paletteIsSet = true;
             updatePaletteUI();
         }
@@ -371,7 +274,7 @@ async function onImageDropped(file) {
 
 // ── Convert & Save ────────────────────────────────────────────────────────────
 async function onConvertAndSave() {
-    if (!_imageData || !_projectDir || !_lastIndices) return;
+    if (!_imageData || !_lastIndices) return;
     const btn = document.getElementById('btn-convert-image');
     btn.disabled    = true;
     btn.textContent = 'Saving\u2026';
@@ -389,15 +292,21 @@ async function onConvertAndSave() {
         }
         raw.set(planes, colorCount * 2);
 
-        await window.assetAPI.writeAsset({
-            projectDir: _projectDir,
-            subdir:     'images',
-            filename:   _imageFilename,
-            data:       Array.from(raw),
+        const defaultPath = [
+            _projectDir ? _projectDir.replace(/\\/g, '/') : null,
+            _imageSourceDir || null,
+            _imageFilename,
+        ].filter(Boolean).join('/');
+
+        const result = await window.assetAPI.saveAssetWithDialog({
+            defaultPath,
+            filters: [{ name: 'Amiga Raw', extensions: ['raw'] }],
+            data:    Array.from(raw),
         });
+        if (!result.saved) { btn.disabled = false; btn.textContent = 'Convert & Save'; return; }
         btn.textContent = 'Saved!';
         setTimeout(() => { btn.textContent = 'Convert & Save'; btn.disabled = false; }, 1500);
-        window.assetAPI.listAssets({ projectDir: _projectDir }).then(renderAssetTree).catch(() => {});
+        if (_projectDir) window.assetAPI.listAssets({ projectDir: _projectDir }).then(renderAssetTree).catch(() => {});
     } catch (err) {
         btn.textContent = 'Error!';
         setTimeout(() => { btn.textContent = 'Convert & Save'; btn.disabled = false; }, 2000);
@@ -414,6 +323,37 @@ function onCopyImageCode() {
     setTimeout(() => { btn.textContent = 'Copy Code'; }, 1200);
 }
 
+async function onExportIFF() {
+    if (!_imageData || !_lastIndices) return;
+    const btn = document.getElementById('btn-export-iff');
+    btn.disabled    = true;
+    btn.textContent = 'Saving\u2026';
+
+    try {
+        const iffData     = createIFF(_imageWidth, _imageHeight, _palette, _lastIndices, _lastDepth);
+        const iffFilename = _imageFilename.replace(/\.raw$/, '.iff');
+        const defaultPath = [
+            _projectDir ? _projectDir.replace(/\\/g, '/') : null,
+            _imageSourceDir || null,
+            iffFilename,
+        ].filter(Boolean).join('/');
+
+        const result = await window.assetAPI.saveAssetWithDialog({
+            defaultPath,
+            filters: [{ name: 'Amiga IFF/ILBM', extensions: ['iff', 'ilbm', 'lbm'] }],
+            data:    Array.from(iffData),
+        });
+        if (!result.saved) { btn.disabled = false; btn.textContent = 'Export IFF'; return; }
+        btn.textContent = 'Saved!';
+        setTimeout(() => { btn.textContent = 'Export IFF'; btn.disabled = false; }, 1500);
+        if (_projectDir) window.assetAPI.listAssets({ projectDir: _projectDir }).then(renderAssetTree).catch(() => {});
+    } catch (err) {
+        btn.textContent = 'Error!';
+        setTimeout(() => { btn.textContent = 'Export IFF'; btn.disabled = false; }, 2000);
+        console.error('[A-MGR IFF]', err);
+    }
+}
+
 // ── Drop zones ────────────────────────────────────────────────────────────────
 function setupDropZone(id, onFile) {
     const zone = document.getElementById(id);
@@ -428,7 +368,7 @@ function setupDropZone(id, onFile) {
     });
 }
 
-setupDropZone('image-drop-zone', onImageDropped);
+setupDropZone('image-drop-zone', file => { _imageSourceDir = ''; onImageDropped(file); });
 setupDropZone('sound-drop-zone', file => {
     const zone = document.getElementById('sound-drop-zone');
     zone.querySelector('.drop-label').textContent = file.name;
@@ -436,9 +376,10 @@ setupDropZone('sound-drop-zone', file => {
 });
 
 // ── Controls wiring ───────────────────────────────────────────────────────────
-document.getElementById('sel-depth')  .addEventListener('change', () => { if (_imageData) schedulePreview(); });
-document.getElementById('chk-dither') .addEventListener('change', () => { if (_imageData) schedulePreview(); });
+document.getElementById('sel-depth')   .addEventListener('change', () => { if (_imageData) schedulePreview(); });
+document.getElementById('sel-dither')  .addEventListener('change', () => { if (_imageData) schedulePreview(); });
 document.getElementById('btn-convert-image') .addEventListener('click', onConvertAndSave);
+document.getElementById('btn-export-iff')    .addEventListener('click', onExportIFF);
 document.getElementById('btn-copy-image-code').addEventListener('click', onCopyImageCode);
 
 // ── Period / Hz display ───────────────────────────────────────────────────────
@@ -514,7 +455,8 @@ function applyProject(projectDir) {
     _paletteIsSet = false;
     const name = projectDir ? projectDir.split(/[/\\]/).pop() : 'No project open';
     document.getElementById('project-name').textContent = name;
-    document.getElementById('btn-convert-image').disabled = !projectDir || !_imageData;
+    document.getElementById('btn-convert-image').disabled = !_imageData;
+    document.getElementById('btn-export-iff').disabled    = !_imageData;
 
     if (projectDir) {
         window.assetAPI.listAssets({ projectDir }).then(renderAssetTree).catch(() => {});
@@ -525,6 +467,14 @@ function applyProject(projectDir) {
 
 if (window.assetAPI) {
     window.assetAPI.onSetProject(({ projectDir }) => applyProject(projectDir));
+
+    // Pre-load a specific source image when opened via right-click → Convert.
+    window.assetAPI.onPreloadFile(({ projectDir, preloadFile }) => {
+        if (projectDir && projectDir !== _projectDir) applyProject(projectDir);
+        const name = preloadFile.replace(/\\/g, '/').split('/').pop();
+        switchToTab('images');
+        loadSourceImageFromProject({ name, path: preloadFile });
+    });
 
     // Refresh the asset tree whenever the project folder changes on disk
     // (file added, renamed, deleted, or saved by an external tool).

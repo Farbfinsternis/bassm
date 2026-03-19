@@ -308,6 +308,22 @@ _bg_restore_static:
         addq.l  #2,a0                   ; skip depth word
         move.w  (a0),d6                 ; d6.w = rowbytes
 
+        ; ── Bounds check — skip if position is outside the screen ─────────────
+        ; Pixel width is not available here (header was partially read).
+        ; We check x/y >= 0 and y+height <= GFXHEIGHT.  The x+width check is
+        ; handled by _BltBobMaskedFrame before the bob is ever queued.
+        ; d2 is free at this point — use it as scratch for y+height.
+        tst.l   d0
+        blt.w   .bg_done                ; x < 0
+        tst.l   d1
+        blt.w   .bg_done                ; y < 0
+        cmp.l   #GFXWIDTH,d0
+        bge.w   .bg_done                ; x >= GFXWIDTH
+        move.l  d1,d2
+        add.w   d4,d2                   ; d2 = y + height
+        cmp.l   #GFXHEIGHT,d2
+        bgt.w   .bg_done                ; y + height > GFXHEIGHT
+
         ; ── BLTSIZE = (height << 6) | (rowbytes / 2) ─────────────────────────
         move.w  d4,d2
         lsl.w   #6,d2                   ; d2 = height << 6
@@ -361,6 +377,7 @@ _bg_restore_static:
         add.l   #GFXPSIZE,a1            ; advance to next back buffer plane
         dbra    d5,.plane_loop
 
+.bg_done:
         movem.l (sp)+,d0-d6/a0-a2
         rts
 
@@ -411,8 +428,25 @@ _BltBobMaskedFrame:
         move.w  d4,d7
         mulu.w  d6,d7                   ; d7.l = plane_size
 
+        ; ── Bounds check — skip if any edge is outside the screen ─────────────
+        ; d3 (pixel width from header) is still valid here — used as scratch
+        ; for the frame-offset calculation AFTER this check.
+        ; a2 is free at this point; use it as scratch for x+width / y+height.
+        tst.l   d0
+        blt.w   .bob_done               ; x < 0
+        tst.l   d1
+        blt.w   .bob_done               ; y < 0
+        move.l  d0,a2
+        add.w   d3,a2                   ; a2 = x + pixel_width  (d3 = width, still valid)
+        cmpa.l  #GFXWIDTH,a2
+        bgt.w   .bob_done               ; x + width > GFXWIDTH
+        move.l  d1,a2
+        add.w   d4,a2                   ; a2 = y + height
+        cmpa.l  #GFXHEIGHT,a2
+        bgt.w   .bob_done               ; y + height > GFXHEIGHT
+
         ; ── Frame offset = d2 × depth × plane_size ───────────────────────────
-        ; Uses d3 (width, no longer needed) as scratch.
+        ; Uses d3 (width, no longer needed after bounds check) as scratch.
         ; frame_size = depth × plane_size  (must fit in 16 bits)
         move.w  d5,d3                   ; d3.w = depth
         mulu.w  d7,d3                   ; d3.l = depth × plane_size = frame_size_bytes
@@ -482,5 +516,6 @@ _BltBobMaskedFrame:
 
         dbra    d5,.plane_loop
 
+.bob_done:
         movem.l (sp)+,d0-d7/a0-a3
         rts

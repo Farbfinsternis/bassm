@@ -6,6 +6,8 @@
 		<meta http-equiv="X-Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; worker-src 'self' file: blob:" />
 		<title>BASSM</title>
 		<link rel="stylesheet" href="style.css" />
+		<link rel="stylesheet" href="../node_modules/@fontsource/fira-code/latin-400.css" />
+		<link rel="stylesheet" href="../node_modules/@fontsource/fira-code/latin-500.css" />
 	</head>
 	<body>
 		<div id="toolbar">
@@ -24,11 +26,14 @@
 					<div class="panel-header">Project</div>
 					<div id="project-tree-content"></div>
 				</div>
+				<div class="pane-divider-h" id="divider-tree"></div>
 				<div id="outliner">
 					<div class="panel-header">Outliner</div>
 					<div id="outliner-content"></div>
 				</div>
 			</div>
+
+			<div class="pane-divider" id="divider-left"></div>
 
 			<!-- Centre: Monaco Editor -->
 			<div id="editor-panel">
@@ -53,9 +58,12 @@
 				</div>
 			</div>
 
+			<div class="pane-divider" id="divider-right"></div>
+
 			<!-- Right panel: vAmiga preview + Console -->
 			<div id="right-panel">
 				<div id="emulator-view"></div>
+				<div class="pane-divider-h" id="divider-console"></div>
 				<div id="console"></div>
 			</div>
 
