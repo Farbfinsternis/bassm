@@ -1356,6 +1356,9 @@ export class CodeGen {
                 const yExpr    = stmt.args[2] ?? { type: 'int', value: 0 };
                 const frameArg = stmt.args[3]; // undefined = no frame (default 0)
 
+                if (frameArg && !imgEntry.isAnim)
+                    throw new Error(`DrawBob: frame argument requires LoadAnimImage (image ${idxArg.value} was loaded with LoadImage) — line ${stmt.line}`);
+
                 // _AddBob always needs d2=frame.  For the no-frame / frame-0 path,
                 // evaluate y→push, x→d0, pop y→d1, then moveq #0,d2 (1 instruction).
                 // For a variable frame, push frame first, then y, then x, pop into d1/d2.

@@ -216,6 +216,13 @@ function _estimateLineCycles(trim, imageMap, gfxW, gfxH, planes, activeFontCharH
         return planes * (Math.ceil(img.w / 16) + 1) * img.h * 8;
     }
 
+    if (/^DrawBob\b/i.test(trim)) {
+        const m = /DrawBob\s+(\d+)/i.exec(trim);
+        const img = (m && imageMap[parseInt(m[1])]) || { w: 32, h: 32 };
+        // Bob = background restore blit + masked draw blit, both per plane
+        return planes * (Math.ceil(img.w / 16) + 1) * img.h * 16;
+    }
+
     if (/^Plot\b/i.test(trim))  return 50;
     if (/^Line\b/i.test(trim))  return 400;
 
