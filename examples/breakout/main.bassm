@@ -48,7 +48,6 @@ For buffer = 1 To 2
 Next buffer
 
 While 1
-  Cls
   ; --- Zeichne alten Zustand schwarz (loeschen) ---
   Color 0
   

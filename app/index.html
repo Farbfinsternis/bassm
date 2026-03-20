@@ -11,9 +11,10 @@
 	</head>
 	<body>
 		<div id="toolbar">
-			<button id="btn-open">&#128193; Open Project</button>
-			<button id="btn-run">&#9654; Run</button>
-			<button id="btn-assets">&#128444; Assets</button>
+			<button id="btn-open"          title="Open Project">&#128193; Open Project</button>
+			<button id="btn-run"           title="Run — compile + run  (F5)">&#9654; Run</button>
+			<button id="btn-assets"        title="Asset Manager">&#128444; Assets</button>
+			<button id="btn-emulator-full" title="Emulator fullscreen  (F11)">&#8865;</button>
 			<span id="project-name"></span>
 			<span id="status">Initialising...</span>
 		</div>
@@ -64,7 +65,13 @@
 			<div id="right-panel">
 				<div id="emulator-view"></div>
 				<div class="pane-divider-h" id="divider-console"></div>
-				<div id="console"></div>
+				<div id="console-panel">
+					<div id="console-bar">
+						<span class="console-title">Console</span>
+						<button id="btn-clear-console" title="Clear console">&#10005;</button>
+					</div>
+					<div id="console"></div>
+				</div>
 			</div>
 
 		</div>

@@ -1188,11 +1188,6 @@ export class CodeGen {
                 break;
             }
 
-            case 'nprint': {
-                // Blitz2D compatibility stub — no-op in bare-metal builds
-                break;
-            }
-
             case 'usefont': {
                 const idxArg = stmt.args[0];
                 const lc = this._labelCount++;

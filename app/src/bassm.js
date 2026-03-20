@@ -84,7 +84,7 @@ class BASSM {
         // 3. Send HUNK binary to emulator — triggers reset + boot from virtual disk
         window.electronAPI.emulator.send({ type: 'load-exe', data: result.data });
 
-        return { asm };
+        return { asm, binary: result.data };
     }
 }
 
@@ -95,6 +95,7 @@ const bassm = new BASSM();
 let _projectDir   = null;
 let _currentFile  = 'main.bassm';
 let _projectFiles = [];
+let _lastBinary   = null;   // cached from last successful build — used by F6
 
 // ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -102,29 +103,118 @@ function logLine(text, cls = '') {
     const el   = document.getElementById('console');
     const line = document.createElement('div');
     if (cls) line.className = cls;
-    line.textContent = text;
+    const ts = new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    // Only prefix short single-line messages; leave ASM dumps etc. undecorated
+    line.textContent = (text.length < 200 && !text.includes('\n')) ? `[${ts}] ${text}` : text;
     el.appendChild(line);
     el.scrollTop = el.scrollHeight;
+}
+
+// ── Monaco error markers ───────────────────────────────────────────────────────
+
+function _setErrorMarker(message) {
+    const ed = window._monacoEditor;
+    if (!ed || !window.monaco) return;
+    const model = ed.getModel();
+    if (!model) return;
+
+    // Extract line number from messages like "(line 5)", "Zeile 5", "on line 5"
+    const m = /(?:line|Zeile)\s+(\d+)/i.exec(message);
+    const lineNumber = m ? parseInt(m[1]) : 1;
+    const lineCount  = model.getLineCount();
+    const safeeLine  = Math.min(Math.max(lineNumber, 1), lineCount);
+
+    window.monaco.editor.setModelMarkers(model, 'bassm', [{
+        startLineNumber: safeeLine,
+        endLineNumber:   safeeLine,
+        startColumn:     1,
+        endColumn:       model.getLineMaxColumn(safeeLine),
+        message,
+        severity:        window.monaco.MarkerSeverity.Error,
+    }]);
+}
+
+function _clearMarkers() {
+    const ed = window._monacoEditor;
+    if (!ed || !window.monaco) return;
+    const model = ed.getModel();
+    if (model) window.monaco.editor.setModelMarkers(model, 'bassm', []);
 }
 
 // ── Outliner ──────────────────────────────────────────────────────────────────
 
 function buildOutline(source) {
-    const RE = /^\s*Function\s+(\w+)(\s*\()?/i;
-    return source.split('\n').flatMap((line, i) => {
-        const m = RE.exec(line);
-        return m ? [{ name: m[1], line: i + 1, type: m[2] ? 'fn' : 'proc' }] : [];
-    });
+    const items = [];
+    const lines = source.split('\n');
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const ln   = i + 1;
+
+        // Functions / Procedures
+        let m = /^\s*Function\s+(\w+)(\s*\()?/i.exec(line);
+        if (m) {
+            items.push({ icon: m[2] ? 'ƒ' : '⊳', name: m[1], line: ln, type: m[2] ? 'fn' : 'proc' });
+            continue;
+        }
+
+        // While loops — show truncated condition
+        m = /^\s*While\s+(.+)/i.exec(line);
+        if (m) {
+            const cond = m[1].trim();
+            items.push({ icon: '↻', name: cond.length > 20 ? cond.slice(0, 19) + '…' : cond, line: ln, type: 'loop' });
+            continue;
+        }
+
+        // Repeat loops
+        if (/^\s*Repeat\s*(?:;.*)?$/i.test(line)) {
+            items.push({ icon: '↻', name: 'Repeat', line: ln, type: 'loop' });
+            continue;
+        }
+
+        // LoadImage / LoadAnimImage → image asset
+        m = /^\s*Load(?:Anim)?Image\s+(\d+)\s*,\s*"([^"]+)"/i.exec(line);
+        if (m) {
+            items.push({ icon: '▣', name: m[1] + '  ' + m[2].replace(/.*[\\/]/, ''), line: ln, type: 'asset-img' });
+            continue;
+        }
+
+        // LoadSample → audio asset
+        m = /^\s*LoadSample\s+(\d+)\s*,\s*"([^"]+)"/i.exec(line);
+        if (m) {
+            items.push({ icon: '♪', name: m[1] + '  ' + m[2].replace(/.*[\\/]/, ''), line: ln, type: 'asset-snd' });
+            continue;
+        }
+
+        // LoadFont → font asset (file is 3rd arg, after index and chars string)
+        m = /^\s*LoadFont\s+(\d+)\s*,\s*"[^"]*"\s*,\s*"([^"]+)"/i.exec(line);
+        if (m) {
+            items.push({ icon: 'A', name: m[1] + '  ' + m[2].replace(/.*[\\/]/, ''), line: ln, type: 'asset-fnt' });
+            continue;
+        }
+    }
+
+    return items;
 }
 
 function renderOutline(items) {
     const el = document.getElementById('outliner-content');
     el.innerHTML = '';
-    for (const { name, line, type } of items) {
+    for (const { icon, name, line, type } of items) {
         const item = document.createElement('div');
         item.className = `outline-item ${type}`;
-        item.textContent = name;
-        item.title = `line ${line}`;
+        item.title = `Line ${line}`;
+
+        const iSpan = document.createElement('span');
+        iSpan.className = 'ol-icon';
+        iSpan.textContent = icon;
+
+        const nSpan = document.createElement('span');
+        nSpan.textContent = '\u00a0\u00a0' + name;  // non-breaking spaces for indent
+
+        item.appendChild(iSpan);
+        item.appendChild(nSpan);
+
         item.addEventListener('click', () => {
             const ed = window._monacoEditor;
             if (!ed) return;
@@ -360,7 +450,7 @@ initPaneDivider('divider-right', 'right-panel', 'right');
 // ── Vertical pane resizing (tree/outliner + emulator/console) ─────────────────
 
 const TREE_MIN    = 60;   const TREE_MAX    = 600;
-const CONSOLE_MIN = 40;   const CONSOLE_MAX = 500;
+const CONSOLE_MIN = 62;   const CONSOLE_MAX = 522;   // 22px for console-bar + content
 
 function initPaneDividerH(dividerId, panelId, direction, min, max) {
     const divider = document.getElementById(dividerId);
@@ -382,7 +472,7 @@ function initPaneDividerH(dividerId, panelId, direction, min, max) {
             const delta     = direction === 'down' ? ev.clientY - startY : startY - ev.clientY;
             const newHeight = Math.min(max, Math.max(min, startHeight + delta));
             panel.style.height = newHeight + 'px';
-            if (panelId === 'console') updateEmulatorBounds();
+            if (panelId === 'console-panel') updateEmulatorBounds();
         }
 
         function onUp() {
@@ -402,7 +492,7 @@ function initPaneDividerH(dividerId, panelId, direction, min, max) {
 // direction 'down' = panel is above divider (dragging down = taller)
 // direction 'up'   = panel is below divider (dragging up = taller)
 initPaneDividerH('divider-tree',    'project-tree', 'down', TREE_MIN,    TREE_MAX);
-initPaneDividerH('divider-console', 'console',      'up',   CONSOLE_MIN, CONSOLE_MAX);
+initPaneDividerH('divider-console', 'console-panel', 'up',   CONSOLE_MIN, CONSOLE_MAX);
 
 // ── Emulator view bounds ──────────────────────────────────────────────────────
 
@@ -419,6 +509,63 @@ function updateEmulatorBounds() {
 
 new ResizeObserver(updateEmulatorBounds)
     .observe(document.getElementById('emulator-view'));
+
+// ── Emulator fullscreen toggle (F11 / ESC) ────────────────────────────────────
+
+const _btnEmuFull = document.getElementById('btn-emulator-full');
+
+function _toggleEmuFull() {
+    const on = document.body.classList.toggle('emu-full');
+    _btnEmuFull.classList.toggle('active', on);
+    // ResizeObserver fires when #emulator-view changes size, but call
+    // manually too in case the layout change happens before the observer.
+    setTimeout(updateEmulatorBounds, 30);
+}
+
+_btnEmuFull.addEventListener('click', _toggleEmuFull);
+
+document.addEventListener('keydown', async e => {
+    if (e.key === 'F11') { e.preventDefault(); _toggleEmuFull(); return; }
+    if (e.key === 'Escape' && document.body.classList.contains('emu-full')) { _toggleEmuFull(); return; }
+
+    // F5 — Run (compile + run)
+    if (e.key === 'F5' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        document.getElementById('btn-run').click();
+        return;
+    }
+
+    // F6 — Re-run last binary without recompiling
+    if (e.key === 'F6' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        if (_lastBinary) {
+            document.getElementById('status').textContent = 'Running';
+            window.electronAPI.emulator.send({ type: 'load-exe', data: _lastBinary });
+            logLine('Re-run (no recompile)', 'info');
+        } else {
+            logLine('Nothing to re-run — press F5 to compile first.', 'warn');
+        }
+        return;
+    }
+
+    // Ctrl+S / Cmd+S — Save current file
+    if ((e.ctrlKey || e.metaKey) && e.key === 's' && !e.altKey) {
+        e.preventDefault();
+        const ed = window._monacoEditor;
+        if (!ed || !_projectDir) return;
+        try {
+            await window.electronAPI.saveSource({
+                projectDir: _projectDir,
+                filename:   _currentFile,
+                source:     ed.getValue(),
+            });
+            logLine('Saved.', 'info');
+        } catch (err) {
+            logLine('Save failed: ' + err.message, 'error');
+        }
+        return;
+    }
+}, true);  // capture phase — fires before Monaco's own keydown handlers
 
 // ── Wait for Monaco, then wire up outline listener ───────────────────────────
 
@@ -444,9 +591,12 @@ bassm.init()
 
         const btnRun      = document.getElementById('btn-run');
         const btnOpen     = document.getElementById('btn-open');
+        const btnClear    = document.getElementById('btn-clear-console');
         const status      = document.getElementById('status');
         const projectName = document.getElementById('project-name');
         const console_    = document.getElementById('console');
+
+        btnClear?.addEventListener('click', () => { console_.innerHTML = ''; });
 
         status.textContent = 'Ready';
 
@@ -490,7 +640,9 @@ bassm.init()
             }
 
             try {
-                const { asm } = await bassm.run(source, _projectDir);
+                const { asm, binary } = await bassm.run(source, _projectDir);
+                _lastBinary = binary;
+                _clearMarkers();
 
                 // Save generated assembly next to the source file for code review
                 if (_projectDir) {
@@ -500,12 +652,16 @@ bassm.init()
                         filename:   asmFile,
                         source:     asm,
                     });
+                    const lineCount = asm.split('\n').length;
+                    logLine(`Build OK — ${lineCount} lines  (ASM saved as ${asmFile})`, 'info');
+                } else {
+                    const lineCount = asm.split('\n').length;
+                    logLine(`Build OK — ${lineCount} lines`, 'info');
                 }
 
-                logLine('── Generated assembly ──────────────────', 'info');
-                logLine(asm);
                 status.textContent = 'Running';
             } catch (err) {
+                _setErrorMarker(err.message);
                 logLine(err.message, 'error');
                 status.textContent = 'Error';
             } finally {

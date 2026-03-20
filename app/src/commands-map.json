@@ -1,6 +1,7 @@
 [
     {
         "name": "Graphics",
+        "description": "Set up the display. depth = bitplanes (1–5), giving 2^depth colours. Must be called before any drawing.",
         "type": "global",
         "return": "void",
         "args": [
@@ -11,12 +12,14 @@
     },
     {
         "name": "Cls",
+        "description": "Clear the back buffer using the blitter. Fill colour is set by ClsColor.",
         "type": "global",
         "return": "void",
         "args": []
     },
     {
         "name": "ClsColor",
+        "description": "Set the palette index used by Cls to fill the background. Default is 0 (black).",
         "type": "global",
         "return": "void",
         "args": [
@@ -25,6 +28,7 @@
     },
     {
         "name": "Color",
+        "description": "Set the current drawing colour to a palette index (0–31). Used by Plot, Line, Rect, Box, and Text.",
         "type": "global",
         "return": "void",
         "args": [
@@ -33,6 +37,7 @@
     },
     {
         "name": "PaletteColor",
+        "description": "Set palette entry n. r, g, b are OCS 4-bit values (0–15). Takes effect at the next ScreenFlip.",
         "type": "global",
         "return": "void",
         "args": [
@@ -44,12 +49,14 @@
     },
     {
         "name": "WaitVbl",
+        "description": "Wait for the next vertical blank without flipping buffers. Useful for timing-only synchronisation.",
         "type": "global",
         "return": "void",
         "args": []
     },
     {
         "name": "Text",
+        "description": "Draw a string at (x, y) using the current font and colour. Supports newlines.",
         "type": "global",
         "return": "void",
         "args": [
@@ -59,21 +66,15 @@
         ]
     },
     {
-        "name": "NPrint",
-        "type": "global",
-        "return": "void",
-        "args": [
-            { "name": "string", "type": "string" }
-        ]
-    },
-    {
         "name": "End",
+        "description": "Exit the program immediately and restore the OS.",
         "type": "global",
         "return": "void",
         "args": []
     },
     {
         "name": "Delay",
+        "description": "Pause for the given number of frames (1 frame ≈ 20 ms PAL / 17 ms NTSC).",
         "type": "global",
         "return": "void",
         "args": [
@@ -82,6 +83,7 @@
     },
     {
         "name": "Plot",
+        "description": "Draw a single pixel at (x, y) in the current colour.",
         "type": "global",
         "return": "void",
         "args": [
@@ -91,6 +93,7 @@
     },
     {
         "name": "Line",
+        "description": "Draw a line from (x1, y1) to (x2, y2) in the current colour.",
         "type": "global",
         "return": "void",
         "args": [
@@ -102,6 +105,7 @@
     },
     {
         "name": "Rect",
+        "description": "Draw a hollow rectangle outline at (x, y) with the given width and height.",
         "type": "global",
         "return": "void",
         "args": [
@@ -113,6 +117,7 @@
     },
     {
         "name": "Box",
+        "description": "Draw a filled rectangle at (x, y) with the given width and height using the blitter.",
         "type": "global",
         "return": "void",
         "args": [
@@ -124,18 +129,21 @@
     },
     {
         "name": "WaitKey",
+        "description": "Halt execution until a key is pressed. Uses interrupt-driven CIA-A keyboard input.",
         "type": "global",
         "return": "void",
         "args": []
     },
     {
         "name": "ScreenFlip",
+        "description": "Swap front and back buffers. Call once per frame after all drawing is done. Also triggers the copper-list swap.",
         "type": "global",
         "return": "void",
         "args": []
     },
     {
         "name": "CopperColor",
+        "description": "Change the background colour (COLOR00) at scanline y via the copper. r, g, b are 0–15. Enables raster bars.",
         "type": "global",
         "return": "void",
         "args": [
@@ -147,6 +155,7 @@
     },
     {
         "name": "LoadSample",
+        "description": "Register a raw PCM audio sample. File must be 8-bit unsigned, mono. Only declares the asset — no chip RAM is used until PlaySample.",
         "type": "global",
         "return": "void",
         "args": [
@@ -156,6 +165,7 @@
     },
     {
         "name": "PlaySample",
+        "description": "Play a sample on Paula channel 0–3, looping continuously. period controls pitch (lower = higher pitch; 428 ≈ middle C). volume is 0–64.",
         "type": "global",
         "return": "void",
         "args": [
@@ -167,6 +177,7 @@
     },
     {
         "name": "PlaySampleOnce",
+        "description": "Play a sample once on Paula channel 0–3, then go silent. Uses the same period/volume convention as PlaySample.",
         "type": "global",
         "return": "void",
         "args": [
@@ -178,6 +189,7 @@
     },
     {
         "name": "StopSample",
+        "description": "Stop DMA playback on Paula channel 0–3 immediately.",
         "type": "global",
         "return": "void",
         "args": [
@@ -186,6 +198,7 @@
     },
     {
         "name": "LoadImage",
+        "description": "Load a raw planar image from disk into chip RAM. width/height must match the actual image dimensions.",
         "type": "global",
         "return": "void",
         "args": [
@@ -197,16 +210,19 @@
     },
     {
         "name": "DrawImage",
+        "description": "Draw a loaded image at (x, y). Optional frame selects a frame from an animation strip (0-based).",
         "type": "global",
         "return": "void",
         "args": [
             { "name": "index", "type": "integer" },
             { "name": "x",     "type": "integer" },
-            { "name": "y",     "type": "integer" }
+            { "name": "y",     "type": "integer" },
+            { "name": "frame", "type": "integer", "optional": true }
         ]
     },
     {
         "name": "PokeB",
+        "description": "Write an 8-bit value to an absolute hardware address. No bounds checking — direct chip register access.",
         "type": "global",
         "return": "void",
         "args": [
@@ -216,6 +232,7 @@
     },
     {
         "name": "PokeW",
+        "description": "Write a 16-bit value to an absolute hardware address. Address should be word-aligned.",
         "type": "global",
         "return": "void",
         "args": [
@@ -225,6 +242,7 @@
     },
     {
         "name": "PokeL",
+        "description": "Write a 32-bit value to an absolute hardware address. Address should be longword-aligned.",
         "type": "global",
         "return": "void",
         "args": [
@@ -234,6 +252,7 @@
     },
     {
         "name": "Poke",
+        "description": "Alias for PokeL. Write a 32-bit value to an absolute hardware address.",
         "type": "global",
         "return": "void",
         "args": [
@@ -243,6 +262,7 @@
     },
     {
         "name": "SetBackground",
+        "description": "Set the image used as the static background for Bob restore. Must be called before any DrawBob.",
         "type": "global",
         "return": "void",
         "args": [
@@ -251,6 +271,7 @@
     },
     {
         "name": "LoadMask",
+        "description": "Load a 1-bpp mask file for a Bob image. The mask determines which pixels are transparent during DrawBob.",
         "type": "global",
         "return": "void",
         "args": [
@@ -260,16 +281,19 @@
     },
     {
         "name": "DrawBob",
+        "description": "Queue a Bob (blitter object) to be drawn at (x, y). Optional frame for animated bobs. Bobs are flushed automatically before ScreenFlip.",
         "type": "global",
         "return": "void",
         "args": [
             { "name": "index", "type": "integer" },
             { "name": "x",     "type": "integer" },
-            { "name": "y",     "type": "integer" }
+            { "name": "y",     "type": "integer" },
+            { "name": "frame", "type": "integer", "optional": true }
         ]
     },
     {
         "name": "LoadAnimImage",
+        "description": "Load an animation strip. frameCount sets how many frames are in the strip; each frame is width×height pixels.",
         "type": "global",
         "return": "void",
         "args": [
@@ -282,6 +306,7 @@
     },
     {
         "name": "LoadFont",
+        "description": "Load a raw font image. chars defines the character set order in the image; charW/charH define glyph size in pixels.",
         "type": "global",
         "return": "void",
         "args": [
@@ -294,6 +319,7 @@
     },
     {
         "name": "UseFont",
+        "description": "Switch to a previously loaded font. Omit index to revert to the built-in 8×8 font.",
         "type": "global",
         "return": "void",
         "args": [
