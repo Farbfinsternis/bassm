@@ -125,15 +125,14 @@ test('BSS section "user_vars" emitted when variables are used', () => {
     assertContains(asm, '_var_x:');
 });
 
-test('Small literal uses moveq; store with move.l d0,_var', () => {
+test('Small literal assigns directly to memory (PERF-D)', () => {
     const asm = compile(HDR + 'x = 42');
-    assertContains(asm, 'moveq   #42,d0');
-    assertContains(asm, 'move.l  d0,_var_x');
+    assertContains(asm, 'move.l  #42,_var_x');
 });
 
-test('Large literal uses move.l #n,d0', () => {
+test('Large literal assigns directly to memory (PERF-D)', () => {
     const asm = compile(HDR + 'x = 1000');
-    assertContains(asm, 'move.l  #1000,d0');
+    assertContains(asm, 'move.l  #1000,_var_x');
 });
 
 test('Load variable into d0', () => {
@@ -171,8 +170,8 @@ test('Subtraction: complex right operand falls back to sub.l d1,d0', () => {
     assertContains(asm, 'sub.l   d1,d0');
 });
 
-test('Multiplication emits muls.w d1,d0', () => {
-    const asm = compile(HDR + 'x = 3\ny = x * 4');
+test('Multiplication of variable by non-power-of-2 emits muls.w d1,d0', () => {
+    const asm = compile(HDR + 'x = 3\ny = x * 3');
     assertContains(asm, 'muls.w  d1,d0');
 });
 
@@ -209,6 +208,53 @@ test('Unary minus emits neg.l d0 for variable operand', () => {
     assertContains(asm, 'neg.l   d0');
 });
 
+// ── PERF-D: Direct memory operations ─────────────────────────────────────────
+
+console.log('\nPERF-D: Direct memory operations');
+
+test('PERF-D: x = 0 emits clr.l', () => {
+    const asm = compile(HDR + 'x = 0');
+    assertContains(asm, 'clr.l   _var_x');
+});
+
+test('PERF-D: x = x + 1 emits addq.l #1,_var_x', () => {
+    const asm = compile(HDR + 'x = x + 1');
+    assertContains(asm, 'addq.l  #1,_var_x');
+});
+
+test('PERF-D: x = x + 8 emits addq.l #8,_var_x', () => {
+    const asm = compile(HDR + 'x = x + 8');
+    assertContains(asm, 'addq.l  #8,_var_x');
+});
+
+test('PERF-D: x = x - 3 emits subq.l #3,_var_x', () => {
+    const asm = compile(HDR + 'x = x - 3');
+    assertContains(asm, 'subq.l  #3,_var_x');
+});
+
+test('PERF-D: x = 1 + x emits addq.l (commutative)', () => {
+    const asm = compile(HDR + 'x = 1 + x');
+    assertContains(asm, 'addq.l  #1,_var_x');
+});
+
+test('PERF-D: x = x + y emits move+add without stack', () => {
+    const asm = compile(HDR + 'x = x + y');
+    assertContains(asm, 'move.l  _var_y,d0');
+    assertContains(asm, 'add.l   d0,_var_x');
+});
+
+test('PERF-D: x = x - y emits move+sub without stack', () => {
+    const asm = compile(HDR + 'x = x - y');
+    assertContains(asm, 'move.l  _var_y,d0');
+    assertContains(asm, 'sub.l   d0,_var_x');
+});
+
+test('PERF-D: x = x + 9 falls back to generic (n>8)', () => {
+    const asm = compile(HDR + 'x = x + 9');
+    assertContains(asm, 'move.l  _var_x,d0');
+    assertContains(asm, 'move.l  d0,_var_x');
+});
+
 // ── Regression: command-name variables ────────────────────────────────────────
 // Variables whose names match built-in commands (line, box, plot, color, …)
 // must not be silently swallowed by the lexer/parser.
@@ -218,7 +264,7 @@ console.log('\nRegression: command-named variables');
 test('Variable named "line" can be assigned (line = 5)', () => {
     const asm = compile(HDR + 'line = 5');
     assertContains(asm, '_var_line:');
-    assertContains(asm, 'moveq   #5,d0');
+    assertContains(asm, 'move.l  #5,_var_line');
 });
 
 test('Variable named "line" can be used in expression (x = line + 1)', () => {

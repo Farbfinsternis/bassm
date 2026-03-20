@@ -660,8 +660,57 @@ export class CodeGen {
 
         // ── Variable assignment: target = expr ───────────────────────────────
         if (stmt.type === 'assign') {
-            this._genExpr(stmt.expr, lines);
-            lines.push(`        move.l  d0,${this._varRef(stmt.target)}`);
+            const ref  = this._varRef(stmt.target);
+            const expr = stmt.expr;
+
+            // PERF-D: direct memory operations — avoid d0 round-trip ──────────
+            // x = 0  →  clr.l ref
+            if (expr.type === 'int' && expr.value === 0) {
+                lines.push(`        clr.l   ${ref}`);
+                return lines;
+            }
+            // x = literal  →  move.l #n,ref
+            if (expr.type === 'int') {
+                lines.push(`        move.l  #${expr.value},${ref}`);
+                return lines;
+            }
+            if (expr.type === 'binop' && (expr.op === '+' || expr.op === '-')) {
+                const isAdd = expr.op === '+';
+                // x = x ± n  (1≤n≤8)  →  addq.l/subq.l #n,ref
+                if (expr.left.type === 'ident' && expr.left.name === stmt.target &&
+                    expr.right.type === 'int' &&
+                    expr.right.value >= 1 && expr.right.value <= 8) {
+                    lines.push(`        ${isAdd ? 'addq.l' : 'subq.l'}  #${expr.right.value},${ref}`);
+                    return lines;
+                }
+                // x = n + x  (commutative, 1≤n≤8)  →  addq.l #n,ref
+                if (isAdd &&
+                    expr.right.type === 'ident' && expr.right.name === stmt.target &&
+                    expr.left.type === 'int' &&
+                    expr.left.value >= 1 && expr.left.value <= 8) {
+                    lines.push(`        addq.l  #${expr.left.value},${ref}`);
+                    return lines;
+                }
+                // x = x ± y  →  move.l ref(y),d0 + add.l/sub.l d0,ref
+                if (expr.left.type === 'ident' && expr.left.name === stmt.target &&
+                    expr.right.type === 'ident') {
+                    const op = isAdd ? 'add.l' : 'sub.l';
+                    lines.push(`        move.l  ${this._varRef(expr.right.name)},d0`);
+                    lines.push(`        ${op}   d0,${ref}`);
+                    return lines;
+                }
+                // x = y + x  (commutative)  →  move.l ref(y),d0 + add.l d0,ref
+                if (isAdd &&
+                    expr.right.type === 'ident' && expr.right.name === stmt.target &&
+                    expr.left.type === 'ident') {
+                    lines.push(`        move.l  ${this._varRef(expr.left.name)},d0`);
+                    lines.push(`        add.l   d0,${ref}`);
+                    return lines;
+                }
+            }
+            // ── Generic fallback ─────────────────────────────────────────────
+            this._genExpr(expr, lines);
+            lines.push(`        move.l  d0,${ref}`);
             return lines;
         }
 
