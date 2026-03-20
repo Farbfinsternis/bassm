@@ -1,5 +1,5 @@
 // ============================================================================
-// test-m-data.js — Tests for M-DATA: 2D Arrays (Dim arr(w,h) / arr(x,y) read/write)
+// test-m-data.js — Tests for M-DATA: N-dimensional Arrays (Dim arr(d0[,d1,...]) / arr(i0[,i1,...]))
 // ============================================================================
 
 import { test, assert, assertEqual, assertContains, summary } from './runner.js';
@@ -21,62 +21,72 @@ function compileWith(src) {
 //  PARSER TESTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('Parser: Dim arr(w,h) produces a dim2d node', () => {
-    const node = findNode('Dim map(19, 14)', 'dim2d');
-    assertEqual(node.type, 'dim2d');
+test('Parser: Dim arr(w,h) produces a dim node with dims[2]', () => {
+    const node = findNode('Dim map(19, 14)', 'dim');
+    assertEqual(node.type, 'dim');
+    assertEqual(node.dims.length, 2);
 });
 
-test('Parser: dim2d captures name', () => {
-    const node = findNode('Dim map(19, 14)', 'dim2d');
+test('Parser: dim node captures name', () => {
+    const node = findNode('Dim map(19, 14)', 'dim');
     assertEqual(node.name, 'map');
 });
 
-test('Parser: dim2d captures sizeW', () => {
-    const node = findNode('Dim map(19, 14)', 'dim2d');
-    assertEqual(node.sizeW.value, 19);
+test('Parser: dim node captures dims[0] (width)', () => {
+    const node = findNode('Dim map(19, 14)', 'dim');
+    assertEqual(node.dims[0].value, 19);
 });
 
-test('Parser: dim2d captures sizeH', () => {
-    const node = findNode('Dim map(19, 14)', 'dim2d');
-    assertEqual(node.sizeH.value, 14);
+test('Parser: dim node captures dims[1] (height)', () => {
+    const node = findNode('Dim map(19, 14)', 'dim');
+    assertEqual(node.dims[1].value, 14);
 });
 
-test('Parser: dim2d does not affect 1D Dim', () => {
+test('Parser: 1D Dim produces dim node with dims[1]', () => {
     const node = findNode('Dim arr(7)', 'dim');
     assertEqual(node.type, 'dim');
     assertEqual(node.name, 'arr');
-    assertEqual(node.size.value, 7);
+    assertEqual(node.dims.length, 1);
+    assertEqual(node.dims[0].value, 7);
 });
 
-test('Parser: arr(x,y) = expr produces array2d_assign', () => {
-    const stmts = parse(HEADER + 'Dim map(19,14)\nmap(3,2) = 1');
-    const node = stmts.find(s => s && s.type === 'array2d_assign');
-    assert(node !== undefined, 'expected array2d_assign node');
+test('Parser: 3D Dim produces dim node with dims[3]', () => {
+    const node = findNode('Dim cube(3, 4, 5)', 'dim');
+    assertEqual(node.dims.length, 3);
+    assertEqual(node.dims[2].value, 5);
 });
 
-test('Parser: array2d_assign captures name', () => {
+test('Parser: arr(x,y) = expr produces array_assign with indices[2]', () => {
     const stmts = parse(HEADER + 'Dim map(19,14)\nmap(3,2) = 1');
-    const node = stmts.find(s => s && s.type === 'array2d_assign');
+    const node = stmts.find(s => s && s.type === 'array_assign');
+    assert(node !== undefined, 'expected array_assign node');
+    assertEqual(node.indices.length, 2);
+});
+
+test('Parser: array_assign captures name', () => {
+    const stmts = parse(HEADER + 'Dim map(19,14)\nmap(3,2) = 1');
+    const node = stmts.find(s => s && s.type === 'array_assign');
     assertEqual(node.name, 'map');
 });
 
-test('Parser: array2d_assign captures indexX', () => {
+test('Parser: array_assign captures indices[0]', () => {
     const stmts = parse(HEADER + 'Dim map(19,14)\nmap(3,2) = 1');
-    const node = stmts.find(s => s && s.type === 'array2d_assign');
-    assertEqual(node.indexX.value, 3);
+    const node = stmts.find(s => s && s.type === 'array_assign');
+    assertEqual(node.indices[0].value, 3);
 });
 
-test('Parser: array2d_assign captures indexY', () => {
+test('Parser: array_assign captures indices[1]', () => {
     const stmts = parse(HEADER + 'Dim map(19,14)\nmap(3,2) = 1');
-    const node = stmts.find(s => s && s.type === 'array2d_assign');
-    assertEqual(node.indexY.value, 2);
+    const node = stmts.find(s => s && s.type === 'array_assign');
+    assertEqual(node.indices[1].value, 2);
 });
 
-test('Parser: 1D array_assign unchanged (still uses index not indexX/Y)', () => {
+test('Parser: 1D array_assign has indices[1]', () => {
     const stmts = parse(HEADER + 'Dim arr(7)\narr(3) = 9');
     const node = stmts.find(s => s && s.type === 'array_assign');
     assertEqual(node.name, 'arr');
-    assertEqual(node.index.value, 3);
+    assertEqual(node.indices.length, 1);
+    assertEqual(node.indices[0].value, 3);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -113,8 +123,24 @@ test('CodeGen: 1D Dim still works alongside 2D Dim', () => {
     assertContains(asm, 'ds.l    16');  // b: 4*4=16 longs
 });
 
+test('CodeGen: 3D Dim allocates (d0+1)*(d1+1)*(d2+1) longs', () => {
+    const asm = compileWith('Dim cube(3, 4, 5)');
+    // 4*5*6 = 120
+    assertContains(asm, 'ds.l    120');
+});
+
+test('CodeGen: 3D array write+read compiles without error', () => {
+    const asm = compileWith([
+        'Dim cube(3, 4, 5)',
+        'cube(1, 2, 3) = 7',
+        'v = cube(1, 2, 3)',
+    ].join('\n'));
+    assertContains(asm, '_arr_cube:');
+    assertContains(asm, 'lea     _arr_cube,a0');
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
-//  CODEGEN TESTS — array2d_assign (write)
+//  CODEGEN TESTS — array_assign (write)
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('CodeGen: arr(x,y)=expr emits lea for array label', () => {

@@ -35,8 +35,8 @@ test('Parser: Dim captures the array name (lowercased by lexer)', () => {
 
 test('Parser: Dim captures the size as an int literal', () => {
     const node = findNode('Dim arr(10)', 'dim');
-    assertEqual(node.size.type, 'int');
-    assertEqual(node.size.value, 10);
+    assertEqual(node.dims[0].type, 'int');
+    assertEqual(node.dims[0].value, 10);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -55,8 +55,8 @@ test('Parser: array_assign captures array name', () => {
 
 test('Parser: array_assign captures literal index', () => {
     const node = findNode('Dim arr(3)\narr(2) = 99', 'array_assign');
-    assertEqual(node.index.type, 'int');
-    assertEqual(node.index.value, 2);
+    assertEqual(node.indices[0].type, 'int');
+    assertEqual(node.indices[0].value, 2);
 });
 
 test('Parser: array_assign captures literal value', () => {
@@ -67,8 +67,8 @@ test('Parser: array_assign captures literal value', () => {
 
 test('Parser: array_assign accepts variable index', () => {
     const node = findNode('Dim arr(7)\narr(i) = 1', 'array_assign');
-    assertEqual(node.index.type, 'ident');
-    assertEqual(node.index.name, 'i');
+    assertEqual(node.indices[0].type, 'ident');
+    assertEqual(node.indices[0].name, 'i');
 });
 
 test('Parser: array_assign accepts expression as value', () => {
@@ -81,22 +81,22 @@ test('Parser: array_assign accepts expression as value', () => {
 //  PARSER TESTS — array_read
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('Parser: array_read inside assignment RHS', () => {
-    // x = arr(2) — x is a scalar assign, RHS is array_read
+test('Parser: array read inside assignment RHS is a call_expr', () => {
+    // x = arr(2) — RHS is call_expr (resolved as array read in codegen)
     const stmts = parse(HEADER + 'Dim arr(3)\nx = arr(2)');
     const assign = stmts.find(s => s && s.type === 'assign');
-    assertEqual(assign.expr.type, 'array_read');
+    assertEqual(assign.expr.type, 'call_expr');
     assertEqual(assign.expr.name, 'arr');
-    assertEqual(assign.expr.index.type, 'int');
-    assertEqual(assign.expr.index.value, 2);
+    assertEqual(assign.expr.args[0].type, 'int');
+    assertEqual(assign.expr.args[0].value, 2);
 });
 
-test('Parser: array_read in expression uses variable index', () => {
+test('Parser: array read in expression uses variable index', () => {
     const stmts = parse(HEADER + 'Dim arr(7)\nx = arr(i)');
     const assign = stmts.find(s => s && s.type === 'assign');
-    assertEqual(assign.expr.type, 'array_read');
-    assertEqual(assign.expr.index.type, 'ident');
-    assertEqual(assign.expr.index.name, 'i');
+    assertEqual(assign.expr.type, 'call_expr');
+    assertEqual(assign.expr.args[0].type, 'ident');
+    assertEqual(assign.expr.args[0].name, 'i');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

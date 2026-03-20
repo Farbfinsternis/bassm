@@ -57,8 +57,7 @@ export class CodeGen {
     generate(ast) {
         // Reset per-compilation state
         this._labelCount    = 0;
-        this._arrays        = new Map();  // name → size Expr (populated by _collectVars)
-        this._arrays2d      = new Map();  // name → { sizeW, sizeH } Exprs (2D arrays)
+        this._arrays        = new Map();  // name → dims Expr[] (populated by _collectVars; N-dimensional)
         this._usesRaster    = false;      // true if any CopperColor command present
         this._usesSound     = false;      // true if any LoadSample command present
         this._audioSamples  = new Map();  // index (int) → { filename, label }
@@ -224,24 +223,18 @@ export class CodeGen {
         // ── DATA & BSS SECTIONS (Must come after CODE for WinUAE compatibility) ──
 
         // User variable BSS — one longword per scalar integer variable
-        if (varNames.size > 0 || this._arrays.size > 0 || this._arrays2d.size > 0 || this._typeInstances.size > 0) {
+        if (varNames.size > 0 || this._arrays.size > 0 || this._typeInstances.size > 0) {
             out.push('        SECTION user_vars,BSS');
             for (const name of varNames) {
                 out.push(`_var_${name}:    ds.l    1`);
             }
             // Arrays: Dim arr(n) → n+1 longwords (indices 0..n, Blitz2D-compatible)
-            for (const [name, sizeExpr] of this._arrays) {
-                if (sizeExpr.type !== 'int') {
-                    throw new Error(`Dim ${name}: array size must be an integer literal`);
+            // N-dimensional arrays: Dim arr(d0[, d1[, ...]]) → (d0+1)*…*(dn+1) longwords
+            for (const [name, dims] of this._arrays) {
+                for (const d of dims) {
+                    if (d.type !== 'int') throw new Error(`Dim ${name}: array sizes must be integer literals`);
                 }
-                out.push(`_arr_${name}:    ds.l    ${sizeExpr.value + 1}`);
-            }
-            // 2D Arrays: Dim arr(w,h) → (w+1)*(h+1) longwords; index = y*(w+1)+x
-            for (const [name, dims] of this._arrays2d) {
-                if (dims.sizeW.type !== 'int' || dims.sizeH.type !== 'int') {
-                    throw new Error(`Dim ${name}: 2D array sizes must be integer literals`);
-                }
-                const count = (dims.sizeW.value + 1) * (dims.sizeH.value + 1);
+                const count = dims.reduce((acc, d) => acc * (d.value + 1), 1);
                 out.push(`_arr_${name}:    ds.l    ${count}`);
             }
             // Type instances: AoS layout — fieldCount longwords per instance
@@ -437,16 +430,10 @@ export class CodeGen {
                 varSet.add(stmt.target);
                 this._collectVarsInExpr(stmt.expr, varSet);
             } else if (stmt.type === 'dim') {
-                this._arrays.set(stmt.name, stmt.size);
-            } else if (stmt.type === 'dim2d') {
-                this._arrays2d.set(stmt.name, { sizeW: stmt.sizeW, sizeH: stmt.sizeH });
+                this._arrays.set(stmt.name, stmt.dims);
             } else if (stmt.type === 'array_assign') {
-                this._collectVarsInExpr(stmt.index, varSet);
-                this._collectVarsInExpr(stmt.expr,  varSet);
-            } else if (stmt.type === 'array2d_assign') {
-                this._collectVarsInExpr(stmt.indexX, varSet);
-                this._collectVarsInExpr(stmt.indexY, varSet);
-                this._collectVarsInExpr(stmt.expr,   varSet);
+                for (const idx of stmt.indices) this._collectVarsInExpr(idx, varSet);
+                this._collectVarsInExpr(stmt.expr, varSet);
             } else if (stmt.type === 'type_def') {
                 this._typeDefs.set(stmt.name, { fields: stmt.fields });
             } else if (stmt.type === 'dim_typed') {
@@ -679,7 +666,7 @@ export class CodeGen {
         }
 
         // ── Dim / Type / Function definition — declaration only, no code ─────
-        if (stmt.type === 'dim' || stmt.type === 'dim2d' || stmt.type === 'type_def' ||
+        if (stmt.type === 'dim' || stmt.type === 'type_def' ||
             stmt.type === 'dim_typed' || stmt.type === 'dim_typed_array' ||
             stmt.type === 'function_def') {
             return lines;
@@ -719,34 +706,15 @@ export class CodeGen {
             return lines;
         }
 
-        // ── Array assignment: arr(index) = expr ──────────────────────────────
-        // Evaluate expr → push; evaluate index → d0; compute address; store.
+        // ── Array assignment: arr(indices…) = expr  (1D, 2D, ND) ──────────────
+        // flat index computed by _genFlatIndex; byte_off = flat*4
         if (stmt.type === 'array_assign') {
+            const dimsExprs = this._arrays.get(stmt.name);
+            if (!dimsExprs) throw new Error(`Undeclared array '${stmt.name}' (line ${stmt.line})`);
+            const dims = dimsExprs.map(d => d.value);
             this._genExpr(stmt.expr, lines);
             lines.push(`        move.l  d0,-(sp)`);
-            this._genExpr(stmt.index, lines);
-            lines.push(`        asl.l   #2,d0`);
-            lines.push(`        lea     _arr_${stmt.name},a0`);
-            lines.push(`        add.l   d0,a0`);
-            lines.push(`        move.l  (sp)+,(a0)`);
-            return lines;
-        }
-
-        // ── 2D array assignment: arr(x, y) = expr ────────────────────────────
-        // flat = y*(sizeW+1)+x;  byte_off = flat*4
-        // eval expr → push; eval y → d0 → multiply by stride → push; eval x → d0
-        // add (sp)+ → d0 = y*stride+x; asl.l #2,d0; lea+add; move.l (sp)+,(a0)
-        if (stmt.type === 'array2d_assign') {
-            const dims = this._arrays2d.get(stmt.name);
-            if (!dims) throw new Error(`Undeclared 2D array '${stmt.name}' (line ${stmt.line})`);
-            const stride = dims.sizeW.value + 1;
-            this._genExpr(stmt.expr, lines);
-            lines.push(`        move.l  d0,-(sp)`);
-            this._genExpr(stmt.indexY, lines);
-            if (stride !== 1) this._emitMultiplyByConst(stride, lines);
-            lines.push(`        move.l  d0,-(sp)`);
-            this._genExpr(stmt.indexX, lines);
-            lines.push(`        add.l   (sp)+,d0`);
+            this._genFlatIndex(dims, stmt.indices, lines);
             lines.push(`        asl.l   #2,d0`);
             lines.push(`        lea     _arr_${stmt.name},a0`);
             lines.push(`        add.l   d0,a0`);
@@ -2138,25 +2106,11 @@ export class CodeGen {
                         );
                     }
                     this._emitFunctionCall(expr.name, expr.args, lines);
-                } else if (this._arrays2d.has(expr.name)) {
-                    // 2D array read: flat = y*(sizeW+1)+x
-                    const dims   = this._arrays2d.get(expr.name);
-                    const stride = dims.sizeW.value + 1;
-                    const indexX = expr.args[0] ?? { type: 'int', value: 0 };
-                    const indexY = expr.args[1] ?? { type: 'int', value: 0 };
-                    this._genExpr(indexY, lines);
-                    if (stride !== 1) this._emitMultiplyByConst(stride, lines);
-                    lines.push(`        move.l  d0,-(sp)`);
-                    this._genExpr(indexX, lines);
-                    lines.push(`        add.l   (sp)+,d0`);
-                    lines.push(`        asl.l   #2,d0`);
-                    lines.push(`        lea     _arr_${expr.name},a0`);
-                    lines.push(`        add.l   d0,a0`);
-                    lines.push(`        move.l  (a0),d0`);
-                } else {
-                    // 1D array read: treat args[0] as index
-                    const index = expr.args[0] ?? { type: 'int', value: 0 };
-                    this._genExpr(index, lines);
+                } else if (this._arrays.has(expr.name)) {
+                    // N-dimensional array read: flat index via _genFlatIndex
+                    const dimsExprs = this._arrays.get(expr.name);
+                    const dims = dimsExprs.map(d => d.value);
+                    this._genFlatIndex(dims, expr.args, lines);
                     lines.push(`        asl.l   #2,d0`);
                     lines.push(`        lea     _arr_${expr.name},a0`);
                     lines.push(`        add.l   d0,a0`);
@@ -2263,6 +2217,30 @@ export class CodeGen {
             }
         }
         // return value is in d0
+    }
+
+    // ── N-dimensional flat index ─────────────────────────────────────────────
+    //
+    // dims    = [maxIdx0, maxIdx1, ...] — integer values of declared dimension bounds
+    // indices = [expr0, expr1, ...]    — AST expressions for runtime indices
+    //
+    // Formula (row-major, innermost dimension first):
+    //   flat = i0 + (d0+1)*(i1 + (d1+1)*(i2 + ...))
+    //
+    // Code: evaluate from outermost index inward, using stack for partial sums.
+    // Stack depth is at most 1 at any point (each push is immediately consumed).
+    _genFlatIndex(dims, indices, lines) {
+        // Evaluate outermost (last) index first
+        this._genExpr(indices[indices.length - 1] ?? { type: 'int', value: 0 }, lines);
+        // Fold inward: for each inner dimension, multiply accumulated value by
+        // the current stride, then add the next index.
+        for (let k = dims.length - 2; k >= 0; k--) {
+            const stride = dims[k] + 1;
+            if (stride !== 1) this._emitMultiplyByConst(stride, lines);
+            lines.push(`        move.l  d0,-(sp)`);
+            this._genExpr(indices[k] ?? { type: 'int', value: 0 }, lines);
+            lines.push(`        add.l   (sp)+,d0`);
+        }
     }
 
     // ── PERF-1: lsl.l instead of muls.w for power-of-two constants ───────────

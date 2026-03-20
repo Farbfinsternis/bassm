@@ -183,30 +183,16 @@ export class Parser {
             };
         }
 
-        // name(index) = expr — plain array assign (single-arg only)
-        if (this._peek().type === TT.EQ && args.length === 1) {
+        // name(indices…) = expr — array assignment (1D, 2D, ND)
+        if (this._peek().type === TT.EQ && args.length >= 1) {
             this._advance();                         // consume EQ
             const expr = this._parseExpr();
             return {
-                type:  'array_assign',
+                type:    'array_assign',
                 name,
-                index: args[0],
+                indices: args,
                 expr,
-                line:  nameTok.line,
-            };
-        }
-
-        // name(x, y) = expr — 2D array assign
-        if (this._peek().type === TT.EQ && args.length === 2) {
-            this._advance();                         // consume EQ
-            const expr = this._parseExpr();
-            return {
-                type:   'array2d_assign',
-                name,
-                indexX: args[0],
-                indexY: args[1],
-                expr,
-                line:   nameTok.line,
+                line:    nameTok.line,
             };
         }
 
@@ -326,24 +312,21 @@ export class Parser {
             return { type: 'dim_typed', name: nameTok.value.toLowerCase(), typeName, line: dimTok.line };
         }
 
-        // Plain 1D array: Dim name(size)  OR 2D: Dim name(w, h)
+        // N-dimensional array: Dim name(d0 [, d1 [, d2 …]])
         if (this._peek().type !== TT.LPAREN) {
             console.warn(`[Parser] Dim: expected '(' on line ${dimTok.line}`);
             this._skipToNewline();
             return null;
         }
         this._advance();                             // consume LPAREN
-        const sizeW = this._parseExpr();
-        if (this._peek().type === TT.COMMA) {
+        const dims = [this._parseExpr()];
+        while (this._peek().type === TT.COMMA) {
             this._advance();                         // consume COMMA
-            const sizeH = this._parseExpr();
-            if (this._peek().type === TT.RPAREN) this._advance();
-            this._skipToNewline();
-            return { type: 'dim2d', name: nameTok.value.toLowerCase(), sizeW, sizeH, line: dimTok.line };
+            dims.push(this._parseExpr());
         }
         if (this._peek().type === TT.RPAREN) this._advance();   // consume RPAREN
         this._skipToNewline();
-        return { type: 'dim', name: nameTok.value.toLowerCase(), size: sizeW, line: dimTok.line };
+        return { type: 'dim', name: nameTok.value.toLowerCase(), dims, line: dimTok.line };
     }
 
     // ── Command statement ────────────────────────────────────────────────────
