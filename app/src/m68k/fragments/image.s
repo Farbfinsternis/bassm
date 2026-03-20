@@ -129,22 +129,22 @@ _DrawImageFrame:
         move.w  d4,d7
         mulu.w  d6,d7               ; d7.l = plane_size
 
-        ; ── Bounds check — skip if any edge is outside the screen ─────────────
+        ; ── Bounds check — skip if any edge is outside the overscan buffer ──────
         ; d3 (pixel width from header) is still valid here — the frame-offset
         ; section BELOW reuses d3 as scratch.  Check must come first.
         ; a1 is free at this point; use it as scratch for x+width / y+height.
-        tst.l   d0
-        blt.w   .draw_done          ; x < 0
-        tst.l   d1
-        blt.w   .draw_done          ; y < 0
+        cmp.l   #-GFXBORDER,d0
+        blt.w   .draw_done          ; x < -GFXBORDER
+        cmp.l   #-GFXBORDER,d1
+        blt.w   .draw_done          ; y < -GFXBORDER
         move.l  d0,a1
-        add.w   d3,a1               ; a1 = x + pixel_width  (d3 = width, still valid)
-        cmpa.l  #GFXWIDTH,a1
-        bgt.w   .draw_done          ; x + width > GFXWIDTH
+        add.w   d3,a1               ; a1 = x + pixel_width
+        cmpa.l  #(GFXWIDTH+GFXBORDER),a1
+        bgt.w   .draw_done          ; x + width > GFXWIDTH+GFXBORDER
         move.l  d1,a1
         add.w   d4,a1               ; a1 = y + height
-        cmpa.l  #GFXHEIGHT,a1
-        bgt.w   .draw_done          ; y + height > GFXHEIGHT
+        cmpa.l  #(GFXHEIGHT+GFXBORDER),a1
+        bgt.w   .draw_done          ; y + height > GFXHEIGHT+GFXBORDER
 
         ; ── Frame offset = d2 × depth × plane_size ───────────────────────────
         ; Uses d3 (width no longer needed after bounds check above) as scratch.
@@ -163,9 +163,9 @@ _DrawImageFrame:
 
         ; ── Destination pointer: _back_planes_ptr + y*GFXBPR + x/8 ───────────
         move.l  _back_planes_ptr,a2
-        mulu.w  #GFXBPR,d1          ; d1 = y × GFXBPR
+        muls.w  #GFXBPR,d1          ; d1 = y × GFXBPR  (signed: handles negative y)
         add.l   d1,a2
-        lsr.l   #3,d0               ; d0 = x / 8
+        asr.l   #3,d0               ; d0 = x / 8  (signed: handles negative x)
         add.l   d0,a2               ; a2 = dest in plane-0 at (x,y)
 
         ; ── BLTDMOD = GFXBPR - rowbytes ──────────────────────────────────────

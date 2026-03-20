@@ -84,6 +84,7 @@ _ScreenFlip:
         lea     _gfx_copper_b,a0
         jsr     _InstallCopper
         move.l  _gfx_planes,a0
+        add.l   #GFXPLANEOFS,a0        ; offset to visible origin of buffer A
         move.l  a0,_back_planes_ptr     ; A is now the back buffer
         move.b  #1,_front_is_a         ; B is now front
         bra.s   .flip_done
@@ -93,6 +94,7 @@ _ScreenFlip:
         lea     _gfx_copper_a,a0
         jsr     _InstallCopper
         move.l  _gfx_planes_b,a0
+        add.l   #GFXPLANEOFS,a0        ; offset to visible origin of buffer B
         move.l  a0,_back_planes_ptr     ; B is now the back buffer
         clr.b   _front_is_a            ; A is now front
 

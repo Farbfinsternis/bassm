@@ -120,13 +120,23 @@ export class CodeGen {
         out.push('; ============================================================');
         out.push('');
 
+        // Overscan border: 32px on every side — drawing area larger than display
+        const GFXBORDER = 32;
+        const bplmod    = GFXBORDER * 2 / 8;   // copper BPL1MOD/BPL2MOD = 8
+
         // EQUs
         out.push(`${pad('GFXWIDTH',12)} EQU ${W}`);
         out.push(`${pad('GFXHEIGHT',12)} EQU ${H}`);
         out.push(`${pad('GFXDEPTH',12)} EQU ${D}`);
-        out.push(`${pad('GFXBPR',12)} EQU (GFXWIDTH/8)`);
-        out.push(`${pad('GFXPSIZE',12)} EQU (GFXBPR*GFXHEIGHT)`);
+        out.push(`${pad('GFXBORDER',12)} EQU ${GFXBORDER}`);
+        out.push(`${pad('GFXVWIDTH',12)} EQU (GFXWIDTH+GFXBORDER*2)`);
+        out.push(`${pad('GFXVHEIGHT',12)} EQU (GFXHEIGHT+GFXBORDER*2)`);
+        out.push(`${pad('GFXBPR',12)} EQU (GFXVWIDTH/8)`);
+        out.push(`${pad('GFXDBPR',12)} EQU (GFXWIDTH/8)`);
+        out.push(`${pad('GFXBPLMOD',12)} EQU (GFXBPR-GFXDBPR)`);
+        out.push(`${pad('GFXPSIZE',12)} EQU (GFXBPR*GFXVHEIGHT)`);
         out.push(`${pad('GFXBUFSIZE',12)} EQU (GFXPSIZE*GFXDEPTH)`);
+        out.push(`${pad('GFXPLANEOFS',12)} EQU (GFXBORDER*GFXBPR+GFXBORDER/8)`);
         out.push(`${pad('GFXCOLORS',12)} EQU (1<<GFXDEPTH)`);
         out.push(`${pad('GFXBPLCON0',12)} EQU $${hex(bplcon0)}`);
         out.push(`${pad('GFXDIWSTRT',12)} EQU $${hex(diwstrt)}`);
@@ -185,11 +195,13 @@ export class CodeGen {
         out.push('_setup_graphics:');
         out.push('        lea     _gfx_cop_a_bpl_table,a0');
         out.push('        move.l  _gfx_planes,a1');
+        out.push('        add.l   #GFXPLANEOFS,a1');   // offset to visible origin
         out.push('        moveq   #GFXDEPTH,d0');
         out.push('        move.l  #GFXPSIZE,d1');
         out.push('        jsr     _PatchBitplanePtrs');
         out.push('        lea     _gfx_cop_b_bpl_table,a0');
         out.push('        move.l  _gfx_planes_b,a1');
+        out.push('        add.l   #GFXPLANEOFS,a1');   // offset to visible origin
         out.push('        moveq   #GFXDEPTH,d0');
         out.push('        move.l  #GFXPSIZE,d1');
         out.push('        jsr     _PatchBitplanePtrs');
@@ -197,6 +209,7 @@ export class CodeGen {
         out.push('        jsr     _InstallCopper');
         out.push('        jsr     _InitPalette');
         out.push('        move.l  _gfx_planes_b,a0');
+        out.push('        add.l   #GFXPLANEOFS,a0');   // _back_planes_ptr = visible origin
         out.push('        move.l  a0,_back_planes_ptr');
         out.push('        clr.b   _front_is_a');
         out.push('        rts');
@@ -265,8 +278,8 @@ export class CodeGen {
             out.push(copMove(0x0100, bplcon0, 'BPLCON0'));
             out.push(copMove(0x0102, 0x0000,  'BPLCON1'));
             out.push(copMove(0x0104, 0x0000,  'BPLCON2'));
-            out.push(copMove(0x0108, 0x0000,  'BPL1MOD'));
-            out.push(copMove(0x010A, 0x0000,  'BPL2MOD'));
+            out.push(copMove(0x0108, bplmod,  'BPL1MOD (overscan)'));
+            out.push(copMove(0x010A, bplmod,  'BPL2MOD (overscan)'));
         };
 
         // Chip-RAM DATA — copper list A (bitplane pointers → buffer A)

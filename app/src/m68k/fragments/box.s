@@ -197,10 +197,7 @@ _Box:
         ;
         move.l  _back_planes_ptr,a0     ; a0 = back buffer base (double-buffering)
         move.l  d1,d5                   ; d5 = y
-        lsl.l   #3,d5                   ; d5 = y * 8
-        move.l  d5,d1                   ; d1 = y * 8 (use d1 as temp, d0 is x!)
-        lsl.l   #2,d5                   ; d5 = y * 32
-        add.l   d1,d5                   ; d5 = y * 40 (GFXBPR)
+        muls.w  #GFXBPR,d5             ; d5 = y * GFXBPR
         add.l   d5,a0                   ; a0 += y*GFXBPR
         move.l  d0,d5                   ; d5 = x
         lsr.l   #4,d5                   ; d5 = x/16 (word index of first column)
