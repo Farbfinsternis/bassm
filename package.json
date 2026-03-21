@@ -8,13 +8,43 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "test": "node app/src/tests/test-m1-variables.js && node app/src/tests/test-m2-if.js && node app/src/tests/test-m3-loops.js && node app/src/tests/test-m4-select.js && node app/src/tests/test-m5-drawing.js && node app/src/tests/test-m9-input.js && node app/src/tests/test-m8-arrays.js && node app/src/tests/test-mcopper-raster.js && node app/src/tests/test-m-data.js"
+    "test": "node app/src/tests/test-m1-variables.js && node app/src/tests/test-m2-if.js && node app/src/tests/test-m3-loops.js && node app/src/tests/test-m4-select.js && node app/src/tests/test-m5-drawing.js && node app/src/tests/test-m9-input.js && node app/src/tests/test-m8-arrays.js && node app/src/tests/test-mcopper-raster.js && node app/src/tests/test-m-data.js",
+    "build:win":   "electron-builder --win   --x64 --publish never --config.directories.output=dist/windows",
+    "build:linux": "electron-builder --linux --x64 --publish never --config.directories.output=dist/linux"
   },
   "devDependencies": {
-    "electron": "^40.6.1"
+    "electron": "^40.6.1",
+    "electron-builder": "^25.1.8"
   },
   "dependencies": {
     "@fontsource/fira-code": "^5.2.7",
     "monaco-editor": "^0.55.1"
+  },
+  "build": {
+    "appId": "dev.farbfinsternis.bassm",
+    "productName": "BASSM",
+    "copyright": "Copyright © 2025 Farbfinsternis",
+    "asar": false,
+    "files": [
+      "main.js",
+      "app/**/*",
+      "bin/**/*",
+      "emulator/preview/**/*",
+      "emulator/vAmigaWeb/roms/*.bin",
+      "node_modules/monaco-editor/**/*",
+      "!node_modules/monaco-editor/esm/**/*",
+      "!node_modules/monaco-editor/dev/**/*",
+      "node_modules/@fontsource/**/*",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": [{ "target": "portable", "arch": ["x64"] }],
+      "artifactName": "BASSM-win-${arch}.exe"
+    },
+    "linux": {
+      "target": [{ "target": "AppImage", "arch": ["x64"] }],
+      "artifactName": "BASSM-linux-${arch}.AppImage",
+      "category": "Development"
+    }
   }
 }

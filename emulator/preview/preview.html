@@ -108,7 +108,7 @@
     function startRender() { startAnimationLoop(); stop_raf = false; requestAnimationFrame(do_animation_frame); }
 
     function message_handler(msg, data, data2) {
-      console.log('[vAmiga msg]', msg, data, data2);
+      // console.log('[vAmiga msg]', msg, data, data2);
       const s = document.getElementById('status');
       if (!s) return;
       if      (msg === 'MSG_ROM_MISSING')   { s.textContent = 'Waiting for ROM'; }
@@ -294,8 +294,8 @@
       preRun:  [],
       postRun: [InitWrappers],
       canvas: document.getElementById('canvas'),
-      print:    (text) => console.log('[vAmiga]', text),
-      printErr: (text) => console.error('[vAmiga]', text),
+      print:    (_text) => {},
+      printErr: (_text) => {},
       setStatus: (text) => { if (text) document.getElementById('status').textContent = text; },
       totalDependencies: 0,
       monitorRunDependencies: (left) => {

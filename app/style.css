@@ -129,7 +129,7 @@ body.emu-full #right-panel   { width: 100% !important; }
 
 .tree-item,
 .outline-item {
-    padding: 3px 8px 3px 12px;
+    padding: 2px 6px 2px 0;
     font-size: 13px;
     cursor: pointer;
     white-space: nowrap;
@@ -137,17 +137,88 @@ body.emu-full #right-panel   { width: 100% !important; }
     text-overflow: ellipsis;
     color: #999;
     user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 0;
+}
+
+.tree-icon {
+    display: inline-block;
+    width: 18px;
+    flex-shrink: 0;
+    text-align: center;
+    opacity: 0.6;
+    font-size: 11px;
 }
 
 .tree-item:hover,
 .outline-item:hover  { background: #182030; color: #ccc; }
 
+/* file-type classes — specificity 0,1,0; .active and .entry-point below override */
+.tree-item-bassm       { color: #7ac5ff; }
+.tree-item-bassm:hover { background: #182030; color: #aad4ff; }
+
+.tree-item-img         { color: #c586c0; cursor: context-menu; }
+.tree-item-img:hover   { background: #182030; color: #d9a0d9; }
+
+.tree-item-audio       { color: #4ec9b0; cursor: default; }
+.tree-item-audio:hover { background: #182030; }
+
+.tree-item-mask        { color: #666; cursor: default; }
+.tree-item-mask:hover  { background: none; }
+
+.tree-item-other       { color: #555; cursor: default; }
+.tree-item-other:hover { background: none; }
+
+/* active + entry-point override everything above — placed last for cascade */
 .tree-item.active      { background: #182535; color: #6af; }
 .tree-item.entry-point { color: #8be; }
-.tree-item.tree-asset  { color: #666; cursor: default; }
-.tree-item.tree-asset:hover { background: none; color: #666; }
-.tree-item.tree-png    { color: #888; cursor: context-menu; }
-.tree-item.tree-png:hover { background: #182030; color: #aaa; }
+
+/* ── Drag & Drop ── */
+.tree-item[draggable="true"],
+.tree-dir[draggable="true"] { cursor: grab; }
+
+.tree-drop-target {
+    background: #1a3050 !important;
+    outline: 1px solid #3a6aa0;
+    border-radius: 2px;
+}
+
+/* ── Tree context-menu separator ── */
+.ctx-sep {
+    height: 1px;
+    background: #2a2d50;
+    margin: 3px 6px;
+}
+
+/* ── Inline input (new file / new folder) ── */
+.tree-inline-input {
+    display: flex;
+    align-items: center;
+    padding: 1px 6px 1px 0;
+    gap: 0;
+}
+
+.tree-inline-input input,
+.tree-rename-input {
+    background: #131a28;
+    border: 1px solid #3a5a8a;
+    color: #ccc;
+    font-family: monospace;
+    font-size: 13px;
+    padding: 1px 5px;
+    outline: none;
+    width: 100%;
+    min-width: 0;
+    border-radius: 2px;
+    flex: 1;
+}
+
+.tree-inline-input input:focus,
+.tree-rename-input:focus {
+    border-color: #5a8abe;
+    background: #15203a;
+}
 
 /* ── Context Menu ── */
 .ctx-menu {
@@ -172,7 +243,7 @@ body.emu-full #right-panel   { width: 100% !important; }
 .ctx-item:hover { background: #1e2540; color: #6af; }
 
 .tree-dir {
-    padding: 3px 8px;
+    padding: 2px 6px 2px 0;
     font-size: 13px;
     cursor: pointer;
     white-space: nowrap;
@@ -180,6 +251,9 @@ body.emu-full #right-panel   { width: 100% !important; }
     text-overflow: ellipsis;
     color: #888;
     user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 0;
 }
 .tree-dir:hover { background: #182030; color: #bbb; }
 

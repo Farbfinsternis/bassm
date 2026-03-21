@@ -246,6 +246,19 @@ function _estimateLineCycles(trim, imageMap, gfxW, gfxH, planes, activeFontCharH
     if (/^StopSample\b/i.test(trim))    return 100;
     if (/^WaitKey\b/i.test(trim))       return 0;     // blocks — not in budget
 
+    // ── Collision checks ──────────────────────────────────────────────────────
+    // All three are inline-expanded (no JSR) but evaluate 6–8 args + AABB logic.
+
+    if (/RectsOverlap\s*\(/i.test(trim))     return 120;
+    if (/ImageRectOverlap\s*\(/i.test(trim)) return 80;
+    if (/ImagesOverlap\s*\(/i.test(trim))    return 80;
+
+    // ── Hardware access ───────────────────────────────────────────────────────
+    // PeekB/W/L: move + optional ext.l; PokeB/W/L/Poke: move to absolute addr.
+
+    if (/\bPeek[BWL]\s*\(/i.test(trim))                         return 20;
+    if (/^\s*Poke[BWL]?\s+/i.test(trim))                        return 20;
+
     // Generic statement (assignment, condition, arithmetic, …)
     return 15;
 }

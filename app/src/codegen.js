@@ -2316,6 +2316,9 @@ export class CodeGen {
         if (n > 0 && (1 << shift) === n) {
             lines.push(`        lsl.l   #${shift},d0`);
         } else {
+            if (n > 32767 || n < -32768) {
+                throw new Error(`Multiplikation: Literal ${n} liegt außerhalb des 16-Bit-Bereichs (−32768..32767) — muls.w würde falsche Ergebnisse liefern. Weise den Wert einer Variable zu und multipliziere damit.`);
+            }
             lines.push(`        move.l  #${n},d1`);
             lines.push(`        muls.w  d1,d0`);
         }

@@ -55,6 +55,28 @@
 
 - [x] Entfernt aus `commands-map.json` und `codegen.js` (war nie implementiert)
 
+### BUG-8: IDE-COLOR — Farb-Swatches werden nicht gerendert
+`inlineClassName`-Dekorationen auf dem Keyword-Range werden korrekt registriert
+(`createDecorationsCollection.set()` / `deltaDecorations` liefern gültige IDs),
+aber die CSS-Klasse erscheint nicht im Editor. CSS-Injektion via `sheet.insertRule()`
+und `createElement('style')` wurden beide getestet. Statische Klassen aus `style.css`
+funktionieren (Debugging bestätigt). Ursache unklar — möglicherweise Monaco 0.55
+überschreibt `inlineClassName`-Stile durch eigenes Tokenizer-CSS mit höherer Spezifität.
+
+**Was bekannt ist:**
+- `inlineClassName` auf non-zero-width range: Dekorations-IDs werden zurückgegeben ✓
+- Statische CSS-Klasse aus `style.css` + `inlineClassName` → Klasse ist **sichtbar** ✓
+- Dynamisch injizierte CSS-Klasse + `inlineClassName` → Klasse ist **nicht sichtbar** ✗
+
+**Verdacht:** Monaco's tokenizer-generierte `mtk*`-Klassen haben höhere Spezifität als
+dynamisch injiziertes CSS. Lösung: CSS in `style.css` vorgenerieren oder Spezifität erhöhen
+(z.B. `.monaco-editor .view-lines .bsm-sw-...`).
+
+- [ ] Ursache klären: Browser-DevTools → Element-Inspector auf dekoriertem Span prüfen
+      ob die `bsm-sw-*`-Klasse im DOM vorhanden ist
+- [ ] Falls Klasse im DOM: Spezifität erhöhen (`.monaco-editor .view-lines .bsm-sw-...`)
+- [ ] Falls Klasse nicht im DOM: `createDecorationsCollection` vs. `model.deltaDecorations` testen
+
 ### BUG-4: Mouse-Input in vAmiga-Preview funktioniert nicht
 `_wasm_mouse` und `_wasm_mouse_button` sind exportiert und Handler sind gesetzt, aber Maus-Delta erreicht JOY0DAT nicht. Hypothesen: falscher Port-Index, fehlende `setDxDy`-API, AROS-Device-Init fehlt.
 
@@ -69,17 +91,17 @@ Symptom: Bildschirm wird dunkelgrau, aber Workbench/Shell-Fenster bleibt weg. `L
 - [ ] Alternative: nach `LoadView(NULL)` / `WaitTOF×2` nur `RethinkDisplay` aufrufen (ohne LoadView(saved))
 - [ ] Alternativ: Workbench-Fenster per `intuition.library/RefreshWindowFrame` explizit neu zeichnen
 
-### BUG-6: muls.w — kein Overflow-Schutz bei Multiplikation
+### ~~BUG-6: muls.w — kein Overflow-Schutz bei Multiplikation~~ ✓ (partial)
 Codegen emittiert `muls.w` (16×16→32 bit). Bei Operanden > 32767 entstehen falsche Ergebnisse ohne Fehlermeldung.
 
-- [ ] Budget-Hinweis in Fehlermeldung ergänzen: "Multiplikations-Operanden müssen 0..32767 sein"
-- [ ] Langfristig: `muls.l` (32×32→64) prüfen oder Compiler-Warning bei Literal-Overflow
+- [x] Compiler-Fehler wenn Literal-Operand außerhalb −32768..32767: `_emitMultiplyByConst` wirft mit klarer Meldung + Hinweis auf Variable
+- [ ] Langfristig: `muls.l` (32×32→64) für Runtime×Runtime-Fall (beide Operanden variabel)
 
-### BUG-7: budget.js ignoriert RectsOverlap/ImagesOverlap/PeekB-Overhead
+### ~~BUG-7: budget.js ignoriert RectsOverlap/ImagesOverlap/PeekB-Overhead~~ ✓
 Kollisionsprüfungen und Hardware-Zugriffe kosten messbare Zyklen (movem + 4× cmp), sind aber nicht in der Budget-Schätzung.
 
-- [ ] `_estimateLineCycles` um RectsOverlap (~120 Zyklen), ImagesOverlap (~80 Zyklen), ImageRectOverlap (~80 Zyklen) ergänzen
-- [ ] PeekB/W/L und PokeB/W/L als generische Statements behandeln (~20 Zyklen)
+- [x] `_estimateLineCycles`: RectsOverlap (~120 Zyklen), ImagesOverlap (~80 Zyklen), ImageRectOverlap (~80 Zyklen) ergänzt
+- [x] PeekB/W/L (~20 Zyklen) und PokeB/W/L/Poke (~20 Zyklen) ergänzt
 
 ---
 
@@ -94,10 +116,8 @@ Kollisionsprüfungen und Hardware-Zugriffe kosten messbare Zyklen (movem + 4× c
 - [x] Alle fehlenden Commands in `editor-init.js` eingetragen (35 Commands + 20 Builtins)
 - [x] `registerCompletionItemProvider` mit Tab-Stop-Snippets für alle Commands
 
-### ~~IDE-COLOR: Inline Farb-Swatches~~ ✓
-- [x] `createDecorationsCollection` + Glyph-Margin-Dekorationen
-- [x] OCS r,g,b → CSS `rgb()` berechnet; dynamische `<style>`-Injektion pro Farbe
-- [x] Funktioniert für `PaletteColor` und `CopperColor`; debounced bei 300 ms
+### IDE-COLOR: Inline Farb-Swatches — ✗ offen (siehe BUG-8)
+- [ ] Farbige Markierung auf `PaletteColor`- und `CopperColor`-Zeilen
 
 ### ~~IDE-CONSOLE: Console-Panel verbessern~~ ✓
 - [x] Timestamps `[HH:MM:SS]` vor Log-Einträgen
@@ -136,6 +156,42 @@ Kollisionsprüfungen und Hardware-Zugriffe kosten messbare Zyklen (movem + 4× c
 - [x] **F5** = Run (compile + run); **F6** = Re-run ohne Recompile (cached binary); **Ctrl+S** = Save; **F11** = Emulator fullscreen; **ESC** = Exit fullscreen — capture-phase keydown, überschreibt Monaco
 - [x] `bassm.run()` gibt jetzt `{ asm, binary }` zurück; `_lastBinary` cached für F6
 - [x] Tastenkürzel-Tooltips auf allen Toolbar-Buttons (`title`-Attribut)
+
+---
+
+## Milestone 2b: TOOL-TREE — Projekt-Manager Überarbeitung
+
+*Der aktuelle Projekt-Manager hat keine Icons, keine visuelle Differenzierung zwischen
+Dateitypen, und kein Kontext-Menü zum Anlegen/Umbenennen/Löschen. Diese Milestone
+macht ihn zu einem echten Werkzeug.*
+
+### TOOL-TREE-1 — Visuelle Überarbeitung (Icons + Farben) ✓
+*`bassm.js` + `style.css`.*
+
+- [x] Icon-Spans (`.tree-icon`) pro Eintrag: `◆`/`◇` bassm, `▪` png, `∼` audio, `▫` mask, `–` sonstiges
+- [x] Typ-Klassen: `.tree-item-bassm`, `.tree-item-img`, `.tree-item-audio`, `.tree-item-mask`, `.tree-item-other`
+- [x] Ordner nutzen `▸`/`▾` als Collapse-Toggle; `.tree-dir` ebenfalls flex
+
+### TOOL-TREE-2 — Kontext-Menü + Neue Datei / Neuer Ordner ✓
+*IPC in `main.js` + `preload.js`, UI in `bassm.js`.*
+
+- [x] `bassm:create-file`, `bassm:create-dir`, `bassm:delete-item` mit Path-Traversal-Schutz
+- [x] Rechtsklick **Panel-Header** + **leerer Bereich**: Neue Datei, Neuer Ordner (root-level)
+- [x] Rechtsklick **Ordner**: Neue Datei hier, Neuer Ordner hier, Trennlinie, Ordner löschen
+- [x] Rechtsklick **`.bassm`**: Umbenennen, Löschen (main.bassm: kein Löschen)
+- [x] Rechtsklick **`.png`**: Convert (Asset Manager), Trennlinie, Löschen
+- [x] Inline-Input direkt im Tree (kein Modal); Enter bestätigt, Escape bricht ab
+- [x] Löschen mit native `confirm()`-Dialog
+
+### TOOL-TREE-3 — Umbenennen (Inline) ✓
+- [x] `bassm:rename-item` — `fs.renameSync`; aktive Datei-Referenz wird nachgeführt
+- [x] Doppelklick auf `.bassm` → Inline-`<input>` ersetzt den Namen-Span
+- [x] Enter bestätigt, Escape bricht ab
+
+### TOOL-TREE-4 — Tree-State-Persistenz ✓
+- [x] `_treeCollapsed` Set; Key = `bassm-tree-collapsed:<projectDir>` in `localStorage`
+- [x] `_loadTreeState()` beim Projekt-Öffnen; `_saveTreeState()` bei jedem Collapse/Expand
+- [ ] Pfeiltasten ↑↓ + Enter (Tastaturnavigation — noch offen)
 
 ---
 
@@ -180,6 +236,68 @@ Blitz2D unterscheidet String-Variablen (`s$`) von Integer-Variablen (`n`). Scope
 - [ ] Fehler: String-Variable in Integer-Ausdruck → Compiler-Error
 - [ ] Scope: String-Variablen sind global (kein Frame-Alloc); Keine GC nötig
 - [ ] Tests: test-lang-strings.js
+
+---
+
+## Milestone 3b: M-DYNIMG — Laufzeit-Assets
+
+*`LoadImage`, `LoadSample` etc. laden immer zur Laufzeit via dos.library. Kein INCBIN mehr.
+Assets liegen neben der `.exe`. Blitz2D-kompatibles Verhalten.*
+
+### T1 — BSS Pointer-Tabelle: Images
+- [ ] `_img_N: dc.l 0` in BSS (statt INCBIN-Label `_img_N_raw`)
+- [ ] INCBIN-Emit für Images in `generate()` entfernen
+- [ ] `getAssetRefs()` bleibt erhalten (jetzt für Output-Dir-Copy)
+
+### T2 — `dosio.s` Fragment
+- [ ] `_LoadToChip(a0=filename, a1=BSS-Slot)` — dos.Open → Seek(END) → AllocMem(MEMF_CHIP) → Read → Close → ptr speichern
+- [ ] `_LoadToPub(a0=filename, a1=BSS-Slot)` — identisch mit MEMF_PUBLIC (für Fonts)
+- [ ] Fehler: AllocMem-Fail → `jsr _exit`
+
+### T3 — LoadImage → Startup-Emission
+- [ ] Codegen emittiert pro `LoadImage` in der Setup-Sektion:
+  `lea _img_N_filename,a0 / lea _img_N,a1 / jsr _LoadToChip`
+- [ ] Dateiname als `dc.b` in DATA-Segment (null-terminiert)
+- [ ] `LoadAnimImage` gleicher Pfad (selber Header-Aufbau)
+
+### T4 — DrawImage / SetBackground / BOBs: `lea` → `move.l`
+- [ ] Alle `lea _img_N_raw,a0` → `move.l _img_N,a0` in Codegen
+- [ ] Betrifft: `DrawImage`, `DrawImageFrame`, `SetBackground`, `_AddBob` (imgptr im Slot)
+- [ ] Header-Offsets (w/h/rowbytes) bleiben identisch — Daten via Pointer erreichbar
+
+### T5 — ImagesOverlap / ImageRectOverlap: w/h zur Laufzeit
+- [ ] Bisher: `move.w _img_N_raw+0,dX` (compile-time Label-Offset)
+- [ ] Neu: `move.l _img_N,aX / move.w (aX),dX / move.w 2(aX),dY`
+- [ ] Compile-time-Optimierung entfällt; immer Laufzeit-Pfad
+
+### T6 — FreeImage Befehl
+- [ ] Neuer Befehl `FreeImage n` in `commands-map.json` + Codegen
+- [ ] Inline: `move.l _img_N,a0 / <size aus Header> / FreeMem / clr.l _img_N`
+
+### T7 — BSS Pointer-Tabelle + Startup-Emission: Samples
+- [ ] `_snd_N: dc.l 0` in BSS; kein INCBIN mehr
+- [ ] `_snd_N_size: dc.l 0` — Dateigröße neben Pointer speichern (für FreeSample)
+- [ ] Startup emittiert `lea`+`jsr _LoadToChip` analog T3
+- [ ] `_PlaySample` / `_PlaySampleOnce`: `move.l _snd_N,a0` statt `lea _snd_N_raw,a0`
+
+### T8 — FreeSample Befehl
+- [ ] `FreeSample n` → `FreeMem(_snd_N, _snd_N_size) / clr.l _snd_N`
+
+### T9 — LoadMask → Laufzeit
+- [ ] `_mask_N: dc.l 0` in BSS; Startup-Emission `jsr _LoadToChip`
+- [ ] `_BltBobMasked`: `move.l _mask_N,a1` statt `lea _mask_N_raw,a1`
+
+### T10 — LoadFont → Laufzeit
+- [ ] Font-Daten sind kein Chip-RAM → `_LoadToPub`
+- [ ] `_active_font_data` zeigt auf geladenen Block
+
+### T11 — Asset-Pipeline: Output-Dir statt tmpDir
+- [ ] `main.js`: Assets nicht mehr nach tmpDir kopieren
+- [ ] Nach erfolgreichem vlink: alle referenzierten Assets ins Output-Verzeichnis kopieren (neben `.exe`)
+
+### T12 — budget.js: Chip-RAM-Schätzung anpassen
+- [ ] INCBIN-Contributions für Images/Sounds entfernen
+- [ ] Hinweistext: "Runtime-Assets: Chip-RAM zur Compile-Zeit unbekannt"
 
 ---
 
@@ -377,6 +495,7 @@ Die Budget-Bars zeigen Gesamtschätzung. Für Optimierung braucht man Auflösung
 | **HOCH** | LANG-G Const | Kleiner Aufwand, nützlich für alle Spiele |
 | **HOCH** | LANG-H Data/Read | Essentiell für Level-Daten ohne riesige Array-Inits |
 | **MITTEL** | M2 IDE DevEx | Macht den Editor professionell |
+| **MITTEL** | M3b M-DYNIMG | Blitz2D-Kompatibilität; nötig vor Public Release |
 | **MITTEL** | M4 M-SCROLL | Blockiert Platformer/Shooter-Genre komplett |
 | **MITTEL** | M5 M-MUSIC | Größte Quality-of-Life-Lücke im Spielgefühl |
 | **MITTEL** | A-MGR-2 Sound | Senkt Einstiegshürde für neue Nutzer |

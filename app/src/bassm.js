@@ -304,7 +304,14 @@ function showContextMenu(x, y, items) {
     if (_ctxMenu) { _ctxMenu.remove(); _ctxMenu = null; }
     const menu = document.createElement('div');
     menu.className = 'ctx-menu';
-    for (const { label, action } of items) {
+    for (const itemDef of items) {
+        if (!itemDef) {
+            const sep = document.createElement('div');
+            sep.className = 'ctx-sep';
+            menu.appendChild(sep);
+            continue;
+        }
+        const { label, action } = itemDef;
         const item = document.createElement('div');
         item.className   = 'ctx-item';
         item.textContent = label;
@@ -330,59 +337,331 @@ document.addEventListener('keydown',  e => { if (e.key === 'Escape' && _ctxMenu)
 
 // ── Project Tree ──────────────────────────────────────────────────────────────
 
+// ── Drag & Drop state ─────────────────────────────────────────────────────────
+let _dragSrcPath      = null;   // relative path of item being dragged
+let _dragSrcType      = null;   // 'file' | 'dir'
+let _currentDropTarget = null;  // element currently highlighted as drop target
+
+function _setDropTarget(el) {
+    if (_currentDropTarget === el) return;
+    if (_currentDropTarget) _currentDropTarget.classList.remove('tree-drop-target');
+    _currentDropTarget = el;
+    if (el) el.classList.add('tree-drop-target');
+}
+
+function _isDragValid(destDir) {
+    if (!_dragSrcPath) return false;
+    // Same directory — already there
+    const srcParent = _dragSrcPath.includes('/')
+        ? _dragSrcPath.substring(0, _dragSrcPath.lastIndexOf('/')) : '';
+    if (destDir === srcParent) return false;
+    // Prevent moving a dir into itself or a descendant
+    if (_dragSrcType === 'dir') {
+        if (destDir === _dragSrcPath) return false;
+        if (destDir.startsWith(_dragSrcPath + '/')) return false;
+    }
+    return true;
+}
+
+async function _moveItem(srcPath, destDir) {
+    try {
+        const newRelPath = await window.electronAPI.moveItem({ projectDir: _projectDir, srcPath, destDir });
+        // Update _currentFile if the moved item is or contains it
+        if (srcPath === _currentFile) {
+            _currentFile = newRelPath;
+        } else if (_dragSrcType === 'dir' && _currentFile.startsWith(srcPath + '/')) {
+            _currentFile = newRelPath + '/' + _currentFile.substring(srcPath.length + 1);
+        }
+        _projectFiles = await window.electronAPI.listFiles({ projectDir: _projectDir });
+        renderProjectTree();
+    } catch (err) {
+        logLine(`Verschieben fehlgeschlagen: ${err.message}`, 'error');
+    }
+}
+
+// Clean up on any drag end (drop, cancel, ESC)
+document.addEventListener('dragend', () => { _dragSrcPath = null; _dragSrcType = null; _setDropTarget(null); });
+
+// ── Collapse state ─────────────────────────────────────────────────────────────
+// dir paths (relative to projectDir) that are currently collapsed
+const _treeCollapsed = new Set();
+
+function _loadTreeState() {
+    if (!_projectDir) return;
+    try {
+        const key  = 'bassm-tree-collapsed:' + _projectDir;
+        const data = JSON.parse(localStorage.getItem(key) || '[]');
+        _treeCollapsed.clear();
+        data.forEach(p => _treeCollapsed.add(p));
+    } catch (_) {}
+}
+
+function _saveTreeState() {
+    if (!_projectDir) return;
+    const key = 'bassm-tree-collapsed:' + _projectDir;
+    localStorage.setItem(key, JSON.stringify([..._treeCollapsed]));
+}
+
 function renderProjectTree() {
     const el = document.getElementById('project-tree-content');
     el.innerHTML = '';
-    renderTreeNodes(_projectFiles, el, 0);
+    renderTreeNodes(_projectFiles, el, 0, '');
 }
 
-function renderTreeNodes(nodes, container, depth) {
-    const indent = 8 + depth * 12;
+function renderTreeNodes(nodes, container, depth, parentPath) {
+    const indent = 8 + depth * 14;
     for (const node of nodes) {
         if (node.type === 'dir') {
+            const dirPath    = parentPath ? `${parentPath}/${node.name}` : node.name;
+            const isCollapsed = _treeCollapsed.has(dirPath);
+
             const hdr = document.createElement('div');
             hdr.className = 'tree-dir';
             hdr.style.paddingLeft = indent + 'px';
-            hdr.textContent = '\u25BE ' + node.name;
             hdr.title = node.name;
 
+            const iconSpan = document.createElement('span');
+            iconSpan.className = 'tree-icon';
+            iconSpan.textContent = isCollapsed ? '\u25B8' : '\u25BE';
+
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = node.name;
+
+            hdr.appendChild(iconSpan);
+            hdr.appendChild(nameSpan);
+
             const body = document.createElement('div');
-            renderTreeNodes(node.children, body, depth + 1);
+            body.style.display = isCollapsed ? 'none' : '';
+            renderTreeNodes(node.children, body, depth + 1, dirPath);
 
             hdr.addEventListener('click', () => {
                 const collapsed = body.style.display === 'none';
-                body.style.display  = collapsed ? '' : 'none';
-                hdr.textContent = (collapsed ? '\u25BE ' : '\u25B8 ') + node.name;
+                body.style.display = collapsed ? '' : 'none';
+                iconSpan.textContent = collapsed ? '\u25BE' : '\u25B8';
+                if (collapsed) _treeCollapsed.delete(dirPath);
+                else           _treeCollapsed.add(dirPath);
+                _saveTreeState();
+            });
+
+            hdr.addEventListener('contextmenu', e => {
+                e.preventDefault();
+                showContextMenu(e.clientX, e.clientY, [
+                    { label: 'New File\u2026',   action: () => {
+                        if (body.style.display === 'none') hdr.click();
+                        _startInlineInput(body, 'file', dirPath, depth + 1);
+                    }},
+                    { label: 'New Folder\u2026', action: () => {
+                        if (body.style.display === 'none') hdr.click();
+                        _startInlineInput(body, 'dir', dirPath, depth + 1);
+                    }},
+                    null,
+                    { label: 'Delete Folder', action: () => _deleteItem(dirPath, 'dir') },
+                ]);
+            });
+
+            // ── Drag (source) ──────────────────────────────────────────────
+            hdr.setAttribute('draggable', 'true');
+            hdr.addEventListener('dragstart', e => {
+                e.stopPropagation();
+                _dragSrcPath = dirPath;
+                _dragSrcType = 'dir';
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', dirPath);
+            });
+
+            // ── Drop (target) ──────────────────────────────────────────────
+            hdr.addEventListener('dragover', e => {
+                e.stopPropagation();
+                if (!_isDragValid(dirPath)) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                _setDropTarget(hdr);
+            });
+            hdr.addEventListener('drop', async e => {
+                e.preventDefault();
+                e.stopPropagation();
+                _setDropTarget(null);
+                if (!_dragSrcPath) return;
+                const src = _dragSrcPath; _dragSrcPath = null;
+                await _moveItem(src, dirPath);
             });
 
             container.appendChild(hdr);
             container.appendChild(body);
         } else {
-            const isBassm = node.name.endsWith('.bassm');
-            const isPng   = node.name.toLowerCase().endsWith('.png');
+            const ext     = node.name.split('.').pop().toLowerCase();
+            const isBassm = ext === 'bassm';
+            const isPng   = ext === 'png';
+            const isAudio = ['raw', 'iff', 'wav', 'aiff', '8svx'].includes(ext);
+            const isMask  = ext === 'mask';
+            const isEntry = node.name === 'main.bassm';
+
+            let typeClass = 'tree-item-other';
+            let iconChar  = '\u2013'; // en-dash
+            if (isBassm)      { typeClass = 'tree-item-bassm';  iconChar = isEntry ? '\u25C6' : '\u25C7'; }
+            else if (isPng)   { typeClass = 'tree-item-img';    iconChar = '\u25AA'; }
+            else if (isAudio) { typeClass = 'tree-item-audio';  iconChar = '\u223C'; }
+            else if (isMask)  { typeClass = 'tree-item-mask';   iconChar = '\u25AB'; }
+
             const item = document.createElement('div');
-            item.className = 'tree-item'
+            item.className = `tree-item ${typeClass}`
                 + (node.path === _currentFile ? ' active'      : '')
-                + (node.name === 'main.bassm' ? ' entry-point' : '')
-                + (isBassm ? '' : isPng ? ' tree-png' : ' tree-asset');
+                + (isEntry                    ? ' entry-point' : '');
             item.style.paddingLeft = indent + 'px';
-            item.textContent = node.name;
             item.title = node.path;
-            if (isBassm) item.addEventListener('click', () => loadProjectFile(node.path));
-            if (isPng) {
-                item.addEventListener('contextmenu', e => {
-                    e.preventDefault();
-                    showContextMenu(e.clientX, e.clientY, [{
-                        label: 'Convert',
-                        action: () => window.electronAPI.openAssetManager({
-                            projectDir: _projectDir,
-                            preloadFile: node.path,
-                        }),
-                    }]);
+
+            const iconSpan = document.createElement('span');
+            iconSpan.className = 'tree-icon';
+            iconSpan.textContent = iconChar;
+
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = node.name;
+
+            item.appendChild(iconSpan);
+            item.appendChild(nameSpan);
+
+            if (isBassm) {
+                item.addEventListener('click', () => loadProjectFile(node.path));
+                item.addEventListener('dblclick', e => {
+                    e.stopPropagation();
+                    if (!isEntry) _startInlineRename(item, nameSpan, node.path);
                 });
             }
+
+            // ── Drag (source) ──────────────────────────────────────────────
+            item.setAttribute('draggable', 'true');
+            item.addEventListener('dragstart', e => {
+                e.stopPropagation();
+                _dragSrcPath = node.path;
+                _dragSrcType = 'file';
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', node.path);
+            });
+
+            const ctxItems = [];
+            if (isPng) {
+                ctxItems.push({ label: 'Convert', action: () => window.electronAPI.openAssetManager({ projectDir: _projectDir, preloadFile: node.path }) });
+                ctxItems.push(null);
+            }
+            if (isBassm && !isEntry) {
+                ctxItems.push({ label: 'Rename', action: () => _startInlineRename(item, nameSpan, node.path) });
+            }
+            if (!isEntry) {
+                ctxItems.push({ label: 'Delete', action: () => _deleteItem(node.path, 'file') });
+            }
+            if (ctxItems.length > 0) {
+                item.addEventListener('contextmenu', e => {
+                    e.preventDefault();
+                    showContextMenu(e.clientX, e.clientY, ctxItems);
+                });
+            }
+
             container.appendChild(item);
         }
+    }
+}
+
+// ── Tree: inline new file / new folder ────────────────────────────────────────
+
+function _startInlineInput(parentBody, kind, dirPath, depth) {
+    const existing = parentBody.querySelector('.tree-inline-input');
+    if (existing) existing.remove();
+
+    const indent = 8 + depth * 14;
+    const row = document.createElement('div');
+    row.className = 'tree-inline-input';
+    row.style.paddingLeft = indent + 'px';
+
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'tree-icon';
+    iconSpan.textContent = kind === 'dir' ? '\u25B8' : '\u25C7';
+    row.appendChild(iconSpan);
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = kind === 'dir' ? 'folder-name' : 'file.bassm';
+    row.appendChild(input);
+
+    parentBody.insertBefore(row, parentBody.firstChild);
+    input.focus();
+
+    const commit = async () => {
+        const name = input.value.trim();
+        if (!name) { row.remove(); return; }
+        const relPath = dirPath ? `${dirPath}/${name}` : name;
+        try {
+            if (kind === 'dir') await window.electronAPI.createDir({ projectDir: _projectDir, relPath });
+            else                 await window.electronAPI.createFile({ projectDir: _projectDir, relPath });
+            row.remove();
+            _projectFiles = await window.electronAPI.listFiles({ projectDir: _projectDir });
+            renderProjectTree();
+            if (kind === 'file' && name.endsWith('.bassm')) loadProjectFile(relPath);
+        } catch (err) {
+            logLine(`Fehler: ${err.message}`, 'error');
+            row.remove();
+        }
+    };
+
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+        if (e.key === 'Escape') { row.remove(); }
+    });
+    input.addEventListener('blur', () => setTimeout(() => { if (row.isConnected) row.remove(); }, 200));
+}
+
+// ── Tree: inline rename ────────────────────────────────────────────────────────
+
+function _startInlineRename(item, nameSpan, relPath) {
+    if (item.querySelector('.tree-rename-input')) return; // already renaming
+    const oldName = nameSpan.textContent;
+    nameSpan.style.display = 'none';
+
+    const input = document.createElement('input');
+    input.className = 'tree-rename-input';
+    input.type  = 'text';
+    input.value = oldName;
+    item.appendChild(input);
+    input.focus();
+    input.select();
+
+    const cancel = () => { input.remove(); nameSpan.style.display = ''; };
+
+    const commit = async () => {
+        const newName = input.value.trim();
+        if (!newName || newName === oldName) { cancel(); return; }
+        try {
+            const newRelPath = await window.electronAPI.renameItem({ projectDir: _projectDir, relPath, newName });
+            if (relPath === _currentFile) _currentFile = newRelPath;
+            _projectFiles = await window.electronAPI.listFiles({ projectDir: _projectDir });
+            renderProjectTree();
+        } catch (err) {
+            logLine(`Rename-Fehler: ${err.message}`, 'error');
+            cancel();
+        }
+    };
+
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+        if (e.key === 'Escape') { cancel(); }
+    });
+    input.addEventListener('blur', () => setTimeout(() => { if (input.isConnected) cancel(); }, 200));
+}
+
+// ── Tree: delete item ──────────────────────────────────────────────────────────
+
+async function _deleteItem(relPath, kind) {
+    const name = relPath.split('/').pop();
+    const msg  = kind === 'dir'
+        ? `Ordner "${name}" und seinen gesamten Inhalt löschen?`
+        : `Datei "${name}" löschen?`;
+    if (!confirm(msg)) return;
+    try {
+        await window.electronAPI.deleteItem({ projectDir: _projectDir, relPath });
+        if (kind === 'file' && relPath === _currentFile) _currentFile = 'main.bassm';
+        _projectFiles = await window.electronAPI.listFiles({ projectDir: _projectDir });
+        renderProjectTree();
+    } catch (err) {
+        logLine(`Löschen-Fehler: ${err.message}`, 'error');
     }
 }
 
@@ -604,11 +883,53 @@ bassm.init()
             window.electronAPI.openAssetManager({ projectDir: _projectDir });
         });
 
+        // Root-level context menu on the project panel header
+        document.querySelector('#project-tree .panel-header').addEventListener('contextmenu', e => {
+            if (!_projectDir) return;
+            e.preventDefault();
+            const content = document.getElementById('project-tree-content');
+            showContextMenu(e.clientX, e.clientY, [
+                { label: 'New File\u2026',   action: () => _startInlineInput(content, 'file', '', 0) },
+                { label: 'New Folder\u2026', action: () => _startInlineInput(content, 'dir',  '', 0) },
+            ]);
+        });
+
+        // Root-level context menu when right-clicking empty space in tree content
+        document.getElementById('project-tree-content').addEventListener('contextmenu', e => {
+            if (!_projectDir || e.target !== document.getElementById('project-tree-content')) return;
+            e.preventDefault();
+            const content = document.getElementById('project-tree-content');
+            showContextMenu(e.clientX, e.clientY, [
+                { label: 'New File\u2026',   action: () => _startInlineInput(content, 'file', '', 0) },
+                { label: 'New Folder\u2026', action: () => _startInlineInput(content, 'dir',  '', 0) },
+            ]);
+        });
+
+        // Root drop target — catches drags that are not claimed by a dir header
+        const _treeContentEl = document.getElementById('project-tree-content');
+        _treeContentEl.addEventListener('dragover', e => {
+            if (!_isDragValid('')) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            _setDropTarget(_treeContentEl);
+        });
+        _treeContentEl.addEventListener('dragleave', e => {
+            if (!_treeContentEl.contains(e.relatedTarget)) _setDropTarget(null);
+        });
+        _treeContentEl.addEventListener('drop', async e => {
+            e.preventDefault();
+            _setDropTarget(null);
+            if (!_dragSrcPath) return;
+            const src = _dragSrcPath; _dragSrcPath = null;
+            await _moveItem(src, '');
+        });
+
         btnOpen.addEventListener('click', async () => {
             const result = await window.electronAPI.openProject();
             if (!result) return;
             _projectDir  = result.projectDir;
             _currentFile = 'main.bassm';
+            _loadTreeState();
             projectName.textContent = result.projectName;
             window._monacoEditor.setValue(result.source);
             status.textContent = 'Ready';

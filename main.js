@@ -11,7 +11,9 @@ const os   = require('node:os');
 const { execFile } = require('node:child_process');
 
 // ── Paths ──────────────────────────────────────────────────────────────────
-const VASM      = path.join(__dirname, 'bin', 'vasmm68k_mot.exe');
+const IS_WIN    = process.platform === 'win32';
+const BIN_EXT   = IS_WIN ? '.exe' : '';
+const VASM      = path.join(__dirname, 'bin', `vasmm68k_mot${BIN_EXT}`);
 
 // ── Project file watcher ────────────────────────────────────────────────────
 // Watches the open project directory (recursive) and notifies both the main
@@ -25,7 +27,8 @@ function startProjectWatcher(projectDir) {
   stopProjectWatcher();
   if (!projectDir) return;
   try {
-    _projectWatcher = fs.watch(projectDir, { recursive: true }, (_type, filename) => {
+    // recursive is only supported on Windows and macOS; Linux falls back to root-only watch
+    _projectWatcher = fs.watch(projectDir, { recursive: IS_WIN }, (_type, filename) => {
       if (!filename) return;
       if (_watchDebounce) clearTimeout(_watchDebounce);
       _watchDebounce = setTimeout(() => {
@@ -50,7 +53,13 @@ function stopProjectWatcher() {
   if (_watchDebounce) { clearTimeout(_watchDebounce); _watchDebounce = null; }
   if (_projectWatcher) { _projectWatcher.close(); _projectWatcher = null; }
 }
-const VLINK     = path.join(__dirname, 'bin', 'vlink.exe');
+const VLINK     = path.join(__dirname, 'bin', `vlink${BIN_EXT}`);
+
+// Ensure vasm + vlink are executable on Linux (git on Windows loses the +x bit)
+if (!IS_WIN) {
+  try { fs.chmodSync(VASM,  0o755); } catch (_) {}
+  try { fs.chmodSync(VLINK, 0o755); } catch (_) {}
+}
 const FRAGMENTS = path.join(__dirname, 'app', 'src', 'm68k', 'fragments');
 const ROM_MAIN  = path.join(__dirname, 'emulator', 'vAmigaWeb', 'roms', 'aros.bin');
 const ROM_EXT   = path.join(__dirname, 'emulator', 'vAmigaWeb', 'roms', 'aros_ext.bin');
@@ -466,6 +475,60 @@ ipcMain.handle('bassm:list-files', (_event, { projectDir }) => {
   }
   try { return scanDir(projectDir, projectDir); }
   catch (_) { return []; }
+});
+
+// ── File-system operations ──────────────────────────────────────────────────
+// Path traversal guard: resolved target must be inside projectDir.
+function _assertInProject(projectDir, relPath) {
+  const base   = path.resolve(projectDir);
+  const target = path.resolve(base, relPath);
+  if (target !== base && !target.startsWith(base + path.sep))
+    throw new Error('Path traversal rejected');
+  return target;
+}
+
+ipcMain.handle('bassm:create-file', (_event, { projectDir, relPath }) => {
+  const target = _assertInProject(projectDir, relPath);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  if (!fs.existsSync(target)) fs.writeFileSync(target, '');
+  return true;
+});
+
+ipcMain.handle('bassm:create-dir', (_event, { projectDir, relPath }) => {
+  const target = _assertInProject(projectDir, relPath);
+  fs.mkdirSync(target, { recursive: true });
+  return true;
+});
+
+ipcMain.handle('bassm:delete-item', (_event, { projectDir, relPath }) => {
+  const target = _assertInProject(projectDir, relPath);
+  const stat = fs.statSync(target);
+  if (stat.isDirectory()) fs.rmSync(target, { recursive: true, force: true });
+  else                     fs.unlinkSync(target);
+  return true;
+});
+
+ipcMain.handle('bassm:rename-item', (_event, { projectDir, relPath, newName }) => {
+  const base    = path.resolve(projectDir);
+  const target  = _assertInProject(projectDir, relPath);
+  const newPath = path.join(path.dirname(target), newName);
+  if (!newPath.startsWith(base + path.sep)) throw new Error('Path traversal rejected');
+  fs.renameSync(target, newPath);
+  return path.relative(base, newPath).replace(/\\/g, '/');
+});
+
+ipcMain.handle('bassm:move-item', (_event, { projectDir, srcPath, destDir }) => {
+  const base    = path.resolve(projectDir);
+  const srcAbs  = _assertInProject(projectDir, srcPath);
+  const destAbs = destDir ? _assertInProject(projectDir, destDir) : base;
+  const name    = path.basename(srcAbs);
+  const target  = path.join(destAbs, name);
+  if (!target.startsWith(base + path.sep)) throw new Error('Path traversal rejected');
+  if (target === srcAbs) return path.relative(base, target).replace(/\\/g, '/'); // no-op
+  if (target.startsWith(srcAbs + path.sep)) throw new Error('Ordner kann nicht in sich selbst verschoben werden');
+  if (fs.existsSync(target)) throw new Error(`"${name}" existiert bereits am Zielort`);
+  fs.renameSync(srcAbs, target);
+  return path.relative(base, target).replace(/\\/g, '/');
 });
 
 // ── Main window ────────────────────────────────────────────────────────────

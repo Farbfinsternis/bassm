@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   listFiles: (payload) => ipcRenderer.invoke('bassm:list-files', payload),
   // Open (or focus) the Asset Manager window, optionally passing the current projectDir
   openAssetManager: (payload) => ipcRenderer.send('bassm:open-asset-manager', payload || {}),
+  // File-system operations for the project tree
+  createFile: (payload) => ipcRenderer.invoke('bassm:create-file', payload),
+  createDir:  (payload) => ipcRenderer.invoke('bassm:create-dir',  payload),
+  deleteItem: (payload) => ipcRenderer.invoke('bassm:delete-item', payload),
+  renameItem: (payload) => ipcRenderer.invoke('bassm:rename-item', payload),
+  moveItem:   (payload) => ipcRenderer.invoke('bassm:move-item',   payload),
   // Called when any file in the project directory changes externally.
   // callback receives { filename: string } (relative path within projectDir).
   onFilesChanged: (callback) => {

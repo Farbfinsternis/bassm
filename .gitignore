@@ -1,4 +1,5 @@
 node_modules/
+dist/
 emulator/vAmigaWeb/build/
 .DS_Store
 Thumbs.db
