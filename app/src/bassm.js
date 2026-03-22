@@ -944,6 +944,12 @@ bassm.init()
 
         btnClear?.addEventListener('click', () => { console_.innerHTML = ''; });
 
+        // ── Version display ────────────────────────────────────────────────────
+        const _version = window.electronAPI.version || '';
+        document.title = `BASSM ${_version}`;
+        const welcomeVersion = document.getElementById('welcome-version');
+        if (welcomeVersion) welcomeVersion.textContent = `v${_version}`;
+
         status.textContent = 'Ready';
 
         // ── Welcome panel ──────────────────────────────────────────────────────
@@ -953,6 +959,7 @@ bassm.init()
             _loadTreeState();
             _addRecent(result.projectName, result.projectDir);
             projectName.textContent = result.projectName;
+            document.title = `${result.projectName} — BASSM ${_version}`;
             window._monacoEditor.setValue(result.source ?? '');
             status.textContent = 'Ready';
             console_.innerHTML = '';

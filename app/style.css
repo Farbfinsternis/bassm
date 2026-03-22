@@ -320,6 +320,14 @@ body.state-welcome #budget-strip  { display: none; }
     display: block;
     margin: 0 auto;
 }
+#welcome-version {
+    text-align: center;
+    font-size: 11px;
+    color: #556;
+    letter-spacing: 0.12em;
+    margin-top: 4px;
+    font-family: 'Fira Code', monospace;
+}
 #welcome-actions {
     display: flex;
     gap: 10px;

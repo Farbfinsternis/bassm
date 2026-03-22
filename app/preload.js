@@ -4,7 +4,10 @@
  */
 const { contextBridge, ipcRenderer } = require('electron');
 
+const { version } = require('../package.json');
+
 contextBridge.exposeInMainWorld('electronAPI', {
+  version,
   // Send a command to the emulator (load-rom, load-ext, load-exe, run, halt, reset, power-on)
   emulator: {
     send: (cmd) => ipcRenderer.send('emulator:send', cmd),
