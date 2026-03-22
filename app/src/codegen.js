@@ -613,10 +613,12 @@ export class CodeGen {
     _collectVarsInFunction(body, localVarSet) {
         for (const stmt of body) {
             if (!stmt) continue;
-            if (stmt.type === 'assign') {
-                localVarSet.add(stmt.target);
+            if (stmt.type === 'local_decl') {
+                // Only explicit 'Local' declarations create frame-local variables.
+                // All other assignments inside a function access the global BSS,
+                // matching Blitz2D semantics where variables are global by default.
+                localVarSet.add(stmt.name);
             } else if (stmt.type === 'for') {
-                localVarSet.add(stmt.var);
                 this._collectVarsInFunction(stmt.body, localVarSet);
             } else if (stmt.type === 'if') {
                 this._collectVarsInFunction(stmt.then, localVarSet);
@@ -731,6 +733,19 @@ export class CodeGen {
         if (stmt.type === 'dim' || stmt.type === 'type_def' ||
             stmt.type === 'dim_typed' || stmt.type === 'dim_typed_array' ||
             stmt.type === 'function_def') {
+            return lines;
+        }
+
+        // ── Local declaration — frame-local variable (Blitz2D: default is global) ──
+        if (stmt.type === 'local_decl') {
+            if (!this._funcCtx) throw new Error(`'Local' is only valid inside a Function (line ${stmt.line})`);
+            const ref = this._varRef(stmt.name);
+            if (stmt.expr) {
+                this._genExpr(stmt.expr, lines);
+                lines.push(`        move.l  d0,${ref}`);
+            } else {
+                lines.push(`        clr.l   ${ref}`);
+            }
             return lines;
         }
 

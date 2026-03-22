@@ -1,0 +1,70 @@
+; BASSM Example — Starfield + Bouncing Box
+;
+; 30 stars scroll left at random speeds, respawn on the right.
+; A box bounces around the screen; its color changes based on
+; distance from the horizontal center (Abs demo).
+
+Graphics 320,256,4
+
+PaletteColor 0,  0,  0,  0   ; black (background)
+PaletteColor 1, 15,  0,  0   ; red
+PaletteColor 2,  0, 15,  0   ; green
+PaletteColor 3,  4,  8, 15   ; blue
+PaletteColor 4, 15, 15,  0   ; yellow
+PaletteColor 5,  0, 15, 15   ; cyan
+PaletteColor 6, 15,  0, 15   ; magenta
+PaletteColor 7, 15, 15, 15   ; white
+
+ClsColor 0
+
+; -- Starfield init ------------------------------------------------------------
+Dim sx(29)
+Dim sy(29)
+Dim sv(29)
+
+For i = 0 To 29
+  sx(i) = Rnd(320)
+  sy(i) = Rnd(256)
+  sv(i) = Rnd(3) + 1
+Next i
+
+; -- Bouncing box init --------------------------------------------------------
+bx = Rnd(280) + 20
+by = Rnd(220) + 18
+dvx = Rnd(4) + 3
+dvy = Rnd(4) + 3
+
+; -- Main loop ----------------------------------------------------------------
+frames = 0
+
+Repeat
+  Cls
+
+  ; Draw and scroll stars
+  Color 7
+  For i = 0 To 29
+    Plot sx(i), sy(i)
+    sx(i) = sx(i) - sv(i)
+    If sx(i) < 0 Then sx(i) = 319 : sy(i) = Rnd(256)
+  Next i
+
+  ; Move box and bounce off edges
+  bx = bx + dvx
+  by = by + dvy
+  If bx < 0 Or bx > 303 Then dvx = -dvx : bx = bx + dvx
+  If by < 0 Or by > 239 Then dvy = -dvy : by = by + dvy
+
+  ; Color = Abs(distance from horizontal center)
+  dist = Abs(bx - 152)
+  If dist < 50 Then Color 1
+  If dist >= 50 And dist < 100 Then Color 5
+  If dist >= 100 Then Color 3
+
+  Box bx, by, 16, 16
+
+  Color 7
+  Text 4, 4, "Frame:" + Str$(frames) + " BX:" + Str$(bx)
+
+  frames = frames + 1
+  ScreenFlip
+Until 0

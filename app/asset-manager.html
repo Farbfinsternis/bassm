@@ -72,11 +72,7 @@
 				<div id="tab-images" class="tab-panel">
 					<div class="panel-title">Image Converter <span class="badge">A-MGR-2</span></div>
 
-					<div id="image-drop-zone" class="drop-zone">
-						<div class="drop-icon">[ IMG ]</div>
-						<div class="drop-label">Drop PNG / JPEG / BMP here</div>
-						<div class="drop-sub">Converts against project palette &#8594; planar .raw</div>
-					</div>
+					<div id="image-status" class="file-status">Drop a PNG / JPEG / BMP anywhere — or click an image in the tree</div>
 
 					<div id="image-split" class="split-view">
 						<div class="split-pane">
@@ -120,12 +116,6 @@
 				<div id="tab-sounds" class="tab-panel">
 					<div class="panel-title">Sound Converter <span class="badge">A-MGR-3</span></div>
 
-					<div id="sound-drop-zone" class="drop-zone">
-						<div class="drop-icon">[ SND ]</div>
-						<div class="drop-label">Drop WAV / MP3 / OGG here</div>
-						<div class="drop-sub">Converts to 8-bit signed PCM mono .raw</div>
-					</div>
-
 					<div id="waveform-wrap">
 						<canvas id="waveform-canvas"></canvas>
 						<div id="waveform-placeholder">Waveform appears here after loading a file</div>
@@ -148,7 +138,9 @@
 
 		</div><!-- /main-area -->
 
-		<script src="src/image-quantizer.js"></script>
+		<div id="drop-overlay"><span id="drop-overlay-hint"></span></div>
+
+	<script src="src/image-quantizer.js"></script>
 	<script src="src/iff-writer.js"></script>
 	<script src="src/asset-manager.js"></script>
 	</body>

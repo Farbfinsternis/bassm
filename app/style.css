@@ -23,24 +23,41 @@ body {
 }
 
 #toolbar button {
-    padding: 2px 10px;
+    width: 28px;
+    height: 24px;
+    padding: 0;
     cursor: pointer;
-    background: #2a2a2a;
-    color: #ccc;
-    border: 1px solid #444;
-    border-radius: 2px;
-    font-size: 13px;
-    font-family: monospace;
+    background: transparent;
+    color: #888;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
 }
-
-#toolbar button:hover    { background: #3a3a3a; border-color: #666; }
+#toolbar button .codicon { font-size: 16px; }
+#toolbar button:hover    { background: #2a2a2a; border-color: #444; color: #bbb; }
 #toolbar button:disabled { opacity: .4; cursor: default; }
+
+#btn-run              { color: #4d9; }
+#btn-run:hover        { background: #1a2a1a; border-color: #3a6a3a; color: #6fa; }
+#btn-emulator-full.active       { color: #7af; }
+#btn-emulator-full.active:hover { color: #9cf; }
+
+#btn-emulator-exit              { display: none; color: #7af; }
+body.emu-full #btn-emulator-exit { display: inline-flex; }
+
+.toolbar-sep {
+    width: 1px;
+    height: 16px;
+    background: #333;
+    flex-shrink: 0;
+    margin: 0 2px;
+}
 
 #status       { font-size: 11px; color: #666; margin-left: auto; }
 #project-name { font-size: 11px; color: #59a; margin-left: 8px; }
-
-#btn-emulator-full        { font-size: 14px; padding: 1px 7px; }
-#btn-emulator-full.active { background: #1e2f4a; border-color: #3a5a8a; color: #7af; }
 
 /* Emulator fullscreen — hide everything except the right panel */
 body.emu-full #left-panel,
@@ -147,9 +164,19 @@ body.emu-full #right-panel   { width: 100% !important; }
     width: 18px;
     flex-shrink: 0;
     text-align: center;
-    opacity: 0.6;
-    font-size: 11px;
+    font-size: 14px;
+    line-height: 1;
+    position: relative;
+    top: 1px;
 }
+
+/* Codicon colour per file type (inherit from parent item) */
+.tree-dir       .tree-icon { color: #c8a96e; opacity: 0.9; }
+.tree-item-bassm .tree-icon { color: #7ac5ff; opacity: 0.85; }
+.tree-item-img   .tree-icon { color: #c586c0; opacity: 0.85; }
+.tree-item-audio .tree-icon { color: #4ec9b0; opacity: 0.85; }
+.tree-item-mask  .tree-icon { color: #666;    opacity: 0.7; }
+.tree-item-other .tree-icon { color: #555;    opacity: 0.6; }
 
 .tree-item:hover,
 .outline-item:hover  { background: #182030; color: #ccc; }
@@ -221,6 +248,7 @@ body.emu-full #right-panel   { width: 100% !important; }
 }
 
 /* ── Context Menu ── */
+
 .ctx-menu {
     position: fixed;
     background: #16192a;
@@ -265,6 +293,82 @@ body.emu-full #right-panel   { width: 100% !important; }
 .outline-item.asset-fnt { color: #d7ba7d; }
 .outline-item .ol-icon  { opacity: 0.75; }
 
+/* ── Welcome Panel ── */
+#welcome-panel {
+    flex: 1;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+}
+body.state-welcome #welcome-panel { display: flex; }
+body.state-welcome #editor        { display: none; }
+body.state-welcome #budget-strip  { display: none; }
+
+#welcome-inner {
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+    min-width: 300px;
+    max-width: 440px;
+    width: 100%;
+}
+#welcome-logo {
+    max-width: 260px;
+    width: 100%;
+    height: auto;
+    display: block;
+    margin: 0 auto;
+}
+#welcome-actions {
+    display: flex;
+    gap: 10px;
+}
+#welcome-actions button {
+    flex: 1;
+    padding: 10px 14px;
+    background: #0d1117;
+    border: 1px solid #252830;
+    color: #778;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    border-radius: 3px;
+    transition: border-color 0.12s, color 0.12s;
+}
+#welcome-actions button:hover { border-color: #4a5a7a; color: #aab; }
+#welcome-recent-title {
+    font-size: 10px;
+    color: #334;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #181b22;
+    margin-bottom: 4px;
+}
+.welcome-recent-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 5px 0;
+    cursor: pointer;
+}
+.welcome-recent-item:hover .recent-name { color: #aab; }
+.welcome-recent-item:hover .recent-icon { color: #556; }
+.recent-icon { font-size: 11px; color: #2a2d38; flex-shrink: 0; }
+.recent-name { font-size: 12px; color: #778; flex-shrink: 0; }
+.recent-path {
+    font-size: 10px;
+    color: #334;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+}
+.welcome-recent-empty { font-size: 11px; color: #334; padding: 4px 0; }
+
 /* ── Centre: Monaco Editor ── */
 #editor-panel {
     flex: 1;
@@ -278,6 +382,31 @@ body.emu-full #right-panel   { width: 100% !important; }
     flex: 1;
     min-height: 0;
 }
+
+/* ── Emulator bar ── */
+#emulator-bar {
+    display: flex;
+    align-items: center;
+    padding: 0 4px 0 8px;
+    height: 24px;
+    background: #111;
+    border-bottom: 1px solid #222;
+    flex-shrink: 0;
+}
+#emulator-bar-title {
+    font-size: 10px;
+    color: #334;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    flex: 1;
+}
+#btn-emulator-full {
+    width: 22px;
+    height: 20px;
+}
+#btn-emulator-full .codicon { font-size: 13px; }
+
+body.emu-full #emulator-bar { display: none; }
 
 /* ── Right panel: vAmiga preview + Console ── */
 #right-panel {

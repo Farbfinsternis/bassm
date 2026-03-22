@@ -15,6 +15,7 @@
 //   { type: 'exit',         count: number, line: number }
 //   { type: 'select',       expr: Expr, cases: [{values: Expr[], body: Stmt[]}[]], default: Stmt[], line: number }
 //   { type: 'function_def', name: string, params: string[], hasReturn: bool, body: Stmt[], line: number }
+//   { type: 'local_decl',  name: string, expr: Expr|null, line: number }
 //   { type: 'return',       expr: Expr|null, line: number }
 //   { type: 'call_stmt',    name: string, args: Expr[], line: number }
 //
@@ -107,6 +108,7 @@ export class Parser {
             if (tok.value === 'type')        return this._parseTypeDef();
             if (tok.value === 'function')    return this._parseFunctionDef();
             if (tok.value === 'return')      return this._parseReturn();
+            if (tok.value === 'local')       return this._parseLocal();
         }
 
         // Bare IDENT at statement level (no =, (, \) → user function call statement
@@ -280,6 +282,21 @@ export class Parser {
     }
 
     // ── Dim statement: Dim <ident>(<size>) ───────────────────────────────────
+
+    _parseLocal() {
+        const tok = this._advance();                // consume 'local'
+        if (this._peek().type !== TT.IDENT) {
+            throw new Error(`[Parser] Local: expected variable name on line ${tok.line}`);
+        }
+        const name = this._advance().value.toLowerCase();
+        let expr = null;
+        if (this._peek().type === TT.EQ) {
+            this._advance();                        // consume '='
+            expr = this._parseExpr();
+        }
+        this._skipToNewline();
+        return { type: 'local_decl', name, expr, line: tok.line };
+    }
 
     _parseDim() {
         const dimTok = this._advance();             // consume 'dim'
@@ -597,10 +614,30 @@ export class Parser {
         }
         this._skipToNewline();
 
-        const body = this._parseBlock(['endfunction']);
+        // ── Parse body — stop on 'EndFunction' or two-token 'End Function' ─────
+        // Blitz2D standard is "End Function" (two words). The lexer emits these
+        // as COMMAND("end") + KEYWORD("function"). We also accept the single
+        // keyword form "EndFunction" for convenience.
+        const body = [];
+        while (!this._atEnd() && this._peek().type !== TT.EOF) {
+            if (this._peek().type === TT.NEWLINE) { this._advance(); continue; }
+            const t = this._peek();
+            if (t.type === TT.KEYWORD && t.value === 'endfunction') break;
+            if (t.type === TT.COMMAND && t.value === 'end') {
+                const t2 = this._peekAt(1);
+                if (t2 && t2.type === TT.KEYWORD && t2.value === 'function') break;
+            }
+            const stmt = this._parseStatement();
+            if (stmt !== null) body.push(stmt);
+        }
 
         if (this._peek().type === TT.KEYWORD && this._peek().value === 'endfunction') {
-            this._advance();                        // consume 'endfunction'
+            this._advance();                        // consume 'EndFunction'
+        } else if (this._peek().type === TT.COMMAND && this._peek().value === 'end') {
+            this._advance();                        // consume 'End'
+            if (this._peek().type === TT.KEYWORD && this._peek().value === 'function') {
+                this._advance();                    // consume 'Function'
+            }
         } else {
             const t = this._peek();
             console.warn(`[Parser] Expected EndFunction but got '${t?.value}' on line ${t?.line}`);

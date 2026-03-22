@@ -3,7 +3,7 @@
     "For", "To", "Step", "Next", "Select", "Case", "Default", "EndSelect",
     "Repeat", "Until", "Exit",
     "Dim", "Type", "Field", "EndType",
-    "Function", "EndFunction", "Return",
+    "Function", "EndFunction", "Return", "Local",
     "And", "Or", "Xor", "Not",
     "Mod", "Shl", "Shr"
 ]

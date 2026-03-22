@@ -195,6 +195,52 @@ macht ihn zu einem echten Werkzeug.*
 
 ---
 
+## Milestone 2c: M-AUTOMASK — Automatische Farbe-0-Transparenz für Bobs
+
+*Bobs ohne `LoadMask` machen derzeit einen direkten Bitplane-Copy ohne Transparenz.
+Der Normalfall in Spielen ist aber: Farbe 0 = transparent (wie in Blitz2D/Blitz Basic).
+Ziel: `LoadMask` bleibt als explizite Overridemöglichkeit erhalten, aber jedes Bob-Image
+bekommt automatisch eine korrekte Maske — ohne externe `.mask`-Datei.*
+
+**Grundprinzip:**
+Pixel mit Palette-Index 0 haben alle Bitplane-Bits = 0.
+Maske = bitweises OR aller Bitplanes → 0 = transparent (Farbe 0), 1 = opak (jede andere Farbe).
+
+### M-AUTOMASK-1: Auto-Mask-Generierung im PNG→Amiga-Konverter (main.js)
+
+*Der Konverter erzeugt bereits `.raw`-Dateien mit Amiga-Planar-Daten.
+Er soll jetzt zusätzlich eine `.mask`-Datei (Raw-1bpp) erzeugen.*
+
+- [ ] Nach der Bitplane-Konvertierung: für jede Zeile `mask_byte = plane0_byte | plane1_byte | … | plane_{d-1}_byte`
+- [ ] Ergebnis als `<basename>.mask` neben der `.raw`-Datei speichern (z.B. `player.raw` → `player.mask`)
+- [ ] Auto-Mask nur erzeugen wenn das Bild mindestens 1 Nicht-Farbe-0-Pixel enthält (sonst Vollmaske = $FF per Byte)
+- [ ] Bestehende explizite `.mask`-Dateien werden *nicht* überschrieben (Datei-Existenz prüfen)
+
+### M-AUTOMASK-2: codegen.js — Auto-Mask automatisch verknüpfen
+
+*`_imageAssets` kennt bereits Filename und Label. Das Auto-Mask-Label wird daraus abgeleitet.*
+
+- [ ] `_imageAssets`-Einträge um `autoMaskLabel` erweitern: `_img_N_mask` (analog zu `_img_N`)
+- [ ] `_collectVars` (LoadImage/LoadAnimImage): Auto-Mask-Filename = `basename + ".mask"` → in `_maskAssets` eintragen **sofern kein explizites `LoadMask` für diesen Index vorhanden**
+- [ ] `getAssetRefs()`: Auto-Mask-Filename ebenfalls als Asset-Referenz zurückgeben (damit `main.js` die Datei in das tmpDir kopiert)
+- [ ] `DrawBob`-Codegen: Reihenfolge bleibt — `_maskAssets.get(idx)` trifft jetzt auch Auto-Masks; kein separater Pfad nötig
+
+### M-AUTOMASK-3: bobs.s — keine Änderung
+
+*`_BltBobMaskedFrame` und `_DrawImageFrame` sind bereits korrekt.
+`maskptr != 0` → Masked Blit ($CA), `maskptr == 0` → Direct Copy.
+Durch M-AUTOMASK-2 ist `maskptr` für jedes Bob-Image immer gesetzt.*
+
+- [ ] Verifizieren: direkter Copy-Pfad (`_DrawImageFrame`) wird durch Auto-Mask nicht mehr erreicht — Fallback bleibt aber für den Fall dass die `.mask`-Datei fehlt (Compiler-Warnung statt Fehler)
+
+### M-AUTOMASK-4: IDE / Asset Manager
+
+- [ ] Asset-Manager-Konverter: nach erfolgreichem PNG-Import Hinweis anzeigen: `"player.mask" automatisch generiert`
+- [ ] Tree-View: `.mask`-Dateien die neben einer gleichnamigen `.raw` liegen, mit `(auto)` oder gedimmtem Icon kennzeichnen
+- [ ] `commands-map.json` + Hover-Doku: `LoadMask`-Beschreibung aktualisieren → `"optional — Farbe 0 wird standardmäßig als transparent behandelt"`
+
+---
+
 ## Milestone 3: Sprache — Fehlende Grundlagen
 
 ### LANG-G: Const — Compile-Time-Konstanten
@@ -484,6 +530,80 @@ Die Budget-Bars zeigen Gesamtschätzung. Für Optimierung braucht man Auflösung
 - [ ] Compiler-Flag: `target = 68000|68020` (ECS/AGA-Unterscheidung)
 - [ ] 68000-Alternative: 32×32-Bit-Mul via Software-Routine (3× muls.w + Shift)
 
+### PERF-G: Interleaved Bitplanes — BOB-Blitting 5× schneller
+
+*Größter einzelner Performance-Gewinn für BOB-intensive Spiele. Statt separater Plane-Puffer werden alle
+Planes verschränkt im Speicher abgelegt: Zeile0-Plane0, Zeile0-Plane1, …, Zeile0-Plane4, Zeile1-Plane0, …*
+
+*Effekt: Ein Blitter-Pass blittet alle Planes gleichzeitig statt 5 getrennte. Bei 10 BOBs: ca. 5× weniger
+Blitter-Zeit. Voraussetzung für Chaos-Engine-Komplexität auf einem A500.*
+
+- [ ] `Graphics`-Erweiterung: optionaler vierter Parameter `INTERLEAVED` — `Graphics 320,256,5,1`
+- [ ] `graphics.s`: `_scr_bpl_stride` BSS-Variable (= `bpr × depth`); Copper-List-Einträge BPL1PT…BPL5PT
+      mit `_scr_bpl_stride`-Abstand statt `bpr`-Abstand
+- [ ] `cls.s`: Blitter füllt gesamten verschränkten Block in einem Pass —
+      `BLTSIZE = (height × depth) Zeilen × (bpr / 2) Words`; ein Aufruf statt `depth` Aufrufe
+- [ ] `box.s`: `BLTDMOD = (_scr_bpl_stride - word_width × 2)`; ein Blitter-Pass über alle Planes
+- [ ] `bobs.s`: `_BltBobMaskedFrame` — BLTDMOD/BLTAMOD aus `_scr_bpl_stride` berechnen;
+      Single-Pass über alle Planes; Minterm + Shift-Berechnung bleiben identisch
+- [ ] `DrawImage`-Pfad: analog BOBs; Interleaved-Source und Interleaved-Destination
+- [ ] A-MGR PNG-Konverter: Interleaved-Ausgabe erzeugen wenn Projekt-Flag gesetzt
+- [ ] Tileset für M-SCROLL (PERF-J): ebenfalls interleaved konvertieren
+- [ ] Budget-Schätzung: BOB-Blitter-Zyklen durch `depth` dividieren
+
+### PERF-H: DBRA für Zählschleifen
+
+*`dbra dn,label` (10 Zyklen) ist schneller als `sub.l #1,dn / bne.s label` (8+10 = 18 Zyklen)
+und spart 2 Bytes. Gilt für alle For-Schleifen mit absteigendem Zähler.*
+
+- [ ] Codegen `_genFor`: bei `Step = -1` und Integer-Zähler → `dbra`-Loop emittieren statt `sub+bne`
+- [ ] Aufsteigende For-Schleifen optional: Count-down intern (`to - from` Iterationen; DBRA zählt rückwärts)
+- [ ] Peephole-Regel (R10): `subq.l #1,dn / bne.s label` → `dbra dn,label`
+- [ ] Einschränkung: DBRA zählt 16-Bit → max 65535 Iterationen; Compiler-Warnung bei größerem Range
+
+### PERF-I: Register-Allocation für heiße Schleifen
+
+*Derzeit wird jede Variable pro Zugriff aus BSS geladen (`move.l _var_x,d0`). Innerhalb einer
+For-Schleife kann der Zähler in einem Register gehalten werden.*
+
+- [ ] Codegen `_genFor`: Schleifenzähler für die Dauer der Loop in `d2` halten (kein BSS-Roundtrip)
+- [ ] Einfache Heuristik: Variablen die ausschließlich innerhalb der Schleife gelesen/geschrieben werden
+      → `d3`/`d4` (callee-save nach 68k-Konvention)
+- [ ] Invariante: Loop darf keinen JSR enthalten (Funktionsaufruf darf d2–d4 clobbern) — Prüfung im Codegen
+- [ ] Register-Cache bleibt deaktiviert innerhalb von Function-Frames (LINK/UNLK — bereits so)
+
+### PERF-J: Screen-to-Screen-Blit für M-SCROLL
+
+*Statt Tile-by-Tile-Blitter-Kopien: ein einziger großer Blitter-Shift-Blit der den sichtbaren Bereich
+um scrollX Pixel verschiebt. Danach nur den freigewordenen Rand-Streifen mit neuen Tiles befüllen.*
+
+*Das ist die Kernoptimierung hinter Chaos Engine, Xenon 2 und anderen OCS-Scrollern. Setzt M-SCROLL voraus.*
+
+- [ ] `tilemap.s`: `_ScrollScreen(dx, dy)` — Shift berechnen und BLTCON1 setzen
+- [ ] Horizontal: `BLTCON1 = (dx & 0xF) << 12`; Source-Offset = `dx >> 4` Words;
+      BLTAMOD / BLTDMOD = `bpr - screen_width_words × 2 - 2` (Shift-Überlauf-Wort)
+- [ ] BLTA und BLTD zeigen auf denselben Back-Buffer (Screen-to-Screen, kein zweiter Puffer nötig)
+- [ ] Nach dem Blit: nur den freigewordenen Pixel-Streifen (1–16px breit) mit Rand-Tiles befüllen
+      → deutlich weniger Tile-Blits als bei vollständigem Redraw
+- [ ] Vertikal: Source-Offset = `dy × bpr`; horizontalen Streifen oben/unten mit Tiles auffüllen
+- [ ] Mit PERF-G (Interleaved): ein Shift-Blit für alle Planes — nochmals geringerer Overhead
+
+### PERF-K: Copper-basierte Mitte-Frame-Effekte
+
+*Der Copper läuft parallel zur CPU und kostet keinerlei CPU-Zeit. Palette, Bitplane-Pointer und
+andere Register können zeilengenau geändert werden — für Split-Screen, Raster-Bars und Parallax.*
+
+- [ ] `CopperMove y, reg, val` — neuer Low-Level-Befehl: schreibt `MOVE reg,val` an Scanline y
+      in die aktive Back-Copper-Liste (beide Listen werden gepatcht)
+- [ ] `CopperWait y, x` — Copper-WAIT an Beam-Position (für präzises Timing-Control)
+- [ ] Anwendungsfall Split-Screen: `CopperMove hud_line, BPLCON0, 0` → Bitplanes ab HUD-Linie aus;
+      HUD-Inhalt via Hardware-Sprites oder separatem kleinen Bitplane-Bereich
+- [ ] Anwendungsfall Parallax: Bitplane-Pointer mitte-Frame patchen → Hintergrund-Plane scrollt
+      mit anderem Offset als Vordergrund-Plane (kein zusätzlicher CPU-Aufwand)
+- [ ] Anwendungsfall Raster: `CopperColor` ist bereits implementiert; `CopperMove` verallgemeinert es
+      auf beliebige Custom-Register
+- [ ] Einschränkung: Copper-Listen sind Double-Buffered — Codegen patcht immer Back-Liste
+
 ---
 
 ## Priorisierungsübersicht
@@ -504,7 +624,12 @@ Die Budget-Bars zeigen Gesamtschätzung. Für Optimierung braucht man Auflösung
 | **NIEDRIG** | LANG-I Strings | Str$() deckt die meisten Fälle |
 | **NIEDRIG** | A-MGR-3/4 | Nice-to-have Editoren |
 | **LANGFRISTIG** | M9 Deploy | Reale Hardware-Tests nötig erst wenn Spiel fertig |
-| **LANGFRISTIG** | M10 Perf | Erst wenn Spiele an Budget-Grenze stossen |
+| **LANGFRISTIG** | M10 PERF-D/E/F | Erst wenn Spiele an Budget-Grenze stossen |
+| **HOCH** | PERF-G Interleaved Bitplanes | 5× BOB-Speedup; Voraussetzung für Chaos-Engine-Komplexität auf A500 |
+| **MITTEL** | PERF-H DBRA | Kleiner Aufwand, messbare Beschleunigung aller Zählschleifen |
+| **MITTEL** | PERF-I Register-Allocation | Sichtbar in datenintensiven Schleifen (Tilemap, KI-Update) |
+| **MITTEL** | PERF-J Screen-to-Screen-Blit | Erst nach M-SCROLL relevant; dann aber kritisch für 25fps-Scrolling |
+| **NIEDRIG** | PERF-K Copper-Effekte | Visuelle Extras; CopperColor bereits vorhanden |
 
 ---
 
@@ -530,3 +655,4 @@ Was ein fertiges Amiga-Spiel mit BASSM heute braucht und ob es geht:
 | Mehrere Screens | OK (Include + Funcs) | — |
 | Hardware Sprites | **FEHLT** (M-SPRITE) | DrawBob als Ersatz |
 | Echte Hardware | **FEHLT** (kein ADF-Export) | WinUAE manuell |
+| 25fps mit 15+ BOBs + Scrolling | **FEHLT** (PERF-G Interleaved) | Ohne Interleaved: ~5–8 BOBs realistisch |

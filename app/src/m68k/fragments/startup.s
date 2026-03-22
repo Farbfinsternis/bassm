@@ -491,15 +491,15 @@ _gfx_lib_name:
         dc.b    'graphics.library',0
         EVEN
 
-_intui_lib_name:
-        dc.b    'intuition.library',0
-        EVEN
-
 
         SECTION startup_copper,DATA_C   ; DATA_C = AmigaOS places in chip RAM
 
 _null_copper:
-        dc.w    $FFFF,$FFFE             ; WAIT: impossible position → copper end
+        dc.w    $FFFF,$FFFE             ; WAIT: beam line $FF / pos $FE → copper stalls
+        dc.w    $FFFF,$FFFE             ; second copy — if beam reaches line 255 and the
+                                        ; first WAIT completes, the copper immediately hits
+                                        ; this second identical WAIT and stalls again until
+                                        ; the hardware VBlank auto-reload resets COP1PC.
 
 
 ; ============================================================================

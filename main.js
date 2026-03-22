@@ -103,6 +103,9 @@ function createAssetManagerWindow(projectDir, preloadFile) {
 
   assetManagerWindow.loadFile('app/asset-manager.html');
 
+  // Prevent Electron from navigating to dropped file:// URLs
+  assetManagerWindow.webContents.on('will-navigate', e => e.preventDefault());
+
   if (projectDir || preloadFile) {
     assetManagerWindow.webContents.once('did-finish-load', () => {
       if (projectDir)  assetManagerWindow.webContents.send('assets:set-project',  { projectDir });
@@ -380,6 +383,36 @@ ipcMain.handle('bassm:open-project', async (_event) => {
   return { projectDir, projectName, source };
 });
 
+// Renderer → main: create a new project folder and open it.
+// Uses a Save-style dialog so the user picks both location and name in one step.
+// Returns { projectDir, projectName, source: '' } or null if cancelled.
+ipcMain.handle('bassm:new-project', async (_event) => {
+  const result = await dialog.showSaveDialog({
+    title: 'Create New BASSM Project',
+    buttonLabel: 'Create Project',
+    defaultPath: 'my-game',
+    properties: ['createDirectory', 'showOverwriteConfirmation'],
+  });
+  if (result.canceled || !result.filePath) return null;
+  const projectDir  = result.filePath;
+  const projectName = path.basename(projectDir);
+  fs.mkdirSync(projectDir, { recursive: true });
+  startProjectWatcher(projectDir);
+  return { projectDir, projectName, source: '' };
+});
+
+// Renderer → main: open a project by directory path (used by recent projects list)
+// Returns { projectDir, projectName, source } or null if directory not found
+ipcMain.handle('bassm:open-project-dir', async (_event, { dir }) => {
+  if (!fs.existsSync(dir)) return null;
+  const projectDir  = dir;
+  const projectName = path.basename(projectDir);
+  let source = '';
+  try { source = fs.readFileSync(path.join(projectDir, 'main.bassm'), 'utf8'); } catch (_) {}
+  startProjectWatcher(projectDir);
+  return { projectDir, projectName, source };
+});
+
 // Renderer → main: read an included source file from projectDir
 // Accepts { projectDir: string, filename: string }
 // Returns the file content as a UTF-8 string.
@@ -539,12 +572,16 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     backgroundColor: '#0a0a0a',
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'app', 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     }
   });
+
+  win.maximize();
+  win.show();
 
   createEmulatorView(win);
   win.loadFile('app/index.html');

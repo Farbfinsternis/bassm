@@ -8,13 +8,16 @@
 		<link rel="stylesheet" href="style.css" />
 		<link rel="stylesheet" href="../node_modules/@fontsource/fira-code/latin-400.css" />
 		<link rel="stylesheet" href="../node_modules/@fontsource/fira-code/latin-500.css" />
+		<link rel="stylesheet" href="../node_modules/@vscode/codicons/dist/codicon.css" />
 	</head>
-	<body>
+	<body class="state-welcome">
 		<div id="toolbar">
-			<button id="btn-open"          title="Open Project">&#128193; Open Project</button>
-			<button id="btn-run"           title="Run — compile + run  (F5)">&#9654; Run</button>
-			<button id="btn-assets"        title="Asset Manager">&#128444; Assets</button>
-			<button id="btn-emulator-full" title="Emulator fullscreen  (F11)">&#8865;</button>
+			<button id="btn-new"           title="New Project"><i class="codicon codicon-new-folder"></i></button>
+			<button id="btn-open"          title="Open Project"><i class="codicon codicon-folder-opened"></i></button>
+			<span class="toolbar-sep"></span>
+			<button id="btn-run"           title="Run — compile + run  (F5)"><i class="codicon codicon-play"></i></button>
+			<button id="btn-assets"        title="Asset Manager"><i class="codicon codicon-package"></i></button>
+			<button id="btn-emulator-exit" title="Exit fullscreen  (F11 / ESC)"><i class="codicon codicon-screen-normal"></i></button>
 			<span id="project-name"></span>
 			<span id="status">Initialising...</span>
 		</div>
@@ -36,8 +39,23 @@
 
 			<div class="pane-divider" id="divider-left"></div>
 
-			<!-- Centre: Monaco Editor -->
+			<!-- Centre: Welcome screen / Monaco Editor -->
 			<div id="editor-panel">
+
+				<div id="welcome-panel">
+					<div id="welcome-inner">
+						<img id="welcome-logo" src="img/logo.png" alt="BASSM" />
+						<div id="welcome-actions">
+							<button id="welcome-btn-new">&#43; New Project</button>
+							<button id="welcome-btn-open">&#128193; Open Project</button>
+						</div>
+						<div id="welcome-recent-section">
+							<div id="welcome-recent-title">Recent</div>
+							<div id="welcome-recent-list"></div>
+						</div>
+					</div>
+				</div>
+
 				<div id="editor"></div>
 				<div id="budget-strip">
 					<div class="budget-item">
@@ -63,6 +81,10 @@
 
 			<!-- Right panel: vAmiga preview + Console -->
 			<div id="right-panel">
+				<div id="emulator-bar">
+					<span id="emulator-bar-title">Preview</span>
+					<button id="btn-emulator-full" title="Emulator fullscreen  (F11)"><i class="codicon codicon-screen-full"></i></button>
+				</div>
 				<div id="emulator-view"></div>
 				<div class="pane-divider-h" id="divider-console"></div>
 				<div id="console-panel">
@@ -75,85 +97,6 @@
 			</div>
 
 		</div>
-
-		<script type="text/x-bassm" id="initial-source">
-; BASSM LANG-D Test -- Rnd + Abs
-;
-; Demo: Scrollendes Starfield (Rnd) + Bouncing Box (Rnd Init + Abs fuer Farbe)
-;
-;   30 Sterne an zufaelligen Positionen, scrollen nach links, respawnen rechts
-;   Bouncing Box: zufaellige Startposition + Geschwindigkeit
-;   Boxfarbe = Abs(Abstand zur Bildmitte) -- rot=nah, cyan=mittel, blau=weit
-
-Graphics 320,256,4
-
-PaletteColor 0,  0,  0,  0   ; schwarz (Hintergrund)
-PaletteColor 1, 15,  0,  0   ; rot
-PaletteColor 2,  0, 15,  0   ; gruen
-PaletteColor 3,  4,  8, 15   ; blau
-PaletteColor 4, 15, 15,  0   ; gelb
-PaletteColor 5,  0, 15, 15   ; cyan
-PaletteColor 6, 15,  0, 15   ; magenta
-PaletteColor 7, 15, 15, 15   ; weiss
-
-ClsColor 0
-
-; -- Starfield-Init (Rnd) ------------------------------------------------------
-Dim sx(29)
-Dim sy(29)
-Dim sv(29)
-
-For i = 0 To 29
-  sx(i) = Rnd(320)
-  sy(i) = Rnd(256)
-  sv(i) = Rnd(3) + 1
-Next i
-
-; -- Bouncing Box Init (Rnd) ---------------------------------------------------
-bx = Rnd(280) + 20
-by = Rnd(220) + 18
-dvx = Rnd(4) + 3
-dvy = Rnd(4) + 3
-
-; -- Main Loop (Repeat/Until demo) ---------------------------------------------
-frames = 0
-
-Repeat
-  Cls
-
-  ; Sterne zeichnen und nach links scrollen
-  Color 7
-  For i = 0 To 29
-    Plot sx(i), sy(i)
-    sx(i) = sx(i) - sv(i)
-    If sx(i) < 0 Then sx(i) = 319 : sy(i) = Rnd(256)
-  Next i
-
-  ; Box bewegen + abprallen
-  bx = bx + dvx
-  by = by + dvy
-  If bx < 0 Or bx > 303 Then dvx = -dvx : bx = bx + dvx
-  If by < 0 Or by > 239 Then dvy = -dvy : by = by + dvy
-
-  ; Farbe = Abs(Abstand zur horizontalen Mitte)
-  dist = Abs(bx - 152)
-  If dist < 50 Then Color 1
-  If dist >= 50 And dist < 100 Then Color 5
-  If dist >= 100 Then Color 3
-
-  Box bx, by, 16, 16
-
-  ; HUD
-  Color 7
-  Text 4, 4, "Frame:" + Str$(frames) + " BX:" + Str$(bx)
-
-  frames = frames + 1
-  ScreenFlip
-
-  ; Exit demo: Exit when frame 500 reached (using Exit inside For)
-  ; (loop runs forever otherwise — Until 0 = infinite)
-Until 0
-		</script>
 
 		<script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
 		<script src="src/editor-init.js"></script>

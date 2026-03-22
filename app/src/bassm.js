@@ -421,8 +421,9 @@ function renderTreeNodes(nodes, container, depth, parentPath) {
             hdr.title = node.name;
 
             const iconSpan = document.createElement('span');
-            iconSpan.className = 'tree-icon';
-            iconSpan.textContent = isCollapsed ? '\u25B8' : '\u25BE';
+            iconSpan.className = isCollapsed
+                ? 'tree-icon codicon codicon-folder'
+                : 'tree-icon codicon codicon-folder-opened';
 
             const nameSpan = document.createElement('span');
             nameSpan.textContent = node.name;
@@ -437,7 +438,9 @@ function renderTreeNodes(nodes, container, depth, parentPath) {
             hdr.addEventListener('click', () => {
                 const collapsed = body.style.display === 'none';
                 body.style.display = collapsed ? '' : 'none';
-                iconSpan.textContent = collapsed ? '\u25BE' : '\u25B8';
+                iconSpan.className = collapsed
+                    ? 'tree-icon codicon codicon-folder-opened'
+                    : 'tree-icon codicon codicon-folder';
                 if (collapsed) _treeCollapsed.delete(dirPath);
                 else           _treeCollapsed.add(dirPath);
                 _saveTreeState();
@@ -497,11 +500,11 @@ function renderTreeNodes(nodes, container, depth, parentPath) {
             const isEntry = node.name === 'main.bassm';
 
             let typeClass = 'tree-item-other';
-            let iconChar  = '\u2013'; // en-dash
-            if (isBassm)      { typeClass = 'tree-item-bassm';  iconChar = isEntry ? '\u25C6' : '\u25C7'; }
-            else if (isPng)   { typeClass = 'tree-item-img';    iconChar = '\u25AA'; }
-            else if (isAudio) { typeClass = 'tree-item-audio';  iconChar = '\u223C'; }
-            else if (isMask)  { typeClass = 'tree-item-mask';   iconChar = '\u25AB'; }
+            let iconClass = 'codicon-file';
+            if (isBassm)      { typeClass = 'tree-item-bassm';  iconClass = isEntry ? 'codicon-home' : 'codicon-file-code'; }
+            else if (isPng)   { typeClass = 'tree-item-img';    iconClass = 'codicon-file-media'; }
+            else if (isAudio) { typeClass = 'tree-item-audio';  iconClass = 'codicon-music'; }
+            else if (isMask)  { typeClass = 'tree-item-mask';   iconClass = 'codicon-filter'; }
 
             const item = document.createElement('div');
             item.className = `tree-item ${typeClass}`
@@ -511,8 +514,7 @@ function renderTreeNodes(nodes, container, depth, parentPath) {
             item.title = node.path;
 
             const iconSpan = document.createElement('span');
-            iconSpan.className = 'tree-icon';
-            iconSpan.textContent = iconChar;
+            iconSpan.className = `tree-icon codicon ${iconClass}`;
 
             const nameSpan = document.createElement('span');
             nameSpan.textContent = node.name;
@@ -573,8 +575,9 @@ function _startInlineInput(parentBody, kind, dirPath, depth) {
     row.style.paddingLeft = indent + 'px';
 
     const iconSpan = document.createElement('span');
-    iconSpan.className = 'tree-icon';
-    iconSpan.textContent = kind === 'dir' ? '\u25B8' : '\u25C7';
+    iconSpan.className = kind === 'dir'
+        ? 'tree-icon codicon codicon-folder'
+        : 'tree-icon codicon codicon-file-code';
     row.appendChild(iconSpan);
 
     const input = document.createElement('input');
@@ -796,12 +799,15 @@ const _btnEmuFull = document.getElementById('btn-emulator-full');
 function _toggleEmuFull() {
     const on = document.body.classList.toggle('emu-full');
     _btnEmuFull.classList.toggle('active', on);
+    const icon = _btnEmuFull.querySelector('.codicon');
+    if (icon) icon.className = on ? 'codicon codicon-screen-normal' : 'codicon codicon-screen-full';
     // ResizeObserver fires when #emulator-view changes size, but call
     // manually too in case the layout change happens before the observer.
     setTimeout(updateEmulatorBounds, 30);
 }
 
 _btnEmuFull.addEventListener('click', _toggleEmuFull);
+document.getElementById('btn-emulator-exit').addEventListener('click', _toggleEmuFull);
 
 document.addEventListener('keydown', async e => {
     if (e.key === 'F11') { e.preventDefault(); _toggleEmuFull(); return; }
@@ -862,6 +868,67 @@ document.addEventListener('keydown', async e => {
     }
 })();
 
+// ── Welcome Panel & Recent Projects ───────────────────────────────────────────
+
+const _RECENT_KEY = 'bassm-recent';
+const _RECENT_MAX = 8;
+
+function _getRecent() {
+    try { return JSON.parse(localStorage.getItem(_RECENT_KEY) || '[]'); } catch { return []; }
+}
+
+function _addRecent(name, dir) {
+    const list = _getRecent().filter(r => r.dir !== dir);
+    list.unshift({ name, dir });
+    localStorage.setItem(_RECENT_KEY, JSON.stringify(list.slice(0, _RECENT_MAX)));
+}
+
+function _showWelcome() {
+    document.body.classList.add('state-welcome');
+}
+
+function _showEditor() {
+    document.body.classList.remove('state-welcome');
+    setTimeout(() => window._monacoEditor?.layout(), 0);
+}
+
+function _renderWelcomeRecent(openFn) {
+    const el = document.getElementById('welcome-recent-list');
+    if (!el) return;
+    el.innerHTML = '';
+    const list = _getRecent();
+    if (list.length === 0) {
+        const empty = document.createElement('div');
+        empty.className   = 'welcome-recent-empty';
+        empty.textContent = 'No recent projects';
+        el.appendChild(empty);
+        return;
+    }
+    for (const { name, dir } of list) {
+        const item = document.createElement('div');
+        item.className = 'welcome-recent-item';
+        item.title     = dir;
+
+        const icon = document.createElement('span');
+        icon.className   = 'recent-icon';
+        icon.textContent = '\u25C7';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className   = 'recent-name';
+        nameSpan.textContent = name;
+
+        const pathSpan = document.createElement('span');
+        pathSpan.className   = 'recent-path';
+        pathSpan.textContent = dir;
+
+        item.appendChild(icon);
+        item.appendChild(nameSpan);
+        item.appendChild(pathSpan);
+        item.addEventListener('click', () => openFn(dir));
+        el.appendChild(item);
+    }
+}
+
 // ── BASSM compiler init ───────────────────────────────────────────────────────
 
 bassm.init()
@@ -878,6 +945,33 @@ bassm.init()
         btnClear?.addEventListener('click', () => { console_.innerHTML = ''; });
 
         status.textContent = 'Ready';
+
+        // ── Welcome panel ──────────────────────────────────────────────────────
+        async function _openProjectResult(result) {
+            _projectDir  = result.projectDir;
+            _currentFile = 'main.bassm';
+            _loadTreeState();
+            _addRecent(result.projectName, result.projectDir);
+            projectName.textContent = result.projectName;
+            window._monacoEditor.setValue(result.source ?? '');
+            status.textContent = 'Ready';
+            console_.innerHTML = '';
+            _projectFiles = await window.electronAPI.listFiles({ projectDir: _projectDir });
+            renderProjectTree();
+            renderOutline(buildOutline(result.source ?? ''));
+            _showEditor();
+        }
+
+        _renderWelcomeRecent(async (dir) => {
+            const result = await window.electronAPI.openProjectDir({ dir });
+            if (!result) { logLine(`Projekt nicht gefunden: ${dir}`, 'warn'); return; }
+            await _openProjectResult(result);
+        });
+
+        document.getElementById('welcome-btn-new').addEventListener('click',
+            () => document.getElementById('btn-new').click());
+        document.getElementById('welcome-btn-open').addEventListener('click',
+            () => btnOpen.click());
 
         document.getElementById('btn-assets').addEventListener('click', () => {
             window.electronAPI.openAssetManager({ projectDir: _projectDir });
@@ -924,19 +1018,16 @@ bassm.init()
             await _moveItem(src, '');
         });
 
+        document.getElementById('btn-new').addEventListener('click', async () => {
+            const result = await window.electronAPI.newProject();
+            if (!result) return;
+            await _openProjectResult({ ...result, source: '' });
+        });
+
         btnOpen.addEventListener('click', async () => {
             const result = await window.electronAPI.openProject();
             if (!result) return;
-            _projectDir  = result.projectDir;
-            _currentFile = 'main.bassm';
-            _loadTreeState();
-            projectName.textContent = result.projectName;
-            window._monacoEditor.setValue(result.source);
-            status.textContent = 'Ready';
-            console_.innerHTML = '';
-            _projectFiles = await window.electronAPI.listFiles({ projectDir: _projectDir });
-            renderProjectTree();
-            renderOutline(buildOutline(result.source));
+            await _openProjectResult(result);
         });
 
         window.electronAPI.onFilesChanged(async () => {

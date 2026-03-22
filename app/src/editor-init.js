@@ -357,7 +357,7 @@ require(['vs/editor/editor.main'], function () {
     });
 
     // ── Create editor ─────────────────────────────────────────────────────────
-    const initialContent = document.getElementById('initial-source').textContent.trim();
+    const initialContent = '';
 
     window._monacoEditor = monaco.editor.create(document.getElementById('editor'), {
         value:                initialContent,

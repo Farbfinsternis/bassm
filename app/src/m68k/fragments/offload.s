@@ -22,10 +22,10 @@
 ;     6.  Re-enable the DMA channels that were active on entry
 ;         (copper now runs the null list, not our game copper)
 ;     7.  Permit() — unfreeze the AmigaOS scheduler
-;     8.  Restore OS display:
-;        A. graphics.library: LoadView(NULL) + WaitTOF×2 + LoadView(saved)
-;        B. intuition.library: RethinkDisplay() — rebuild all screens/windows
-;           (needed on AROS where LoadView alone does not refresh windows)
+;     8.  Restore OS display (standard KS 1.3 sequence):
+;           LoadView(NULL)   — reset OS copper state / blank display
+;           WaitTOF() × 2   — PAL/ECS interlace stability
+;           LoadView(saved)  — reprograms copper with the saved Workbench view
 ;     9.  Unwind stack and return to the CLI with exit code 0
 ;
 ; DEPENDENCIES (labels defined by startup.s, earlier in the output file)
@@ -44,8 +44,6 @@
 _LVOLoadView        EQU -222    ; graphics.library: install a View (copper list)
 _LVOWaitTOF         EQU -270    ; graphics.library: wait for top of frame (VBlank)
 _LVOCloseLibrary    EQU -414    ; exec.library:     close / decrement open count
-_LVORethinkDisplay  EQU -756    ; intuition.library: rebuild all screens and windows
-
 
         SECTION offload_code,CODE
 
@@ -115,43 +113,44 @@ _exit:
         move.w  d0,INTENA(a5)
 
 ; ── 6. Restore DMA ───────────────────────────────────────────────────────────
-        ; The copper now runs the null list — no display interference.
-        ; The OS VBlank handler (restored in step 3) will reinstall the OS
-        ; copper list at the next VBlank, restoring the Workbench display.
         move.w  _saved_dmacon,d0
         or.w    #DMAF_SETCLR,d0
         move.w  d0,DMACON(a5)
 
-; ── 7. Unfreeze AmigaOS scheduler ────────────────────────────────────────────
-        move.l  ABSEXECBASE.w,a6
-        jsr     _LVOPermit(a6)
+        ; Belt-and-suspenders: strobe COPJMP1 NOW that COPEN is active.
+        ; The strobe in step 4 happened while COPEN=off; whether Agnus
+        ; pre-loaded the copper PC at that point is chip-revision-dependent.
+        ; A second strobe with COPEN=on guarantees the copper restarts from
+        ; _null_copper immediately and cannot continue from our game copper list.
+        ; (Any value written to COPJMP1 acts as a strobe; d0 value is irrelevant.)
+        move.w  d0,COPJMP1(a5)
 
-; ── 8. Restore OS display ────────────────────────────────────────────────────
+; ── 7. Restore OS display ────────────────────────────────────────────────────
         ;
-        ; A. graphics.library — clear hardware state, then reinstall AROS view:
-        ;      LoadView(NULL)       parks the copper on an empty view
-        ;      WaitTOF() × 2       lets both fields sync (ECS safety)
-        ;      LoadView(saved)      reinstalls the copper list saved at startup
-        ;                           (skipped if ActiView was NULL — some AROS builds)
+        ; Standard KS 1.3 restore sequence:
         ;
-        ; B. Intuition — force a full display + window refresh:
-        ;      RethinkDisplay()     rebuilds all screen copper lists and redraws
-        ;                           all windows.  Needed on AROS because LoadView
-        ;                           alone does not trigger the display compositor.
+        ;   LoadView(NULL)    — blank the display via OS copper machinery; also
+        ;                       resets internal graphics.library copper state.
+        ;   WaitTOF() × 2    — let the null view stabilise for two frames
+        ;                       (PAL/ECS interlace safety: LOF + SHF fields).
+        ;   LoadView(saved)   — reprograms copper with the saved Workbench view.
+        ;
+        ; The hardware null copper (step 4) already parks the copper safely.
+        ; LoadView(NULL) is still needed to reset the OS-side copper tracking
+        ; before LoadView(saved) will install the Workbench copper correctly.
 
-        ; ── A: graphics.library ──────────────────────────────────────────────
         move.l  _saved_gfx_base,d0
         beq.s   .skip_loadview
 
         move.l  d0,a6
-        sub.l   a1,a1                   ; LoadView(NULL) — clear hardware state
-        jsr     _LVOLoadView(a6)
+        sub.l   a1,a1                   ; a1 = NULL
+        jsr     _LVOLoadView(a6)        ; blank display — reset OS copper state
         jsr     _LVOWaitTOF(a6)         ; wait frame 1
-        jsr     _LVOWaitTOF(a6)         ; wait frame 2
+        jsr     _LVOWaitTOF(a6)         ; wait frame 2 — interlace safety
 
-        move.l  _saved_view,a1          ; LoadView(saved) — reinstall AROS view
-        beq.s   .skip_savedview         ;   skip if ActiView was NULL at startup
-        jsr     _LVOLoadView(a6)
+        move.l  _saved_view,a1          ; Workbench View saved at startup
+        beq.s   .skip_savedview         ; guard: NULL means AROS/headless — skip
+        jsr     _LVOLoadView(a6)        ; install Workbench view
 .skip_savedview:
 
         move.l  ABSEXECBASE.w,a6        ; CloseLibrary — matches startup.s open
@@ -159,17 +158,9 @@ _exit:
         jsr     _LVOCloseLibrary(a6)
 .skip_loadview:
 
-        ; ── B: Intuition — RethinkDisplay ────────────────────────────────────
+; ── 8. Unfreeze AmigaOS scheduler ────────────────────────────────────────────
         move.l  ABSEXECBASE.w,a6
-        lea     _intui_lib_name,a1
-        moveq   #0,d0
-        jsr     _LVOOpenLibrary(a6)
-        tst.l   d0
-        beq.s   .skip_rethink
-        move.l  d0,a6
-        jsr     _LVORethinkDisplay(a6)  ; rebuild all screens and windows
-        ; (no CloseLibrary — program exits immediately, OS cleans up)
-.skip_rethink:
+        jsr     _LVOPermit(a6)
 
 ; ── 9. Return to CLI ─────────────────────────────────────────────────────────
         move.l  _saved_sp,sp            ; restore stack to entry state

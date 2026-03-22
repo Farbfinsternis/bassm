@@ -219,9 +219,9 @@ function loadImageFile(blob) {
 // rest of the conversion pipeline is unchanged.
 async function loadSourceImageFromProject(item) {
     if (!_projectDir) return;
-    const zone = document.getElementById('image-drop-zone');
-    zone.querySelector('.drop-label').textContent = `Loading ${item.name}\u2026`;
-    zone.querySelector('.drop-sub').textContent   = '';
+    const status = document.getElementById('image-status');
+    status.textContent = `Loading ${item.name}\u2026`;
+    status.classList.remove('has-file');
     try {
         const bytes = await window.assetAPI.readAsset({ projectDir: _projectDir, path: item.path });
         // Record the project-relative directory so Convert & Save defaults there.
@@ -232,16 +232,16 @@ async function loadSourceImageFromProject(item) {
         const file  = new File([blob], item.name);
         await onImageDropped(file);
     } catch (err) {
-        zone.querySelector('.drop-label').textContent = `Error: ${err.message}`;
+        status.textContent = `Error: ${err.message}`;
         console.error('[A-MGR] loadSourceImageFromProject:', err);
     }
 }
 
 async function onImageDropped(file) {
     if (!file) return;
-    const zone = document.getElementById('image-drop-zone');
-    zone.querySelector('.drop-label').textContent = `Loading ${file.name}\u2026`;
-    zone.querySelector('.drop-sub').textContent   = '';
+    const status = document.getElementById('image-status');
+    status.textContent = `Loading ${file.name}\u2026`;
+    status.classList.remove('has-file');
 
     try {
         const { imageData, width, height } = await loadImageFile(file);
@@ -260,15 +260,15 @@ async function onImageDropped(file) {
             updatePaletteUI();
         }
 
-        zone.querySelector('.drop-label').textContent = file.name;
-        zone.querySelector('.drop-sub').textContent   = `${width} \u00d7 ${height} px`;
+        status.textContent = `${file.name} \u2014 ${width} \u00d7 ${height} px`;
+        status.classList.add('has-file');
 
         renderPreview();
 
         switchToTab('images');
 
     } catch (err) {
-        zone.querySelector('.drop-label').textContent = `Error: ${err.message}`;
+        status.textContent = `Error: ${err.message}`;
     }
 }
 
@@ -354,26 +354,48 @@ async function onExportIFF() {
     }
 }
 
-// ── Drop zones ────────────────────────────────────────────────────────────────
-function setupDropZone(id, onFile) {
-    const zone = document.getElementById(id);
-    if (!zone) return;
-    zone.addEventListener('dragover',  e => { e.preventDefault(); zone.classList.add('drag-over'); });
-    zone.addEventListener('dragleave', ()  => zone.classList.remove('drag-over'));
-    zone.addEventListener('drop', e => {
-        e.preventDefault();
-        zone.classList.remove('drag-over');
-        const f = e.dataTransfer.files[0];
-        if (f) onFile(f);
-    });
-}
+// ── Global drag-and-drop (whole window, no fixed drop zone) ───────────────────
+const _dropOverlay     = document.getElementById('drop-overlay');
+const _dropOverlayHint = document.getElementById('drop-overlay-hint');
+let   _dragDepth       = 0;
 
-setupDropZone('image-drop-zone', file => { _imageSourceDir = ''; onImageDropped(file); });
-setupDropZone('sound-drop-zone', file => {
-    const zone = document.getElementById('sound-drop-zone');
-    zone.querySelector('.drop-label').textContent = file.name;
-    zone.querySelector('.drop-sub').textContent   = `${(file.size / 1024).toFixed(1)} KB — conversion not yet implemented (A-MGR-3)`;
+document.addEventListener('dragenter', e => {
+    if (!e.dataTransfer || !e.dataTransfer.types.includes('Files')) return;
+    if (++_dragDepth === 1) {
+        const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab;
+        _dropOverlayHint.textContent = activeTab === 'sounds'
+            ? 'Drop WAV / MP3 / OGG'
+            : 'Drop PNG / JPEG / BMP';
+        _dropOverlay.classList.add('active');
+    }
 });
+
+document.addEventListener('dragleave', () => {
+    if (--_dragDepth <= 0) { _dragDepth = 0; _dropOverlay.classList.remove('active'); }
+});
+
+document.addEventListener('dragover', e => e.preventDefault());
+
+document.addEventListener('drop', e => {
+    e.preventDefault();
+    _dragDepth = 0;
+    _dropOverlay.classList.remove('active');
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    const ext = '.' + file.name.split('.').pop().toLowerCase();
+    if (SOURCE_IMAGE_EXTS.has(ext)) {
+        _imageSourceDir = '';
+        onImageDropped(file);
+    } else if (SOURCE_SOUND_EXTS.has(ext)) {
+        onSoundDropped(file);
+    }
+});
+
+function onSoundDropped(file) {
+    document.getElementById('waveform-placeholder').textContent =
+        `${file.name} \u2014 ${(file.size / 1024).toFixed(1)} KB \u2014 conversion not yet implemented (A-MGR-3)`;
+    switchToTab('sounds');
+}
 
 // ── Controls wiring ───────────────────────────────────────────────────────────
 document.getElementById('sel-depth')   .addEventListener('change', () => { if (_imageData) schedulePreview(); });
