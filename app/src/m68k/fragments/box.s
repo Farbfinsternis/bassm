@@ -197,7 +197,7 @@ _Box:
         ;
         move.l  _back_planes_ptr,a0     ; a0 = back buffer base (double-buffering)
         move.l  d1,d5                   ; d5 = y
-        muls.w  #GFXBPR,d5             ; d5 = y * GFXBPR
+        muls.w  #GFXIBPR,d5            ; d5 = y * GFXIBPR (interleaved row stride)
         add.l   d5,a0                   ; a0 += y*GFXBPR
         move.l  d0,d5                   ; d5 = x
         lsr.l   #4,d5                   ; d5 = x/16 (word index of first column)
@@ -210,8 +210,8 @@ _Box:
         move.l  d0,d1                   ; d1 = word_count * 2
         neg.w   d1                      ; d1 = BLTAMOD
         
-        move.w  #GFXBPR,d2
-        sub.w   d0,d2                   ; d2 = BLTDMOD
+        move.w  #GFXIBPR,d2
+        sub.w   d0,d2                   ; d2 = BLTDMOD (interleaved: GFXIBPR - word_count*2)
 
         move.l  d3,d0                   ; d0 = h
         lsl.w   #6,d0                   ; d0 = h << 6
@@ -292,7 +292,7 @@ _Box:
         move.w  a2,BLTSIZE(a5)
 
         ; ── Advance to next plane ─────────────────────────────────────────────
-        add.l   #GFXPSIZE,a0           ; next bitplane buffer
+        add.l   #GFXBPR,a0            ; next bitplane (interleaved: one row ahead)
         lsr.l   #1,d4                   ; shift colour right: next bit → bit 0
         dbra    d5,.box_plane
 

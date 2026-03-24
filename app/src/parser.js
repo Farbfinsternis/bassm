@@ -109,9 +109,29 @@ export class Parser {
             if (tok.value === 'function')    return this._parseFunctionDef();
             if (tok.value === 'return')      return this._parseReturn();
             if (tok.value === 'local')       return this._parseLocal();
+            if (tok.value === 'const')       return this._parseConst();
+            if (tok.value === 'data')        return this._parseData();
+            if (tok.value === 'read')        return this._parseRead();
+            if (tok.value === 'restore')     return this._parseRestore();
         }
 
         // Bare IDENT at statement level (no =, (, \) → user function call statement
+        // Special case: bare IDENT directly followed by NEWLINE then 'data' keyword
+        // means it is a Data label (from preprocessor splitting "label: Data ..." on ':').
+        if (tok.type === TT.IDENT) {
+            const _next2 = this._peekAt(1);
+            if (_next2 && _next2.type === TT.NEWLINE) {
+                const _afterNL = this._peekAt(2);
+                if (_afterNL && _afterNL.type === TT.KEYWORD && _afterNL.value === 'data') {
+                    const labelName = this._advance().value.toLowerCase(); // consume IDENT
+                    this._advance();                                        // consume NEWLINE
+                    const dataStmt = this._parseData();
+                    dataStmt.label = labelName;
+                    return dataStmt;
+                }
+            }
+        }
+
         if (tok.type === TT.IDENT) {
             return this._parseFunctionCallStmt();
         }
@@ -296,6 +316,81 @@ export class Parser {
         }
         this._skipToNewline();
         return { type: 'local_decl', name, expr, line: tok.line };
+    }
+
+    _parseConst() {
+        const kwTok  = this._advance();                    // consume 'const'
+        const nameTok = this._peek();
+        if (!nameTok || nameTok.type !== TT.IDENT) {
+            throw new Error(`[Parser] Const: expected name on line ${kwTok.line}`);
+        }
+        this._advance();                                   // consume name
+        if (this._peek().type !== TT.EQ) {
+            throw new Error(`[Parser] Const ${nameTok.value}: expected '=' on line ${nameTok.line}`);
+        }
+        this._advance();                                   // consume '='
+        // Allow optional unary minus for negative literals
+        let sign = 1;
+        if (this._peek().type === TT.MINUS) {
+            sign = -1;
+            this._advance();
+        }
+        const valTok = this._peek();
+        if (!valTok || valTok.type !== TT.INT) {
+            throw new Error(
+                `[Parser] Const ${nameTok.value}: value must be an integer literal on line ${nameTok.line}`
+            );
+        }
+        this._advance();                                   // consume literal
+        return {
+            type:  'const_def',
+            name:  nameTok.value.toLowerCase(),
+            value: sign * valTok.value,
+            line:  kwTok.line,
+        };
+    }
+
+    // ── Data statement: Data val1, val2, ... ──────────────────────────────────
+    // Values must be compile-time integer literals or Const references.
+    // label is set by the caller when a "label: Data …" pattern is detected.
+
+    _parseData() {
+        const tok = this._advance();                // consume 'data'
+        const values = [];
+        while (!this._atEnd() &&
+               this._peek().type !== TT.NEWLINE &&
+               this._peek().type !== TT.EOF) {
+            if (this._peek().type === TT.COMMA) { this._advance(); continue; }
+            const expr = this._parseExpr();
+            if (expr !== null) values.push(expr);
+        }
+        return { type: 'data_stmt', values, label: null, line: tok.line };
+    }
+
+    // ── Read statement: Read varName ───────────────────────────────────────────
+    // Reads the next value from the Data table into the given variable.
+
+    _parseRead() {
+        const tok = this._advance();                // consume 'read'
+        const next = this._peek();
+        if (!next || (next.type !== TT.IDENT && next.type !== TT.COMMAND)) {
+            throw new Error(`[Parser] Read: expected variable name on line ${tok.line}`);
+        }
+        const target = this._advance().value.toLowerCase();
+        return { type: 'read_stmt', target, line: tok.line };
+    }
+
+    // ── Restore statement: Restore [label] ────────────────────────────────────
+    // Resets the data pointer to _data_start (no label) or a labeled position.
+
+    _parseRestore() {
+        const tok = this._advance();                // consume 'restore'
+        let label = null;
+        const next = this._peek();
+        if (next && next.type === TT.IDENT) {
+            label = this._advance().value.toLowerCase();
+        }
+        return { type: 'restore_stmt', label, line: tok.line };
     }
 
     _parseDim() {

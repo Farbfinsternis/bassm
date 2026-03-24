@@ -189,7 +189,7 @@ _Text:
 
         ; ── byte_offset = y * GFXBPR + (x >> 3) ──────────────────────────
         move.l  d3,d5
-        muls.w  #GFXBPR,d5             ; d5 = y * bytes-per-row
+        muls.w  #GFXIBPR,d5            ; d5 = y * GFXIBPR (interleaved row stride)
         move.l  d2,d6
         lsr.l   #3,d6                  ; d6 = x >> 3  (byte column)
         add.l   d6,d5                  ; d5 = byte_offset
@@ -220,7 +220,7 @@ _Text:
         or.b    d1,1(a3)               ; lo_part → next byte (0 when shift=0 → no-op)
         lsr.w   #8,d1                  ; d1.byte[0] = hi_part
         or.b    d1,(a3)                ; hi_part → dest byte
-        lea     GFXBPR(a3),a3         ; advance dest to next pixel row
+        lea     GFXIBPR(a3),a3        ; advance dest to next pixel row (interleaved)
         dbra    d4,.txt_row_set
         bra.s   .txt_plane_next
 
@@ -235,11 +235,11 @@ _Text:
         and.b   d1,1(a3)               ; ~lo → AND next byte ($FF when shift=0 → no-op)
         lsr.w   #8,d1                  ; d1.byte[0] = ~hi_part
         and.b   d1,(a3)                ; ~hi → AND dest byte
-        lea     GFXBPR(a3),a3
+        lea     GFXIBPR(a3),a3        ; advance dest to next pixel row (interleaved)
         dbra    d4,.txt_row_clr
 
 .txt_plane_next:
-        lea     GFXPSIZE(a2),a2       ; advance to next bitplane buffer
+        lea     GFXBPR(a2),a2         ; advance to next bitplane (interleaved)
         lsr.w   #1,d7                  ; next plane's colour bit → LSB
         dbra    d0,.txt_plane          ; loop over all planes
 

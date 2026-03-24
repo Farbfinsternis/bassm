@@ -104,6 +104,12 @@
 								<option value="bayer">Bayer</option>
 							</select>
 						</label>
+						<label title="Saves as .iraw (interleaved bitplanes) + .imask (1-blit BOBs, PERF-G Phase 2)">
+							<input type="checkbox" id="chk-interleaved"> Interleaved (.iraw)
+						</label>
+						<label id="lbl-genmask" title="Auto-generate .imask from palette index 0 (transparent)">
+							<input type="checkbox" id="chk-genmask" disabled> + .imask
+						</label>
 						<span id="fit-quality"></span>
 						<div class="spacer"></div>
 						<button disabled id="btn-convert-image">Convert &amp; Save</button>

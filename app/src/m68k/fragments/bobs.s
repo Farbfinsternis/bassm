@@ -113,7 +113,8 @@ _SetBackground:
         ; Skip the 8-byte header (width.w, height.w, depth.w, rowbytes.w)
         ; and the palette block that follows it.
         ; Palette size = (1 << depth) * 2 bytes.
-        move.w  4(a0),d0                ; d0.w = depth (offset 4 in header)
+        move.w  4(a0),d0                ; d0.w = depth (offset 4 in header; may carry $8000 flag)
+        and.w   #$7FFF,d0               ; clear interleaved flag — depth is at most 5
         moveq   #1,d1
         lsl.l   d0,d1                   ; d1 = 1 << depth  (palette entry count)
         add.l   d1,d1                   ; d1 = palette bytes  (2 bytes per entry)
@@ -325,19 +326,26 @@ _bg_restore_static:
 
         ; ── BLTSIZE = (height << 6) | (rowbytes / 2) ─────────────────────────
         move.w  d4,d2
-        lsl.w   #6,d2                   ; d2 = height << 6
+        lsl.w   #6,d2                   ; d2 = height << 6   (d4 free after this)
         move.w  d6,d3
         lsr.w   #1,d3                   ; d3 = rowbytes / 2
         or.w    d3,d2                   ; d2.w = BLTSIZE
 
-        ; ── Modulo = GFXBPR − rowbytes ───────────────────────────────────────
-        move.w  #GFXBPR,d3
-        sub.w   d6,d3                   ; d3.w = BLTAMOD = BLTDMOD
+        ; ── BG modulo (BLTAMOD): GFXBPR - rowbytes (non-interleaved source) ──
+        move.w  #GFXBPR,d4
+        sub.w   d6,d4                   ; d4.w = GFXBPR - rowbytes (d6 free after this)
 
-        ; ── Pixel byte offset = y*GFXBPR + x/8 ──────────────────────────────
-        asr.l   #3,d0                   ; d0 = x / 8  (signed: handles negative x)
-        muls.w  #GFXBPR,d1             ; d1 = y * GFXBPR  (signed: handles negative y)
-        add.l   d0,d1                   ; d1 = plane offset in bytes
+        ; ── Screen modulo (BLTDMOD): GFXIBPR - rowbytes (interleaved dest) ───
+        move.w  #GFXIBPR,d3
+        sub.w   d6,d3                   ; d3.w = GFXIBPR - rowbytes
+
+        ; ── Pixel byte offsets: two separate values for BG and screen ─────────
+        asr.l   #3,d0                   ; d0 = x / 8  (signed; same for both)
+        move.l  d1,d6                   ; d6 = y  (save before multiply)
+        muls.w  #GFXIBPR,d1            ; d1 = y * GFXIBPR  (screen offset, interleaved)
+        add.l   d0,d1                   ; d1 = y*GFXIBPR + x/8
+        muls.w  #GFXBPR,d6             ; d6 = y * GFXBPR   (BG offset, non-interleaved)
+        add.l   d0,d6                   ; d6 = y*GFXBPR + x/8
 
         ; ── Loop over all bitplanes ───────────────────────────────────────────
         move.l  _bg_bpl_ptr,a0          ; a0 = background plane-0 data start
@@ -351,20 +359,20 @@ _bg_restore_static:
         clr.w   BLTCON1(a5)
         move.w  #$FFFF,BLTAFWM(a5)
         move.w  #$FFFF,BLTALWM(a5)
-        move.w  d3,BLTAMOD(a5)          ; source modulo (bg image is full-width)
-        move.w  d3,BLTDMOD(a5)          ; dest modulo
+        move.w  d4,BLTAMOD(a5)          ; BG source modulo (non-interleaved: GFXBPR-rowbytes)
+        move.w  d3,BLTDMOD(a5)          ; screen dest modulo (interleaved: GFXIBPR-rowbytes)
 
-        ; A = background plane N at (x, y)
+        ; A = background plane N at (x, y) — non-interleaved BG image
         move.l  a0,d0
-        add.l   d1,d0                   ; d0 = bg_plane_N + pixel_offset
+        add.l   d6,d0                   ; d0 = bg_plane_N + y*GFXBPR + x/8
         swap    d0
         move.w  d0,BLTAPTH(a5)
         swap    d0
         move.w  d0,BLTAPTL(a5)
 
-        ; D = back buffer plane N at (x, y)
+        ; D = back buffer plane N at (x, y) — interleaved screen
         move.l  a1,d0
-        add.l   d1,d0
+        add.l   d1,d0                   ; d0 = screen_plane_N + y*GFXIBPR + x/8
         swap    d0
         move.w  d0,BLTDPTH(a5)
         swap    d0
@@ -372,8 +380,8 @@ _bg_restore_static:
 
         move.w  d2,BLTSIZE(a5)          ; write BLTSIZE → start blit
 
-        add.l   #GFXPSIZE,a0            ; advance to next bg plane
-        add.l   #GFXPSIZE,a1            ; advance to next back buffer plane
+        add.l   #GFXPSIZE,a0            ; advance to next bg plane (non-interleaved)
+        add.l   #GFXBPR,a1             ; advance to next screen plane (interleaved)
         dbra    d5,.plane_loop
 
 .bg_done:
@@ -415,8 +423,10 @@ _BltBobMaskedFrame:
         ; ── Read 8-byte image header ──────────────────────────────────────────
         move.w  (a0)+,d3                ; d3.w = width  (scratch for frame offset below)
         move.w  (a0)+,d4                ; d4.w = height
-        move.w  (a0)+,d5                ; d5.w = depth
+        move.w  (a0)+,d5                ; d5.w = depth  ($8000 flag set for .iraw interleaved)
         move.w  (a0)+,d6                ; d6.w = rowbytes
+        btst    #15,d5                  ; test interleaved flag (bit 15 = .iraw)
+        bne.w   .bob_interleaved        ; → 1-blit masked path
         ; Skip palette: (1 << depth) * 2 bytes
         moveq   #1,d7
         lsl.l   d5,d7                   ; d7 = 1 << depth
@@ -459,13 +469,13 @@ _BltBobMaskedFrame:
         lsr.w   #1,d3
         or.w    d3,d2                   ; d2.w = BLTSIZE
 
-        ; ── C/D modulo = GFXBPR − rowbytes ───────────────────────────────────
-        move.w  #GFXBPR,d3
+        ; ── C/D modulo = GFXIBPR − rowbytes (interleaved: skip other planes' rows) ─
+        move.w  #GFXIBPR,d3
         sub.w   d6,d3                   ; d3.w = screen modulo
 
         ; ── Dest base: _back_planes_ptr + y*GFXBPR + x/8 ─────────────────────
         move.l  _back_planes_ptr,a2
-        muls.w  #GFXBPR,d1             ; d1 = y * GFXBPR  (signed: handles negative y)
+        muls.w  #GFXIBPR,d1            ; d1 = y * GFXIBPR (interleaved row stride)
         add.l   d1,a2
         asr.l   #3,d0                   ; d0 = x / 8  (signed: handles negative x)
         add.l   d0,a2                   ; a2 = dest at (x,y) in plane-0
@@ -510,10 +520,117 @@ _BltBobMaskedFrame:
 
         move.w  d2,BLTSIZE(a5)          ; write BLTSIZE → start blit
 
-        add.l   d7,a0                   ; advance to next bob bitplane
-        add.l   #GFXPSIZE,a2            ; advance to next screen plane
+        add.l   d7,a0                   ; advance to next bob bitplane (non-interleaved)
+        add.l   #GFXBPR,a2             ; advance to next screen plane (interleaved)
 
         dbra    d5,.plane_loop
+
+; ── _BltBobMaskedFrame — interleaved 1-blit path (.iraw + .imask) ────────────
+;
+; Entered when bit 15 of the header depth word is set (source is a .iraw file).
+; The mask at a1 must be .imask format: each row repeated depth times so that
+; BLTAMOD=0 feeds the correct mask bits for every plane-row.
+;
+; All depth × height plane-rows are packed (interleaved) in both source and mask,
+; so a single 4-channel blit handles all planes at once:
+;
+;   BLTCON0  = $0FCA  (USEA|USEB|USEC|USED, minterm $CA: D = A ? B : C)
+;   BLTAMOD  = 0     (mask interleaved: depth copies of each row, packed)
+;   BLTBMOD  = 0     (bob interleaved: plane-rows packed)
+;   BLTCMOD  = BLTDMOD = GFXBPR - rowbytes  (advance to next plane-row in screen)
+;   BLTSIZE  = (height × depth) << 6 | (rowbytes / 2)
+;
+; Constraint: height × depth ≤ 1023 (sufficient for all sprite sizes).
+
+.bob_interleaved:
+        and.w   #$7FFF,d5               ; clear interleaved flag — d5 = actual depth
+
+        ; Skip palette: (1 << depth) * 2 bytes
+        moveq   #1,d7
+        lsl.l   d5,d7                   ; d7 = 1 << depth
+        add.l   d7,d7                   ; d7 = palette bytes
+        add.l   d7,a0                   ; a0 = interleaved plane data start (frame 0)
+
+        ; Plane size for frame offset = height × rowbytes
+        move.w  d4,d7
+        mulu.w  d6,d7                   ; d7.l = plane_size
+
+        ; Bounds check (same conditions as non-interleaved path)
+        cmp.l   #-GFXBORDER,d0
+        blt.w   .bob_done
+        cmp.l   #-GFXBORDER,d1
+        blt.w   .bob_done
+        move.l  d0,a2
+        add.w   d3,a2                   ; a2 = x + pixel_width
+        cmpa.l  #(GFXWIDTH+GFXBORDER),a2
+        bgt.w   .bob_done
+        move.l  d1,a2
+        add.w   d4,a2                   ; a2 = y + height
+        cmpa.l  #(GFXHEIGHT+GFXBORDER),a2
+        bgt.w   .bob_done
+
+        ; Frame offset = frame × depth × plane_size
+        move.w  d5,d3                   ; d3 = depth
+        mulu.w  d7,d3                   ; d3 = depth × plane_size = frame_size
+        mulu.w  d2,d3                   ; d3 = frame × frame_size = frame_offset
+        add.l   d3,a0                   ; a0 = frame N interleaved data start
+
+        ; BLTSIZE = (height × depth) << 6 | (rowbytes / 2)
+        move.w  d4,d2
+        mulu.w  d5,d2                   ; d2.l = height × depth
+        lsl.w   #6,d2                   ; d2 = (height × depth) << 6
+        move.w  d6,d3
+        lsr.w   #1,d3                   ; d3 = rowbytes / 2
+        or.w    d3,d2                   ; d2.w = BLTSIZE
+
+        ; BLTCMOD = BLTDMOD = GFXBPR - rowbytes
+        ; Advances C and D pointers to the next plane-row in the interleaved screen.
+        move.w  #GFXBPR,d3
+        sub.w   d6,d3                   ; d3.w = screen modulo
+
+        ; Destination = _back_planes_ptr + y*GFXIBPR + x/8  (plane-0 of row y)
+        move.l  _back_planes_ptr,a2
+        muls.w  #GFXIBPR,d1             ; d1 = y × GFXIBPR
+        add.l   d1,a2
+        asr.l   #3,d0                   ; d0 = x / 8
+        add.l   d0,a2                   ; a2 = screen plane-0 at (x, y)
+
+        ; 1 single masked blit — all depth planes simultaneously
+        jsr     _WaitBlit
+
+        move.w  #$0FCA,BLTCON0(a5)      ; USEA|USEB|USEC|USED, minterm $CA: D = A?B:C
+        clr.w   BLTCON1(a5)
+        move.w  #$FFFF,BLTAFWM(a5)
+        move.w  #$FFFF,BLTALWM(a5)
+        clr.w   BLTAMOD(a5)             ; mask interleaved: depth copies per row, packed
+        clr.w   BLTBMOD(a5)             ; bob interleaved: plane-rows packed
+        move.w  d3,BLTCMOD(a5)          ; GFXBPR - rowbytes
+        move.w  d3,BLTDMOD(a5)          ; GFXBPR - rowbytes
+
+        ; A = mask  (interleaved .imask, same pointer for all planes — a1 unchanged)
+        move.l  a1,d0
+        swap    d0
+        move.w  d0,BLTAPTH(a5)
+        swap    d0
+        move.w  d0,BLTAPTL(a5)
+
+        ; B = bob pixels  (interleaved, frame-adjusted — a0 = frame N start)
+        move.l  a0,d0
+        swap    d0
+        move.w  d0,BLTBPTH(a5)
+        swap    d0
+        move.w  d0,BLTBPTL(a5)
+
+        ; C = D = screen destination plane-0 at (x, y)
+        move.l  a2,d0
+        swap    d0
+        move.w  d0,BLTCPTH(a5)
+        move.w  d0,BLTDPTH(a5)
+        swap    d0
+        move.w  d0,BLTCPTL(a5)
+        move.w  d0,BLTDPTL(a5)
+
+        move.w  d2,BLTSIZE(a5)          ; triggers the blit (all planes in one pass)
 
 .bob_done:
         movem.l (sp)+,d0-d7/a0-a3

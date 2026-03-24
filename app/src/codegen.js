@@ -74,6 +74,14 @@ export class CodeGen {
         this._maskAssets    = new Map();  // index (int) → { filename, label }
         this._fontAssets    = new Map();  // index (int) → { filename, label, chars, charW, charH }
         this._loopStack     = [];         // stack of endLabels for Exit — push on loop entry, pop on exit
+        this._consts        = new Map();  // name → value (compile-time constants, no BSS)
+        this._usesData      = false;      // true if any Data/Read/Restore present
+        this._dataStmts     = [];         // ordered data_stmt nodes (values → dc.l in DATA section)
+
+        // ── Collect Const definitions first (pre-pass, before _collectVars) ───
+        for (const stmt of ast) {
+            if (stmt && stmt.type === 'const_def') this._consts.set(stmt.name, stmt.value);
+        }
 
         // ── Locate and validate the Graphics statement ────────────────────────
         const gfxStmt = ast.find(s => s && s.type === 'command' && s.name === 'graphics');
@@ -122,7 +130,8 @@ export class CodeGen {
 
         // Overscan border: 32px on every side — drawing area larger than display
         const GFXBORDER = 32;
-        const bplmod    = GFXBORDER * 2 / 8;   // copper BPL1MOD/BPL2MOD = 8
+        const GFXBPR_val = Math.floor((W + GFXBORDER * 2) / 8);
+        const bplmod    = GFXBPR_val * D - Math.floor(W / 8); // interleaved: GFXIBPR-GFXDBPR
 
         // EQUs
         out.push(`${pad('GFXWIDTH',12)} EQU ${W}`);
@@ -133,10 +142,11 @@ export class CodeGen {
         out.push(`${pad('GFXVHEIGHT',12)} EQU (GFXHEIGHT+GFXBORDER*2)`);
         out.push(`${pad('GFXBPR',12)} EQU (GFXVWIDTH/8)`);
         out.push(`${pad('GFXDBPR',12)} EQU (GFXWIDTH/8)`);
-        out.push(`${pad('GFXBPLMOD',12)} EQU (GFXBPR-GFXDBPR)`);
+        out.push(`${pad('GFXIBPR',12)} EQU (GFXBPR*GFXDEPTH)`);
+        out.push(`${pad('GFXBPLMOD',12)} EQU (GFXIBPR-GFXDBPR)`);
         out.push(`${pad('GFXPSIZE',12)} EQU (GFXBPR*GFXVHEIGHT)`);
         out.push(`${pad('GFXBUFSIZE',12)} EQU (GFXPSIZE*GFXDEPTH)`);
-        out.push(`${pad('GFXPLANEOFS',12)} EQU (GFXBORDER*GFXBPR+GFXBORDER/8)`);
+        out.push(`${pad('GFXPLANEOFS',12)} EQU (GFXBORDER*GFXIBPR+GFXBORDER/8)`);
         out.push(`${pad('GFXCOLORS',12)} EQU (1<<GFXDEPTH)`);
         out.push(`${pad('GFXBPLCON0',12)} EQU $${hex(bplcon0)}`);
         out.push(`${pad('GFXDIWSTRT',12)} EQU $${hex(diwstrt)}`);
@@ -197,13 +207,13 @@ export class CodeGen {
         out.push('        move.l  _gfx_planes,a1');
         out.push('        add.l   #GFXPLANEOFS,a1');   // offset to visible origin
         out.push('        moveq   #GFXDEPTH,d0');
-        out.push('        move.l  #GFXPSIZE,d1');
+        out.push('        move.l  #GFXBPR,d1');
         out.push('        jsr     _PatchBitplanePtrs');
         out.push('        lea     _gfx_cop_b_bpl_table,a0');
         out.push('        move.l  _gfx_planes_b,a1');
         out.push('        add.l   #GFXPLANEOFS,a1');   // offset to visible origin
         out.push('        moveq   #GFXDEPTH,d0');
-        out.push('        move.l  #GFXPSIZE,d1');
+        out.push('        move.l  #GFXBPR,d1');
         out.push('        jsr     _PatchBitplanePtrs');
         out.push('        lea     _gfx_copper_a,a0');
         out.push('        jsr     _InstallCopper');
@@ -219,6 +229,12 @@ export class CodeGen {
         out.push('');
         out.push('        XDEF    _main_program');
         out.push('_main_program:');
+
+        // Initialise data pointer to _data_start on program entry
+        if (this._usesData) {
+            out.push('        lea     _data_start,a0');
+            out.push('        move.l  a0,_data_ptr');
+        }
 
         for (const stmt of ast) {
             if (!stmt) continue;
@@ -236,10 +252,13 @@ export class CodeGen {
         // ── DATA & BSS SECTIONS (Must come after CODE for WinUAE compatibility) ──
 
         // User variable BSS — one longword per scalar integer variable
-        if (varNames.size > 0 || this._arrays.size > 0 || this._typeInstances.size > 0) {
+        if (varNames.size > 0 || this._arrays.size > 0 || this._typeInstances.size > 0 || this._usesData) {
             out.push('        SECTION user_vars,BSS');
             for (const name of varNames) {
                 out.push(`_var_${name}:    ds.l    1`);
+            }
+            if (this._usesData) {
+                out.push('_data_ptr:      ds.l    1');
             }
             // Arrays: Dim arr(n) → n+1 longwords (indices 0..n, Blitz2D-compatible)
             // N-dimensional arrays: Dim arr(d0[, d1[, ...]]) → (d0+1)*…*(dn+1) longwords
@@ -266,6 +285,25 @@ export class CodeGen {
             out.push('');
         }
 
+        // User Data table — flat dc.l entries, one per Data statement (in source order)
+        if (this._usesData) {
+            out.push('        SECTION user_data,DATA');
+            out.push('_data_start:');
+            for (const stmt of this._dataStmts) {
+                if (stmt.label) {
+                    out.push(`_data_label_${stmt.label}:`);
+                }
+                if (stmt.values.length > 0) {
+                    const vals = stmt.values.map(v => this._evalDataValue(v, stmt.line));
+                    out.push(`        dc.l    ${vals.join(', ')}`);
+                }
+            }
+            if (this._dataStmts.length === 0) {
+                out.push('        dc.l    0                       ; placeholder — no Data statements');
+            }
+            out.push('');
+        }
+
         // Bitplane buffer pointer variables live in startup.s BSS (_gfx_planes / _gfx_planes_b).
         // The actual chip RAM data (BSS_C) is emitted below; startup.s sets the pointers via lea.
 
@@ -278,8 +316,8 @@ export class CodeGen {
             out.push(copMove(0x0100, bplcon0, 'BPLCON0'));
             out.push(copMove(0x0102, 0x0000,  'BPLCON1'));
             out.push(copMove(0x0104, 0x0000,  'BPLCON2'));
-            out.push(copMove(0x0108, bplmod,  'BPL1MOD (overscan)'));
-            out.push(copMove(0x010A, bplmod,  'BPL2MOD (overscan)'));
+            out.push(copMove(0x0108, bplmod,  'BPL1MOD (interleaved)'));
+            out.push(copMove(0x010A, bplmod,  'BPL2MOD (interleaved)'));
         };
 
         // Chip-RAM DATA — copper list A (bitplane pointers → buffer A)
@@ -357,11 +395,14 @@ export class CodeGen {
         // before the INCBIN so _DrawImage / _SetImagePalette can read metadata.
         // The .raw file format (from Asset Manager): 2^depth OCS palette words,
         // followed by depth × height × rowbytes bytes of planar bitplane data.
-        for (const [, { filename, label: lbl, width, height, rowbytes }] of this._imageAssets) {
+        for (const [, { filename, label: lbl, width, height, rowbytes, isInterleaved }] of this._imageAssets) {
+            // Interleaved images (.iraw) set bit 15 of the depth header word so that
+            // _DrawImageFrame / _BltBobMaskedFrame can branch to the 1-blit path at runtime.
+            const depthWord = isInterleaved ? 'GFXDEPTH+$8000' : 'GFXDEPTH';
             out.push(`        SECTION ${lbl}_sec,DATA_C`);
             out.push(`        XDEF    ${lbl}`);
             out.push(`${lbl}:`);
-            out.push(`        dc.w    ${width},${height},GFXDEPTH,${rowbytes}`);
+            out.push(`        dc.w    ${width},${height},${depthWord},${rowbytes}`);
             out.push(`        INCBIN  "${filename}"`);
             out.push(`        EVEN`);
             out.push('');
@@ -439,8 +480,10 @@ export class CodeGen {
     _collectVars(ast, varSet) {
         for (const stmt of ast) {
             if (!stmt) continue;
-            if (stmt.type === 'assign') {
-                varSet.add(stmt.target);
+            if (stmt.type === 'const_def') {
+                // Already registered in this._consts pre-pass; no BSS needed.
+            } else if (stmt.type === 'assign') {
+                if (!this._consts.has(stmt.target)) varSet.add(stmt.target);
                 this._collectVarsInExpr(stmt.expr, varSet);
             } else if (stmt.type === 'dim') {
                 this._arrays.set(stmt.name, stmt.dims);
@@ -456,6 +499,15 @@ export class CodeGen {
             } else if (stmt.type === 'type_field_write') {
                 if (stmt.index) this._collectVarsInExpr(stmt.index, varSet);
                 this._collectVarsInExpr(stmt.expr, varSet);
+            } else if (stmt.type === 'data_stmt') {
+                this._usesData = true;
+                this._dataStmts.push(stmt);
+                for (const val of stmt.values) this._collectVarsInExpr(val, varSet);
+            } else if (stmt.type === 'read_stmt') {
+                this._usesData = true;
+                if (!this._consts.has(stmt.target)) varSet.add(stmt.target);
+            } else if (stmt.type === 'restore_stmt') {
+                this._usesData = true;
             } else if (stmt.type === 'command') {
                 if (stmt.name === 'coppercolor') this._usesRaster = true;
                 if (stmt.name === 'loadsample') {
@@ -483,9 +535,11 @@ export class CodeGen {
                             const height   = hArg.value;
                             // rowbytes: bytes per row, word-aligned
                             const rowbytes = Math.ceil(Math.ceil(width / 8) / 2) * 2;
+                            // .iraw = interleaved bitplane layout (PERF-G Phase 2); flags bit 15 in header
+                            const isInterleaved = fileArg.value.toLowerCase().endsWith('.iraw');
                             this._imageAssets.set(idxArg.value, {
                                 filename: fileArg.value, label: lbl, width, height, rowbytes,
-                                isAnim: false, frameCount: 1
+                                isAnim: false, frameCount: 1, isInterleaved
                             });
                         }
                     }
@@ -508,9 +562,11 @@ export class CodeGen {
                             const height     = hArg.value;
                             const frameCount = countArg.value;
                             const rowbytes   = Math.ceil(Math.ceil(width / 8) / 2) * 2;
+                            // .iraw = interleaved bitplane layout (PERF-G Phase 2); flags bit 15 in header
+                            const isInterleaved = fileArg.value.toLowerCase().endsWith('.iraw');
                             this._imageAssets.set(idxArg.value, {
                                 filename: fileArg.value, label: lbl, width, height, rowbytes,
-                                isAnim: true, frameCount
+                                isAnim: true, frameCount, isInterleaved
                             });
                         }
                     }
@@ -642,7 +698,7 @@ export class CodeGen {
         if (!expr) return;
         switch (expr.type) {
             case 'ident':
-                varSet.add(expr.name);
+                if (!this._consts.has(expr.name)) varSet.add(expr.name);
                 break;
             case 'array_read':
                 // array name is NOT a scalar — only collect vars used in the index
@@ -729,10 +785,29 @@ export class CodeGen {
             return lines;
         }
 
-        // ── Dim / Type / Function definition — declaration only, no code ─────
+        // ── Dim / Type / Function / Const / Data — declaration only, no runtime code ──
         if (stmt.type === 'dim' || stmt.type === 'type_def' ||
             stmt.type === 'dim_typed' || stmt.type === 'dim_typed_array' ||
-            stmt.type === 'function_def') {
+            stmt.type === 'function_def' || stmt.type === 'const_def' ||
+            stmt.type === 'data_stmt') {
+            return lines;
+        }
+
+        // ── Read — advance data pointer, load next value into variable ──────────
+        if (stmt.type === 'read_stmt') {
+            const ref = this._varRef(stmt.target);
+            lines.push(`        move.l  _data_ptr,a0`);
+            lines.push(`        move.l  (a0)+,d0`);
+            lines.push(`        move.l  a0,_data_ptr`);
+            lines.push(`        move.l  d0,${ref}`);
+            return lines;
+        }
+
+        // ── Restore — reset data pointer to start (or labeled position) ─────────
+        if (stmt.type === 'restore_stmt') {
+            const target = stmt.label ? `_data_label_${stmt.label}` : '_data_start';
+            lines.push(`        lea     ${target},a0`);
+            lines.push(`        move.l  a0,_data_ptr`);
             return lines;
         }
 
@@ -1812,9 +1887,15 @@ export class CodeGen {
                 }
                 break;
 
-            case 'ident':
-                lines.push(`        move.l  ${this._varRef(expr.name)},d0`);
+            case 'ident': {
+                const _cv = this._consts.get(expr.name);
+                if (_cv !== undefined) {
+                    lines.push(`        move.l  #${_cv},d0`);
+                } else {
+                    lines.push(`        move.l  ${this._varRef(expr.name)},d0`);
+                }
                 break;
+            }
 
             case 'array_read':
                 // Evaluate index → d0; multiply by 4; offset from array base.
@@ -2263,7 +2344,11 @@ export class CodeGen {
     /** Return the m68k source operand string for a simple expression. */
     _simpleOperand(expr) {
         if (expr.type === 'int')   return `#${expr.value}`;
-        if (expr.type === 'ident') return this._varRef(expr.name);
+        if (expr.type === 'ident') {
+            const _cv = this._consts.get(expr.name);
+            if (_cv !== undefined) return `#${_cv}`;
+            return this._varRef(expr.name);
+        }
         throw new Error('[CodeGen] _simpleOperand called on non-simple expr');
     }
 
@@ -2667,12 +2752,29 @@ export class CodeGen {
     /** Extract a compile-time integer literal (for Graphics and similar). */
     _intArg(stmt, idx, label) {
         const arg = stmt.args[idx];
-        if (!arg || arg.type !== 'int') {
-            throw new Error(
-                `${label}: expected integer literal at position ${idx} on line ${stmt.line}`
-            );
+        if (!arg) throw new Error(`${label}: missing argument at position ${idx} on line ${stmt.line}`);
+        if (arg.type === 'int') return arg.value;
+        if (arg.type === 'ident') {
+            const cv = this._consts.get(arg.name);
+            if (cv !== undefined) return cv;
         }
-        return arg.value;
+        throw new Error(`${label}: expected integer literal at position ${idx} on line ${stmt.line}`);
+    }
+
+    /**
+     * Evaluate a Data-statement value to an integer at compile time.
+     * Accepts: int literals, Const references, unary minus applied to either.
+     */
+    _evalDataValue(expr, line) {
+        if (expr.type === 'int') return expr.value;
+        if (expr.type === 'ident') {
+            const cv = this._consts.get(expr.name);
+            if (cv !== undefined) return cv;
+        }
+        if (expr.type === 'unary' && expr.op === '-') {
+            return -this._evalDataValue(expr.operand, line);
+        }
+        throw new Error(`Data: value must be a compile-time integer literal (line ${line})`);
     }
 
     /** Extract a compile-time string literal. */

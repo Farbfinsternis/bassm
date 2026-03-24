@@ -4,6 +4,8 @@
     "Repeat", "Until", "Exit",
     "Dim", "Type", "Field", "EndType",
     "Function", "EndFunction", "Return", "Local",
+    "Const",
+    "Data", "Read", "Restore",
     "And", "Or", "Xor", "Not",
     "Mod", "Shl", "Shr"
 ]

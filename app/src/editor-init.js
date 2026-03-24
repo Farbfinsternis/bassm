@@ -171,6 +171,30 @@ require(['vs/editor/editor.main'], function () {
             insertText:  'Dim ${1:map}(${2:19}, ${3:14})',
             detail:      'name(width, height)',
         },
+        {
+            label:       'Const',
+            filterText:  'Const',
+            insertText:  'Const ${1:NAME} = ${2:0}',
+            detail:      'NAME = value  — compile-time constant, no BSS',
+        },
+        {
+            label:       'Data',
+            filterText:  'Data',
+            insertText:  'Data ${1:0}, ${2:0}',
+            detail:      'val1, val2, ...  — static data table (no runtime cost)',
+        },
+        {
+            label:       'Read',
+            filterText:  'Read',
+            insertText:  'Read ${1:variable}',
+            detail:      'variable  — read next value from Data table',
+        },
+        {
+            label:       'Restore',
+            filterText:  'Restore',
+            insertText:  'Restore',
+            detail:      '— reset Data pointer to beginning',
+        },
     ];
 
     const BUILTIN_SIGS = [
@@ -236,6 +260,7 @@ require(['vs/editor/editor.main'], function () {
             'Select', 'Case', 'Default', 'EndSelect',
             'Dim', 'Type', 'Field', 'EndType',
             'Function', 'EndFunction', 'Return',
+            'Const', 'Data', 'Read', 'Restore',
             'Exit', 'And', 'Or', 'Xor', 'Not', 'Mod', 'Shl', 'Shr',
             // All commands
             ..._kwCommands,

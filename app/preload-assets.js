@@ -19,6 +19,11 @@ contextBridge.exposeInMainWorld('assetAPI', {
     // Returns { saved: boolean, filePath?: string }
     saveAssetWithDialog: (payload) => ipcRenderer.invoke('bassm:save-asset-dialog', payload),
 
+    // Write a file to an absolute path without showing a dialog.
+    // Accepts { filePath: string, data: number[] }
+    // Used for auto-saving companion files (e.g. .imask alongside .iraw).
+    saveAsset: (payload) => ipcRenderer.invoke('bassm:save-asset-path', payload),
+
     // Read a binary asset file from the project directory.
     // Returns a number[] (byte array) suitable for new Uint8Array(bytes).
     readAsset: (payload) => ipcRenderer.invoke('bassm:read-asset', payload),

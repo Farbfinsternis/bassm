@@ -116,6 +116,9 @@ function createAssetManagerWindow(projectDir, preloadFile) {
   assetManagerWindow.on('closed', () => { assetManagerWindow = null; });
 }
 
+// Renderer → main: synchronous version query (used in preload.js)
+ipcMain.on('bassm:get-version', (event) => { event.returnValue = app.getVersion(); });
+
 // Renderer (editor) → main: open or focus the Asset Manager window
 ipcMain.on('bassm:open-asset-manager', (_event, { projectDir, preloadFile } = {}) => {
   createAssetManagerWindow(projectDir || null, preloadFile || null);
@@ -463,6 +466,15 @@ ipcMain.handle('bassm:write-asset', (_event, { projectDir, subdir, filename, dat
   }
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(outFile, Buffer.from(data));
+});
+
+// Renderer (asset manager) → main: write to an absolute path without a dialog.
+// Accepts { filePath: string, data: number[] }
+// Used to auto-save companion files (e.g. .imask alongside .iraw) once the user
+// has already confirmed the primary save path via the dialog.
+ipcMain.handle('bassm:save-asset-path', (_event, { filePath, data }) => {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, Buffer.from(data));
 });
 
 // Renderer (asset manager) → main: show OS save dialog, then write the file.

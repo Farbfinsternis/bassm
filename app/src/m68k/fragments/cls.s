@@ -99,8 +99,8 @@ _Cls:
         ; A pointer net advance = GFXBPR + (-GFXBPR) = 0 → always re-reads row 0.
         move.w  #-GFXBPR,BLTAMOD(a5)
 
-        ; BLTDMOD = 0: destination plane is contiguous (no inter-row skip bytes)
-        clr.w   BLTDMOD(a5)
+        ; BLTDMOD = GFXIBPR-GFXBPR: skip over the other planes' rows (interleaved layout)
+        move.w  #GFXIBPR-GFXBPR,BLTDMOD(a5)
 
         ; A source pointer (high word first — Amiga bus convention)
         move.l  a1,d0
@@ -121,7 +121,7 @@ _Cls:
         move.w  #(GFXHEIGHT<<6)|(GFXBPR/2),BLTSIZE(a5)
 
         ; ── Advance to next plane ─────────────────────────────────────────────
-        add.l   #GFXPSIZE,a0            ; next bitplane buffer
+        add.l   #GFXBPR,a0             ; next bitplane (interleaved: one row ahead)
         lsr.l   #1,d4                   ; shift colour right: next bit → bit 0
         dbra    d5,.cls_plane
 

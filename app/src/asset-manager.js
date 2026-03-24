@@ -133,6 +133,58 @@ function toPlanarBitmap(indices, width, height, depth) {
     return out;
 }
 
+/**
+ * Convert palette-index array to interleaved Amiga planar bitmap (PERF-G Phase 2).
+ * Layout: for each row y — plane 0 row y · plane 1 row y · … · plane depth-1 row y
+ * This matches the interleaved screen layout; enables 1-blit BOBs in bobs.s / image.s.
+ * rowbytes = ceil(width/16)*2  (word-aligned, same as non-interleaved)
+ */
+function toPlanarBitmapInterleaved(indices, width, height, depth) {
+    const rowbytes = Math.ceil(width / 16) * 2;
+    const out      = new Uint8Array(height * depth * rowbytes);
+
+    for (let y = 0; y < height; y++) {
+        for (let plane = 0; plane < depth; plane++) {
+            const rowBase = (y * depth + plane) * rowbytes;
+            for (let x = 0; x < width; x++) {
+                if ((indices[y * width + x] >> plane) & 1) {
+                    out[rowBase + (x >> 3)] |= 0x80 >> (x & 7);
+                }
+            }
+        }
+    }
+    return out;
+}
+
+/**
+ * Generate an interleaved 1bpp transparency mask (PERF-G Phase 2).
+ * Palette index 0 = transparent (bit 0), all other indices = opaque (bit 1).
+ * Each mask row is repeated `depth` times so that BLTAMOD=0 works correctly
+ * in the 1-blit masked BOB path (A channel steps through all planes' rows).
+ * Total size: height × depth × rowbytes bytes.
+ */
+function toMaskInterleaved(indices, width, height, depth) {
+    const rowbytes = Math.ceil(width / 16) * 2;
+    const out      = new Uint8Array(height * depth * rowbytes);
+    const maskRow  = new Uint8Array(rowbytes);
+
+    for (let y = 0; y < height; y++) {
+        // Build one 1bpp mask row: index 0 → transparent, else opaque
+        maskRow.fill(0);
+        for (let x = 0; x < width; x++) {
+            if (indices[y * width + x] !== 0) {
+                maskRow[x >> 3] |= 0x80 >> (x & 7);
+            }
+        }
+        // Write `depth` identical copies of this mask row
+        for (let p = 0; p < depth; p++) {
+            const base = (y * depth + p) * rowbytes;
+            out.set(maskRow, base);
+        }
+    }
+    return out;
+}
+
 // ── Preview ───────────────────────────────────────────────────────────────────
 function renderPreview() {
     if (!_imageData) return;
@@ -275,14 +327,20 @@ async function onImageDropped(file) {
 // ── Convert & Save ────────────────────────────────────────────────────────────
 async function onConvertAndSave() {
     if (!_imageData || !_lastIndices) return;
-    const btn = document.getElementById('btn-convert-image');
+    const btn        = document.getElementById('btn-convert-image');
+    const interleaved = document.getElementById('chk-interleaved').checked;
+    const genMask     = interleaved && document.getElementById('chk-genmask').checked;
     btn.disabled    = true;
     btn.textContent = 'Saving\u2026';
 
     try {
         const depth      = _lastDepth;
         const colorCount = 1 << depth;
-        const planes     = toPlanarBitmap(_lastIndices, _imageWidth, _imageHeight, depth);
+
+        // Choose planar layout: interleaved (.iraw) or classic non-interleaved (.raw)
+        const planes = interleaved
+            ? toPlanarBitmapInterleaved(_lastIndices, _imageWidth, _imageHeight, depth)
+            : toPlanarBitmap(_lastIndices, _imageWidth, _imageHeight, depth);
 
         // Prepend OCS palette: colorCount × 2-byte big-endian words ($0RGB).
         const raw = new Uint8Array(colorCount * 2 + planes.length);
@@ -292,18 +350,30 @@ async function onConvertAndSave() {
         }
         raw.set(planes, colorCount * 2);
 
-        const defaultPath = [
+        const ext         = interleaved ? 'iraw' : 'raw';
+        const baseFilename = _imageFilename.replace(/\.[^.]+$/, '') + '.' + ext;
+        const defaultPath  = [
             _projectDir ? _projectDir.replace(/\\/g, '/') : null,
             _imageSourceDir || null,
-            _imageFilename,
+            baseFilename,
         ].filter(Boolean).join('/');
 
         const result = await window.assetAPI.saveAssetWithDialog({
             defaultPath,
-            filters: [{ name: 'Amiga Raw', extensions: ['raw'] }],
-            data:    Array.from(raw),
+            filters: interleaved
+                ? [{ name: 'Amiga Interleaved Raw (PERF-G)', extensions: ['iraw'] }]
+                : [{ name: 'Amiga Raw', extensions: ['raw'] }],
+            data: Array.from(raw),
         });
         if (!result.saved) { btn.disabled = false; btn.textContent = 'Convert & Save'; return; }
+
+        // Auto-save companion .imask when "Interleaved + Generate Mask" is checked
+        if (genMask && result.filePath) {
+            const maskPath = result.filePath.replace(/\.[^.]+$/, '') + '.imask';
+            const maskData = toMaskInterleaved(_lastIndices, _imageWidth, _imageHeight, depth);
+            await window.assetAPI.saveAsset({ path: maskPath, data: Array.from(maskData) });
+        }
+
         btn.textContent = 'Saved!';
         setTimeout(() => { btn.textContent = 'Convert & Save'; btn.disabled = false; }, 1500);
         if (_projectDir) window.assetAPI.listAssets({ projectDir: _projectDir }).then(renderAssetTree).catch(() => {});
@@ -316,7 +386,10 @@ async function onConvertAndSave() {
 
 function onCopyImageCode() {
     if (!_imageData) return;
-    const code = `LoadImage 0, "${_imageFilename}", ${_imageWidth}, ${_imageHeight}`;
+    const interleaved = document.getElementById('chk-interleaved').checked;
+    const ext      = interleaved ? 'iraw' : 'raw';
+    const filename = _imageFilename.replace(/\.[^.]+$/, '') + '.' + ext;
+    const code     = `LoadImage 0, "${filename}", ${_imageWidth}, ${_imageHeight}`;
     navigator.clipboard.writeText(code).catch(() => {});
     const btn = document.getElementById('btn-copy-image-code');
     btn.textContent = 'Copied!';
@@ -403,6 +476,10 @@ document.getElementById('sel-dither')  .addEventListener('change', () => { if (_
 document.getElementById('btn-convert-image') .addEventListener('click', onConvertAndSave);
 document.getElementById('btn-export-iff')    .addEventListener('click', onExportIFF);
 document.getElementById('btn-copy-image-code').addEventListener('click', onCopyImageCode);
+document.getElementById('chk-interleaved').addEventListener('change', function () {
+    document.getElementById('chk-genmask').disabled = !this.checked;
+    if (!this.checked) document.getElementById('chk-genmask').checked = false;
+});
 
 // ── Period / Hz display ───────────────────────────────────────────────────────
 const periodSlider  = document.getElementById('rng-period');

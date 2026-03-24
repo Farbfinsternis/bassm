@@ -253,6 +253,11 @@ function _estimateLineCycles(trim, imageMap, gfxW, gfxH, planes, activeFontCharH
     if (/ImageRectOverlap\s*\(/i.test(trim)) return 80;
     if (/ImagesOverlap\s*\(/i.test(trim))    return 80;
 
+    // ── Data / Read / Restore ─────────────────────────────────────────────────
+    if (/^Data\b/i.test(trim))    return 0;    // DATA section — no runtime cost
+    if (/^Read\b/i.test(trim))    return 15;   // 4 instructions: ptr load/store + read
+    if (/^Restore\b/i.test(trim)) return 10;   // 2 instructions: lea + store
+
     // ── Hardware access ───────────────────────────────────────────────────────
     // PeekB/W/L: move + optional ext.l; PokeB/W/L/Poke: move to absolute addr.
 

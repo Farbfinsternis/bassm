@@ -117,9 +117,11 @@ _DrawImageFrame:
         ;   d6 = rowbytes
         move.w  (a0)+,d3            ; d3.w = width  (scratch; overwritten below)
         move.w  (a0)+,d4            ; d4.w = height
-        move.w  (a0)+,d5            ; d5.w = depth
+        move.w  (a0)+,d5            ; d5.w = depth  ($8000 flag set for .iraw interleaved format)
         move.w  (a0)+,d6            ; d6.w = rowbytes
-        ; a0 now points to the embedded palette block — skip it.
+        btst    #15,d5              ; test interleaved flag (bit 15 = .iraw)
+        bne.w   .draw_interleaved   ; → 1-blit path for interleaved source data
+        ; a0 now points to the embedded palette block — skip it (non-interleaved path).
         moveq   #1,d7
         lsl.l   d5,d7               ; d7 = 1 << depth
         add.l   d7,d7               ; d7 = palette bytes
@@ -163,13 +165,13 @@ _DrawImageFrame:
 
         ; ── Destination pointer: _back_planes_ptr + y*GFXBPR + x/8 ───────────
         move.l  _back_planes_ptr,a2
-        muls.w  #GFXBPR,d1          ; d1 = y × GFXBPR  (signed: handles negative y)
+        muls.w  #GFXIBPR,d1         ; d1 = y × GFXIBPR (interleaved row stride)
         add.l   d1,a2
         asr.l   #3,d0               ; d0 = x / 8  (signed: handles negative x)
         add.l   d0,a2               ; a2 = dest in plane-0 at (x,y)
 
-        ; ── BLTDMOD = GFXBPR - rowbytes ──────────────────────────────────────
-        move.w  #GFXBPR,d3
+        ; ── BLTDMOD = GFXIBPR - rowbytes (interleaved: skip other planes' rows) ─
+        move.w  #GFXIBPR,d3
         sub.w   d6,d3               ; d3.w = BLTDMOD
 
         ; ── Plane loop ────────────────────────────────────────────────────────
@@ -198,10 +200,101 @@ _DrawImageFrame:
 
         move.w  d2,BLTSIZE(a5)
 
-        add.l   d7,a0               ; advance: next source plane
-        add.l   #GFXPSIZE,a2        ; advance: next screen plane
+        add.l   d7,a0               ; advance: next source plane (non-interleaved image)
+        add.l   #GFXBPR,a2         ; advance: next screen plane (interleaved)
 
         dbra    d5,.plane_loop
+
+; ── _DrawImageFrame — interleaved 1-blit path (.iraw) ────────────────────────
+;
+; Entered when bit 15 of the header depth word is set (source is a .iraw file).
+; All depth × height plane-rows are packed in interleaved order, so a single
+; Blitter A→D operation copies all planes at once:
+;
+;   BLTSIZE  = (height × depth) << 6 | (rowbytes / 2)
+;   BLTAMOD  = 0                 (source rows packed, no gap between planes)
+;   BLTDMOD  = GFXBPR - rowbytes (advance to next plane-row in interleaved screen)
+;
+; Constraint: height × depth must be ≤ 1023 (BLTSIZE height field is 10 bits).
+; At depth=5 this allows sprites up to ~200px tall — sufficient for all sprites.
+
+.draw_interleaved:
+        and.w   #$7FFF,d5           ; clear interleaved flag — d5 = actual depth
+
+        ; Skip palette: (1 << depth) * 2 bytes
+        moveq   #1,d7
+        lsl.l   d5,d7               ; d7 = 1 << depth
+        add.l   d7,d7               ; d7 = palette bytes
+        add.l   d7,a0               ; a0 = interleaved plane data start (frame 0)
+
+        ; Plane size for frame offset = height × rowbytes
+        move.w  d4,d7
+        mulu.w  d6,d7               ; d7.l = plane_size
+
+        ; Bounds check (same conditions as non-interleaved path)
+        cmp.l   #-GFXBORDER,d0
+        blt.w   .draw_done
+        cmp.l   #-GFXBORDER,d1
+        blt.w   .draw_done
+        move.l  d0,a1
+        add.w   d3,a1               ; a1 = x + pixel_width
+        cmpa.l  #(GFXWIDTH+GFXBORDER),a1
+        bgt.w   .draw_done
+        move.l  d1,a1
+        add.w   d4,a1               ; a1 = y + height
+        cmpa.l  #(GFXHEIGHT+GFXBORDER),a1
+        bgt.w   .draw_done
+
+        ; Frame offset = frame × depth × plane_size (same formula as non-interleaved)
+        move.w  d5,d3               ; d3 = depth
+        mulu.w  d7,d3               ; d3 = depth × plane_size = frame_size
+        mulu.w  d2,d3               ; d3 = frame × frame_size = frame_offset
+        add.l   d3,a0               ; a0 = frame N data start
+
+        ; BLTSIZE = (height × depth) << 6 | (rowbytes / 2)
+        move.w  d4,d2
+        mulu.w  d5,d2               ; d2.l = height × depth
+        lsl.w   #6,d2               ; d2 = (height × depth) << 6
+        move.w  d6,d3
+        lsr.w   #1,d3               ; d3 = rowbytes / 2
+        or.w    d3,d2               ; d2.w = BLTSIZE
+
+        ; BLTDMOD = GFXBPR - rowbytes
+        ; After writing rowbytes bytes the pointer advances to the next plane-row
+        ; in the interleaved screen (distance between adjacent plane-rows = GFXBPR).
+        move.w  #GFXBPR,d3
+        sub.w   d6,d3               ; d3.w = BLTDMOD
+
+        ; Destination = _back_planes_ptr + y*GFXIBPR + x/8  (plane-0 of row y)
+        move.l  _back_planes_ptr,a2
+        muls.w  #GFXIBPR,d1         ; d1 = y × GFXIBPR
+        add.l   d1,a2
+        asr.l   #3,d0               ; d0 = x / 8
+        add.l   d0,a2               ; a2 = screen plane-0 at (x, y)
+
+        ; 1 single blit — copies all depth planes simultaneously
+        jsr     _WaitBlit
+
+        move.w  #$09F0,BLTCON0(a5)  ; USEA | USED, minterm $F0: D = A
+        clr.w   BLTCON1(a5)
+        move.w  #$FFFF,BLTAFWM(a5)
+        move.w  #$FFFF,BLTALWM(a5)
+        clr.w   BLTAMOD(a5)         ; source packed: no gap between plane-rows
+        move.w  d3,BLTDMOD(a5)      ; GFXBPR - rowbytes
+
+        move.l  a0,d0
+        swap    d0
+        move.w  d0,BLTAPTH(a5)
+        swap    d0
+        move.w  d0,BLTAPTL(a5)
+
+        move.l  a2,d0
+        swap    d0
+        move.w  d0,BLTDPTH(a5)
+        swap    d0
+        move.w  d0,BLTDPTL(a5)
+
+        move.w  d2,BLTSIZE(a5)      ; triggers the blit (all planes in one pass)
 
 .draw_done:
         movem.l (sp)+,d0-d7/a0-a3

@@ -68,7 +68,7 @@ _Plot:
 
         ; ── byte_offset = y * GFXBPR + (x >> 3) ──────────────────────────────
         move.l  d1,d2                   ; d2 = y
-        muls.w  #GFXBPR,d2              ; d2 = y * GFXBPR  (both fit in 16 bits)
+        muls.w  #GFXIBPR,d2             ; d2 = y * GFXIBPR (interleaved row stride)
         move.l  d0,d3
         lsr.l   #3,d3                   ; d3 = x >> 3
         add.l   d3,d2                   ; d2 = byte_offset
@@ -99,7 +99,7 @@ _Plot:
         and.b   d3,(a1)                 ; clear the pixel bit
 
 .plot_advance:
-        lea     GFXPSIZE(a0),a0        ; advance to next bitplane base
+        lea     GFXBPR(a0),a0          ; advance to next bitplane (interleaved)
         lsr.w   #1,d7                   ; shift colour: next plane bit → LSB
         dbra    d6,.plot_plane
 
