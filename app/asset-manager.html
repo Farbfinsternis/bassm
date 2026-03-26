@@ -10,9 +10,11 @@
 	<body>
 
 		<div id="toolbar">
-			<button class="tab-btn active" data-tab="palette">Palette</button>
-			<button class="tab-btn"        data-tab="images" >Images</button>
-			<button class="tab-btn"        data-tab="sounds" >Sounds</button>
+			<button class="tab-btn active" data-tab="palette"  >Palette</button>
+			<button class="tab-btn"        data-tab="images"   >Images</button>
+			<button class="tab-btn"        data-tab="sounds"   >Sounds</button>
+			<button class="tab-btn"        data-tab="tilesets" >Tilesets</button>
+			<button class="tab-btn"        data-tab="tilemaps" >Tilemaps</button>
 			<span id="project-name">No project open</span>
 		</div>
 
@@ -139,6 +141,64 @@
 						<button disabled id="btn-copy-sound-code">Copy Code</button>
 					</div>
 				</div>
+
+			<!-- ── A-MGR-4: Tilesets ── -->
+			<div id="tab-tilesets" class="tab-panel">
+				<div class="panel-title">Tileset Converter <span class="badge">A-MGR-4</span></div>
+
+				<div id="ts-status" class="file-status">Drop a PNG sprite sheet onto this window while on this tab</div>
+
+				<div id="ts-split" class="split-view">
+					<div class="split-pane">
+						<div class="split-label">Original</div>
+						<canvas id="canvas-ts-original"></canvas>
+					</div>
+					<div class="split-pane">
+						<div class="split-label">OCS palette + tile grid</div>
+						<canvas id="canvas-ts-converted"></canvas>
+					</div>
+				</div>
+
+				<div class="controls-bar">
+					<label>Tile W <input type="number" id="inp-ts-tw" value="16" min="1" max="128" style="width:3.5em"></label>
+					<label>Tile H <input type="number" id="inp-ts-th" value="16" min="1" max="128" style="width:3.5em"></label>
+					<label>Depth
+						<select id="sel-ts-depth">
+							<option value="1">1</option>
+							<option value="2">2</option>
+							<option value="3" selected>3</option>
+							<option value="4">4</option>
+							<option value="5">5</option>
+						</select>
+						Bitplanes
+					</label>
+					<span id="ts-tile-info"></span>
+					<span id="ts-fit-quality"></span>
+					<div class="spacer"></div>
+					<button disabled id="btn-convert-tileset">Convert &amp; Save</button>
+					<button disabled id="btn-copy-tileset-code">Copy Code</button>
+				</div>
+			</div>
+
+			<!-- ── A-MGR-5: Tilemaps ── -->
+			<div id="tab-tilemaps" class="tab-panel">
+				<div class="panel-title">Tilemap Converter <span class="badge">A-MGR-5</span></div>
+
+				<div class="file-status">Paste CSV tile indices — one row per line, comma-separated, 0-based</div>
+
+				<textarea id="tm-csv" spellcheck="false"
+					placeholder="0,1,2,3&#10;4,5,6,7&#10;8,9,10,11"
+					style="width:100%;height:220px;box-sizing:border-box;font-family:monospace;font-size:12px;resize:vertical;background:#1e1e1e;color:#ccc;border:1px solid #444;padding:6px;margin-top:8px"></textarea>
+
+				<div class="controls-bar">
+					<span id="tm-map-info"></span>
+					<label>Tile W <input type="number" id="inp-tm-tw" value="16" min="1" max="128" style="width:3.5em"></label>
+					<label>Tile H <input type="number" id="inp-tm-th" value="16" min="1" max="128" style="width:3.5em"></label>
+					<div class="spacer"></div>
+					<button disabled id="btn-convert-tilemap">Convert &amp; Save</button>
+					<button disabled id="btn-copy-tilemap-code">Copy Code</button>
+				</div>
+			</div>
 
 			</div><!-- /content-area -->
 

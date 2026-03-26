@@ -69,6 +69,15 @@ require(['vs/editor/editor.main'], function () {
           doc: 'Load a 1-bpp mask file for a Bob image. The mask determines which pixels are transparent during DrawBob.' },
         { label: 'DrawBob',        insertText: 'DrawBob ${1:0}, ${2:x}, ${3:y}',                                            detail: 'index, x, y [, frame]',
           doc: 'Queue a Bob (blitter object) to be drawn at *(x, y)*. Optional **frame** for animated bobs. Bobs are flushed automatically before ScreenFlip.' },
+        // Tilemap
+        { label: 'LoadTileset',    insertText: 'LoadTileset ${1:0}, "${2:tiles.iraw}", ${3:16}, ${4:16}',  detail: 'slot, file, tileW, tileH',
+          doc: 'Load an interleaved tileset (.iraw). Tiles are tileW×tileH pixels, stacked vertically (same format as LoadAnimImage).' },
+        { label: 'LoadTilemap',    insertText: 'LoadTilemap ${1:0}, "${2:map.bmap}"',                      detail: 'slot, file',
+          doc: 'Load a binary tilemap (.bmap). Header: mapW, mapH, tileW, tileH — followed by mapW×mapH tile indices (0-based words).' },
+        { label: 'DrawTilemap',    insertText: 'DrawTilemap ${1:0}, ${2:0}, ${3:scrollX}',                 detail: 'tmSlot, tsSlot, scrollX',
+          doc: 'Render the visible portion of the tilemap into the back buffer. scrollX is in pixels (0..mapW×tileW−1). Fine scroll via BPLCON1.' },
+        { label: 'SetTilemap',     insertText: 'SetTilemap ${1:0}, ${2:0}',                                detail: 'tmSlot, tsSlot',
+          doc: 'Register the tilemap as the Bob background. Installs _bg_restore_tilemap so DrawBob correctly redraws tiles behind bobs.' },
         // Sound
         { label: 'LoadSample',     insertText: 'LoadSample ${1:0}, "${2:sound.raw}"',                                       detail: 'index, file',
           doc: 'Register a raw PCM audio sample. File must be 8-bit unsigned, mono. Only declares the asset — no chip RAM is used until PlaySample.' },

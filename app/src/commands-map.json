@@ -305,6 +305,49 @@
         ]
     },
     {
+        "name": "LoadTileset",
+        "description": "Load an interleaved tileset (.iraw). tileW/tileH define the size of a single tile in pixels. The file contains all tiles stacked vertically (tile 0 at top). tile count = file_height / tileH.",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "slot",  "type": "integer" },
+            { "name": "file",  "type": "string"  },
+            { "name": "tileW", "type": "integer" },
+            { "name": "tileH", "type": "integer" }
+        ]
+    },
+    {
+        "name": "LoadTilemap",
+        "description": "Load a binary tilemap file (.bmap). Format: 8-byte header (map_width, map_height, tile_w, tile_h as words) followed by map_width*map_height tile-index words (0-based, row-major).",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "slot", "type": "integer" },
+            { "name": "file", "type": "string"  }
+        ]
+    },
+    {
+        "name": "DrawTilemap",
+        "description": "Render the visible portion of a tilemap into the back buffer. scrollX is the camera position in pixels (0 = leftmost tile). Tile dimensions and map size are read from the tilemap header at runtime.",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "tmSlot",  "type": "integer" },
+            { "name": "tsSlot",  "type": "integer" },
+            { "name": "scrollX", "type": "integer" }
+        ]
+    },
+    {
+        "name": "SetTilemap",
+        "description": "Register a tilemap+tileset pair as the active scrolling background for Bob restore. Replaces SetBackground. Must be called before DrawBob when using a tilemap background.",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "tmSlot", "type": "integer" },
+            { "name": "tsSlot", "type": "integer" }
+        ]
+    },
+    {
         "name": "LoadFont",
         "description": "Load a raw font image. chars defines the character set order in the image; charW/charH define glyph size in pixels.",
         "type": "global",

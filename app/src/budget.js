@@ -53,6 +53,10 @@ export function analyzeBudget(source) {
     // LoadSample — file size unknown at parse time
     if (/^\s*LoadSample\b/im.test(source)) chipRamPlus = true;
 
+    // LoadTileset / LoadTilemap — INCBIN assets in DATA_C (chip RAM), size unknown at parse time
+    if (/^\s*LoadTileset\b/im.test(source)) chipRamPlus = true;
+    if (/^\s*LoadTilemap\b/im.test(source)) chipRamPlus = true;
+
     // LoadFont — data goes into normal (fast) RAM, not chip RAM; no chip RAM cost.
     // Collect charH per font index for accurate Text cycle estimation.
     const fontMap = {};  // idx → charH
@@ -222,6 +226,14 @@ function _estimateLineCycles(trim, imageMap, gfxW, gfxH, planes, activeFontCharH
         // Bob = background restore blit + masked draw blit, both per plane
         return planes * (Math.ceil(img.w / 16) + 1) * img.h * 16;
     }
+
+    // ── Tilemap ───────────────────────────────────────────────────────────────
+
+    if (/^LoadTileset\b/i.test(trim)) return 0;   // init only — pointer setup
+    if (/^LoadTilemap\b/i.test(trim)) return 0;   // init only — pointer setup
+    if (/^SetTilemap\b/i.test(trim))  return 10;  // 4 pointer writes
+    if (/^DrawTilemap\b/i.test(trim)) return 70000; // Phase 1: ~336 blits × ~200 cycles
+                                                    // (PERF-J will reduce to ~14000)
 
     if (/^Plot\b/i.test(trim))  return 50;
     if (/^Line\b/i.test(trim))  return 400;

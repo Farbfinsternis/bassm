@@ -1,6 +1,6 @@
 # BASSM — Roadmap
 
-> **Stand:** 2026-03-23
+> **Stand:** 2026-03-25
 > **Ziel:** Was braucht ein vollständiges Amiga-Spiel?
 
 Eine detaillierte Übersicht aller **bereits implementierten Features und behobenen Bugs** befindet sich in der Datei [`CHANGELOG.dev.md`](CHANGELOG.dev.md). 
@@ -24,10 +24,9 @@ Eine detaillierte Übersicht aller **bereits implementierten Features und behobe
 ## Epic 2: Projekt "TIMEMILL" / Engine-Core (Prio 2)
 *Timemill ist ein Top-Down Action-Spiel im Stil von The Chaos Engine. Ziel: A500, 25fps, Hardware-Scrolling, 10+ BOBs. Dies ist der kritische Pfad!*
 
-- [ ] **PERF-G: Interleaved Bitplanes** (Größter einzelner Performance-Gewinn)
-  - Blitter-Copy für alle Planes gleichzeitig statt nacheinander. 5x Speedup für Bobs.
-  - Rein interne Compiler-Änderung — `Graphics` bleibt unverändert (3 Parameter).
-  - Codegen legt Planes interleaved im Chip-RAM an; Anpassung der Modulo-Werte in `cls.s`, `box.s`, `bobs.s`.
+- [x] **PERF-G: Interleaved Bitplanes** ✓ 2026-03-24
+  - Phase 1: Codegen + cls.s/box.s/image.s/plot.s/text.s/bobs.s auf interleaved Modulos umgestellt.
+  - Phase 2: `.iraw`/`.imask`-Assets; 1-Blit-BOB+DrawImage (5× Speedup auf echter Hardware).
 - [ ] **M-SCROLL: Tilemap & Hardware-Scrolling**
   - `LoadTileset`, `LoadTilemap`. Ring-Buffer-Technik (Screen + 1 Tile Rand).
   - `ScrollX n` via BPLCON1. `_bg_restore_tilemap` für Bobs.

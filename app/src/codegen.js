@@ -77,6 +77,9 @@ export class CodeGen {
         this._consts        = new Map();  // name → value (compile-time constants, no BSS)
         this._usesData      = false;      // true if any Data/Read/Restore present
         this._dataStmts     = [];         // ordered data_stmt nodes (values → dc.l in DATA section)
+        this._usesTilemap   = false;      // true if any LoadTileset/LoadTilemap/DrawTilemap/SetTilemap present
+        this._tilesetAssets = new Map();  // slot (int) → { filename, label, tileW, tileH, rowbytes }
+        this._tilemapAssets = new Map();  // slot (int) → { filename, label }
 
         // ── Collect Const definitions first (pre-pass, before _collectVars) ───
         for (const stmt of ast) {
@@ -195,6 +198,9 @@ export class CodeGen {
         if (this._usesMouse) {
             out.push('        INCLUDE "mouse.s"');
         }
+        if (this._usesTilemap) {
+            out.push('        INCLUDE "tilemap.s"');
+        }
         out.push('');
         out.push('        even');
         out.push('');
@@ -252,13 +258,18 @@ export class CodeGen {
         // ── DATA & BSS SECTIONS (Must come after CODE for WinUAE compatibility) ──
 
         // User variable BSS — one longword per scalar integer variable
-        if (varNames.size > 0 || this._arrays.size > 0 || this._typeInstances.size > 0 || this._usesData) {
+        if (varNames.size > 0 || this._arrays.size > 0 || this._typeInstances.size > 0 || this._usesData || this._usesTilemap) {
             out.push('        SECTION user_vars,BSS');
             for (const name of varNames) {
                 out.push(`_var_${name}:    ds.l    1`);
             }
             if (this._usesData) {
                 out.push('_data_ptr:      ds.l    1');
+            }
+            if (this._usesTilemap) {
+                out.push('_active_tilemap_ptr: ds.l    1');
+                out.push('_active_tileset_ptr: ds.l    1');
+                out.push('_active_scroll_x:    ds.l    1');
             }
             // Arrays: Dim arr(n) → n+1 longwords (indices 0..n, Blitz2D-compatible)
             // N-dimensional arrays: Dim arr(d0[, d1[, ...]]) → (d0+1)*…*(dn+1) longwords
@@ -420,6 +431,31 @@ export class CodeGen {
             out.push('');
         }
 
+        // ── Tileset data (chip RAM — Blitter source for DrawTilemap / _bg_restore_tilemap) ──
+        // Header format identical to LoadAnimImage: dc.w tileW, tileH, GFXDEPTH+$8000, rowbytes
+        // Interleaved flag (bit 15) always set — tilesets must be .iraw files.
+        for (const [, { filename, label: lbl, tileW, tileH, rowbytes }] of this._tilesetAssets) {
+            out.push(`        SECTION ${lbl}_sec,DATA_C`);
+            out.push(`        XDEF    ${lbl}`);
+            out.push(`${lbl}:`);
+            out.push(`        dc.w    ${tileW},${tileH},GFXDEPTH+$8000,${rowbytes}`);
+            out.push(`        INCBIN  "${filename}"`);
+            out.push(`        EVEN`);
+            out.push('');
+        }
+
+        // ── Tilemap data (normal RAM — CPU index lookup only, no Blitter access) ──
+        // Binary format: 8-byte header (map_w, map_h, tile_w, tile_h as dc.w)
+        // followed by map_w * map_h tile-index words (0-based, row-major).
+        for (const [, { filename, label: lbl }] of this._tilemapAssets) {
+            out.push(`        SECTION ${lbl}_sec,DATA`);
+            out.push(`        XDEF    ${lbl}`);
+            out.push(`${lbl}:`);
+            out.push(`        INCBIN  "${filename}"`);
+            out.push(`        EVEN`);
+            out.push('');
+        }
+
         // ── Font data (fast RAM — CPU renderer, no Blitter access needed) ──────
         // Storage: byte-padded per-glyph, 1 byte/row, left-justified with zero
         // padding for charW < 8.  numPlanes planes stored sequentially.
@@ -459,6 +495,8 @@ export class CodeGen {
             ...[...this._imageAssets.values()].map(e => e.filename),
             ...[...this._maskAssets.values()].map(e => e.filename),
             ...[...this._fontAssets.values()].map(e => e.filename),
+            ...[...this._tilesetAssets.values()].map(e => e.filename),
+            ...[...this._tilemapAssets.values()].map(e => e.filename),
         ];
     }
 
@@ -611,6 +649,48 @@ export class CodeGen {
                 if (stmt.name === 'setbackground' || stmt.name === 'drawbob') {
                     this._usesBobs = true;
                     this._usesImage = true;   // bobs.s calls _DrawImageFrame — image.s must be present
+                }
+                if (stmt.name === 'loadtileset') {
+                    this._usesTilemap = true;
+                    this._usesImage   = true; // tilemap.s calls _DrawImageFrame — image.s must be present
+                    const idxArg  = stmt.args[0];
+                    const fileArg = stmt.args[1];
+                    const wArg    = stmt.args[2];
+                    const hArg    = stmt.args[3];
+                    if (idxArg?.type !== 'int')
+                        throw new Error(`LoadTileset: slot muss ein Integer-Literal sein — Zeile ${stmt.line}`);
+                    if (fileArg?.type !== 'string')
+                        throw new Error(`LoadTileset: Dateiname muss ein String-Literal sein — Zeile ${stmt.line}`);
+                    if (wArg?.type !== 'int' || hArg?.type !== 'int')
+                        throw new Error(`LoadTileset: tileW und tileH müssen Integer-Literale sein — Zeile ${stmt.line}`);
+                    if (!this._tilesetAssets.has(idxArg.value)) {
+                        const lbl      = `_tileset_${this._tilesetAssets.size}`;
+                        const tileW    = wArg.value;
+                        const tileH    = hArg.value;
+                        const rowbytes = Math.ceil(Math.ceil(tileW / 8) / 2) * 2;
+                        this._tilesetAssets.set(idxArg.value, { filename: fileArg.value, label: lbl, tileW, tileH, rowbytes });
+                    }
+                }
+                if (stmt.name === 'loadtilemap') {
+                    this._usesTilemap = true;
+                    const idxArg  = stmt.args[0];
+                    const fileArg = stmt.args[1];
+                    if (idxArg?.type !== 'int')
+                        throw new Error(`LoadTilemap: slot muss ein Integer-Literal sein — Zeile ${stmt.line}`);
+                    if (fileArg?.type !== 'string')
+                        throw new Error(`LoadTilemap: Dateiname muss ein String-Literal sein — Zeile ${stmt.line}`);
+                    if (!this._tilemapAssets.has(idxArg.value)) {
+                        const lbl = `_tilemap_${this._tilemapAssets.size}`;
+                        this._tilemapAssets.set(idxArg.value, { filename: fileArg.value, label: lbl });
+                    }
+                }
+                if (stmt.name === 'drawtilemap' || stmt.name === 'settilemap') {
+                    this._usesTilemap = true;
+                    this._usesImage   = true;
+                }
+                if (stmt.name === 'settilemap') {
+                    // _bg_restore_fn and _bg_restore_tilemap live in bobs.s
+                    this._usesBobs = true;
                 }
                 for (const arg of stmt.args) {
                     this._collectVarsInExpr(arg, varSet);
@@ -1509,6 +1589,80 @@ export class CodeGen {
                     lines.push('        move.l  #0,a1');
                 }
                 lines.push('        jsr     _AddBob');
+                break;
+            }
+
+            case 'loadtileset':
+                // LoadTileset slot, "file.iraw", tw, th — data only; INCBIN at end of generate().
+                // Slot 0: apply the tileset's embedded palette at runtime (same as LoadImage 0).
+                if (stmt.args[0]?.type === 'int' && stmt.args[0].value === 0) {
+                    const tsEntry = this._tilesetAssets.get(0);
+                    if (tsEntry) {
+                        lines.push(`        lea     ${tsEntry.label},a0`);
+                        lines.push('        jsr     _SetImagePalette');
+                    }
+                }
+                break;
+
+            case 'loadtilemap':
+                // LoadTilemap slot, "file.bmap" — data only; INCBIN at end of generate().
+                // No runtime code needed; tilemap data is referenced by label in DrawTilemap.
+                break;
+
+            case 'drawtilemap': {
+                // DrawTilemap tmSlot, tsSlot, scrollX
+                //   tmSlot, tsSlot must be integer literals (resolved at compile time)
+                //   scrollX may be any expression
+                // Calling convention: _DrawTilemap(a0=tilemapPtr, a1=tilesetPtr, d0=scrollX)
+                const tmIdxArg = stmt.args[0];
+                const tsIdxArg = stmt.args[1];
+                if (!tmIdxArg || tmIdxArg.type !== 'int')
+                    throw new Error(`DrawTilemap: tmSlot must be an integer literal (line ${stmt.line})`);
+                if (!tsIdxArg || tsIdxArg.type !== 'int')
+                    throw new Error(`DrawTilemap: tsSlot must be an integer literal (line ${stmt.line})`);
+                const tmEntry = this._tilemapAssets.get(tmIdxArg.value);
+                if (!tmEntry)
+                    throw new Error(`DrawTilemap: tilemap slot ${tmIdxArg.value} not loaded — use LoadTilemap first (line ${stmt.line})`);
+                const tsEntry = this._tilesetAssets.get(tsIdxArg.value);
+                if (!tsEntry)
+                    throw new Error(`DrawTilemap: tileset slot ${tsIdxArg.value} not loaded — use LoadTileset first (line ${stmt.line})`);
+
+                const scrollExpr = stmt.args[2] ?? { type: 'int', value: 0 };
+                // Eval scrollX → d0 first (before any lea that might disturb a0)
+                this._genExpr(scrollExpr, lines);
+                // Save scroll position so _bg_restore_tilemap knows where we scrolled to
+                lines.push('        move.l  d0,_active_scroll_x');
+                // Load tilemap and tileset pointers (safe after expression eval)
+                lines.push(`        lea     ${tmEntry.label},a0`);
+                lines.push(`        lea     ${tsEntry.label},a1`);
+                lines.push('        jsr     _DrawTilemap');
+                break;
+            }
+
+            case 'settilemap': {
+                // SetTilemap tmSlot, tsSlot
+                //   Stores active tilemap/tileset pointers for _bg_restore_tilemap.
+                //   Installs _bg_restore_tilemap as the Bob restore function.
+                //   Both slots must be integer literals.
+                const tmIdxArg = stmt.args[0];
+                const tsIdxArg = stmt.args[1];
+                if (!tmIdxArg || tmIdxArg.type !== 'int')
+                    throw new Error(`SetTilemap: tmSlot must be an integer literal (line ${stmt.line})`);
+                if (!tsIdxArg || tsIdxArg.type !== 'int')
+                    throw new Error(`SetTilemap: tsSlot must be an integer literal (line ${stmt.line})`);
+                const tmEntry = this._tilemapAssets.get(tmIdxArg.value);
+                if (!tmEntry)
+                    throw new Error(`SetTilemap: tilemap slot ${tmIdxArg.value} not loaded — use LoadTilemap first (line ${stmt.line})`);
+                const tsEntry = this._tilesetAssets.get(tsIdxArg.value);
+                if (!tsEntry)
+                    throw new Error(`SetTilemap: tileset slot ${tsIdxArg.value} not loaded — use LoadTileset first (line ${stmt.line})`);
+
+                lines.push(`        lea     ${tmEntry.label},a0`);
+                lines.push('        move.l  a0,_active_tilemap_ptr');
+                lines.push(`        lea     ${tsEntry.label},a0`);
+                lines.push('        move.l  a0,_active_tileset_ptr');
+                lines.push('        lea     _bg_restore_tilemap,a0');
+                lines.push('        move.l  a0,_bg_restore_fn');
                 break;
             }
 

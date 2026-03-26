@@ -1,112 +1,42 @@
-; BASSM Demo — 16 Bobs, Wand- und Bob-Bob-Kollision
+; BASSM Demo — Boing! Ein Bob prallt von den Wänden ab.
 ;
-; 16 Bobs fliegen mit unterschiedlichen Geschwindigkeiten (dx/dy = 1 oder 2).
-; Wand-Kollision: Geschwindigkeit gespiegelt, Sound auf Kanal 0.
-; Bob-Bob-Kollision: 120 AABB-Paare per ImagesOverlap (inline, kein JSR),
-;   Geschwindigkeitstausch (elastischer Stoss), Sound auf Kanal 1.
-; Background-Restore via SetBackground — kein Fullscreen-Cls noetig.
-; Rasterbalken: animierter Rot/Cyan-Gradient per CopperColor.
+; DrawImage statt DrawBob: zeichnet direkt in den Backbuffer, ohne das
+; Bob-Queue-System (_AddBob/_FlushBobs) zu aktivieren. Mit Cls davor
+; garantiert sauberes Einzelbild ohne Ghosting.
 
 Graphics 320,256,3
 
 LoadSample 0, "sounds/boing.raw"
-LoadImage  0, "images/blob.raw",       16,  16
-LoadImage  1, "images/background.raw", 320, 256
+LoadImage  0, "images/blob.raw", 16, 16
 
-SetBackground 1
-
-Type Ball
-  Field x, y, dx, dy
-EndType
-
-Dim b.Ball(15)
-
-; Reihe 0 (y=20): x=0,80,160,240
-b(0)\x=0   : b(0)\y=20  : b(0)\dx=2  : b(0)\dy=1
-b(1)\x=80  : b(1)\y=20  : b(1)\dx=-1 : b(1)\dy=2
-b(2)\x=160 : b(2)\y=20  : b(2)\dx=2  : b(2)\dy=-1
-b(3)\x=240 : b(3)\y=20  : b(3)\dx=-2 : b(3)\dy=-2
-
-; Reihe 1 (y=75): x=16,96,176,256  (16px-Versatz verhindert sofortige Kollisionen)
-b(4)\x=16  : b(4)\y=75  : b(4)\dx=-2 : b(4)\dy=1
-b(5)\x=96  : b(5)\y=75  : b(5)\dx=1  : b(5)\dy=2
-b(6)\x=176 : b(6)\y=75  : b(6)\dx=-1 : b(6)\dy=-2
-b(7)\x=256 : b(7)\y=75  : b(7)\dx=2  : b(7)\dy=-1
-
-; Reihe 2 (y=130): x=0,80,160,240
-b(8)\x=0   : b(8)\y=130 : b(8)\dx=1  : b(8)\dy=-1
-b(9)\x=80  : b(9)\y=130 : b(9)\dx=-2 : b(9)\dy=1
-b(10)\x=160: b(10)\y=130: b(10)\dx=1 : b(10)\dy=2
-b(11)\x=240: b(11)\y=130: b(11)\dx=-1: b(11)\dy=-1
-
-; Reihe 3 (y=185): x=16,96,176,256
-b(12)\x=16 : b(12)\y=185: b(12)\dx=-1: b(12)\dy=2
-b(13)\x=96 : b(13)\y=185: b(13)\dx=2 : b(13)\dy=-1
-b(14)\x=176: b(14)\y=185: b(14)\dx=-2: b(14)\dy=-2
-b(15)\x=256: b(15)\y=185: b(15)\dx=1 : b(15)\dy=1
-
-hits = 0
-t = 0
+bx  = 64
+by  = 96
+bdx = 16
+bdy = 2
 
 While 1
   Cls
 
-  ; Rasterbalken: animierter Rot/Cyan-Gradient
-  t = t + 1
-  If t > 15 : t = 0 : EndIf
-  rc = t : gc = 15 - t
-  For line = 0 To 211
-    CopperColor line, rc, 0, gc
-    rc = rc + 1 : If rc > 15 : rc = 0 : EndIf
-    gc = gc - 1 : If gc < 0  : gc = 15 : EndIf
-  Next line
+  bx = bx + bdx
+  by = by + bdy
 
-  ; 16 Bobs bewegen, Wand-Kollision, in die Bob-Queue einreihen
-  For i = 0 To 15
-    b(i)\x = b(i)\x + b(i)\dx
-    b(i)\y = b(i)\y + b(i)\dy
+  If bx < 0
+    bx = 0 : bdx = -bdx
+    PlaySampleOnce 0, 0
+  EndIf
+  If bx > 304
+    bx = 304 : bdx = -bdx
+    PlaySampleOnce 0, 0
+  EndIf
+  If by < 0
+    by = 0 : bdy = -bdy
+    PlaySampleOnce 0, 0
+  EndIf
+  If by > 240
+    by = 240 : bdy = -bdy
+    PlaySampleOnce 0, 0
+  EndIf
 
-    If b(i)\x < 0
-      b(i)\x = 0 : b(i)\dx = -b(i)\dx
-      PlaySampleOnce 0, 0
-    EndIf
-    If b(i)\x > 304
-      b(i)\x = 304 : b(i)\dx = -b(i)\dx
-      PlaySampleOnce 0, 0
-    EndIf
-    If b(i)\y < 16
-      b(i)\y = 16 : b(i)\dy = -b(i)\dy
-      PlaySampleOnce 0, 0
-    EndIf
-    If b(i)\y > 220
-      b(i)\y = 220 : b(i)\dy = -b(i)\dy
-      PlaySampleOnce 0, 0
-    EndIf
-
-    DrawBob 0, b(i)\x And -16, b(i)\y
-  Next i
-
-  ; Bob-Bob Kollisionserkennung — 120 Paare (16*15/2), alle inline AABB
-  ; ImagesOverlap liest 16x16 aus dem Header zur Compile-Zeit
-  For i = 0 To 14
-    For j = i + 1 To 15
-      If ImagesOverlap(0, b(i)\x, b(i)\y, 0, b(j)\x, b(j)\y)
-        tmp = b(i)\dx : b(i)\dx = b(j)\dx : b(j)\dx = tmp
-        tmp = b(i)\dy : b(i)\dy = b(j)\dy : b(j)\dy = tmp
-        hits = hits + 1
-        PlaySampleOnce 0, 1
-      EndIf
-    Next j
-  Next i
-
-  ; HUD
-  Color 7
-  Text 8,   4, "BASSM  *  16 BOBS  *  AMIGA OCS"
-  Text 8, 236, "HITS: " + Str$(hits)
-
-  ; _FlushBobs automatisch injiziert:
-  ;   1. _bg_restore_static loescht 16x16x16 Bob-Bereiche aus background.raw
-  ;   2. Alle neuen Bobs zeichnen
+  DrawImage 0, bx, by
   ScreenFlip
-
 Wend

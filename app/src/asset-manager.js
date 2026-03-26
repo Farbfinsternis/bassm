@@ -12,6 +12,19 @@ let _imageSourceDir = '';     // project-relative dir of the source PNG ('' = pr
 let _lastIndices   = null;    // quantized pixel → palette index
 let _lastDepth     = 3;
 
+// ── Tileset state ──────────────────────────────────────────────────────────────
+let _tsImageData   = null;
+let _tsWidth       = 0;
+let _tsHeight      = 0;
+let _tsFilename    = '';
+let _tsLastIndices = null;
+let _tsLastDepth   = 3;
+let _tsRafHandle   = null;
+
+// ── Tilemap state ──────────────────────────────────────────────────────────────
+let _tmDetectedW = 0;
+let _tmDetectedH = 0;
+
 // rAF handle for debounced preview re-render
 let _rafHandle = null;
 function schedulePreview() {
@@ -427,6 +440,274 @@ async function onExportIFF() {
     }
 }
 
+// ── Tilesets ──────────────────────────────────────────────────────────────────
+
+/**
+ * Slice a palette-index array (imgW×imgH) into row-major tiles and stack
+ * them vertically into a new Uint8Array of size tileW × (nTiles × tileH).
+ * Tile order: left→right, top→bottom.
+ */
+function sliceAndStackTiles(indices, imgW, imgH, tileW, tileH) {
+    const cols   = Math.floor(imgW / tileW);
+    const rows   = Math.floor(imgH / tileH);
+    const nTiles = cols * rows;
+    const stacked = new Uint8Array(tileW * nTiles * tileH);
+    let dst = 0;
+    for (let tr = 0; tr < rows; tr++) {
+        for (let tc = 0; tc < cols; tc++) {
+            for (let py = 0; py < tileH; py++) {
+                for (let px = 0; px < tileW; px++) {
+                    stacked[dst++] = indices[(tr * tileH + py) * imgW + tc * tileW + px];
+                }
+            }
+        }
+    }
+    return { stacked, nTiles, totalH: nTiles * tileH };
+}
+
+function renderTilesetPreview() {
+    if (!_tsImageData) return;
+    const depth      = parseInt(document.getElementById('sel-ts-depth').value);
+    const tileW      = parseInt(document.getElementById('inp-ts-tw').value) || 16;
+    const tileH      = parseInt(document.getElementById('inp-ts-th').value) || 16;
+    const colorCount = Math.min(1 << depth, 32);
+
+    _tsLastDepth   = depth;
+    _tsLastIndices = quantizeWithDither(_tsImageData, _palette, colorCount, 'none');
+
+    // ── Original
+    const co = document.getElementById('canvas-ts-original');
+    co.width  = _tsWidth;
+    co.height = _tsHeight;
+    co.style.aspectRatio = `${_tsWidth} / ${_tsHeight}`;
+    co.getContext('2d').putImageData(_tsImageData, 0, 0);
+
+    // ── Quantised + tile grid overlay
+    const cc = document.getElementById('canvas-ts-converted');
+    cc.width  = _tsWidth;
+    cc.height = _tsHeight;
+    cc.style.aspectRatio = `${_tsWidth} / ${_tsHeight}`;
+    const ctx = cc.getContext('2d');
+    const out = ctx.createImageData(_tsWidth, _tsHeight);
+    for (let i = 0; i < _tsLastIndices.length; i++) {
+        const [r, g, b]  = ocsToRgb(_palette[_tsLastIndices[i]]);
+        out.data[i*4]    = r;
+        out.data[i*4+1]  = g;
+        out.data[i*4+2]  = b;
+        out.data[i*4+3]  = 255;
+    }
+    ctx.putImageData(out, 0, 0);
+    ctx.strokeStyle = 'rgba(255,0,255,0.5)';
+    ctx.lineWidth   = 0.5;
+    for (let x = tileW; x < _tsWidth; x += tileW) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, _tsHeight); ctx.stroke();
+    }
+    for (let y = tileH; y < _tsHeight; y += tileH) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(_tsWidth, y); ctx.stroke();
+    }
+
+    // ── Tile info
+    const cols   = Math.floor(_tsWidth / tileW);
+    const rows   = Math.floor(_tsHeight / tileH);
+    const nTiles = cols * rows;
+    document.getElementById('ts-tile-info').textContent =
+        `${cols}\u00d7${rows} = ${nTiles} tiles`;
+
+    // ── Fit quality
+    let totalErr = 0;
+    for (let i = 0; i < _tsLastIndices.length; i++) {
+        const ocs = _palette[_tsLastIndices[i]];
+        const pr  = (ocs >> 8) & 0xF;
+        const pg  = (ocs >> 4) & 0xF;
+        const pb  =  ocs       & 0xF;
+        const r4  = Math.round(_tsImageData.data[i*4]   / 255 * 15);
+        const g4  = Math.round(_tsImageData.data[i*4+1] / 255 * 15);
+        const b4  = Math.round(_tsImageData.data[i*4+2] / 255 * 15);
+        totalErr += Math.sqrt((r4-pr)**2 + (g4-pg)**2 + (b4-pb)**2);
+    }
+    const maxErr  = Math.sqrt(3 * 225) * _tsLastIndices.length;
+    const quality = Math.round((1 - totalErr / maxErr) * 100);
+    document.getElementById('ts-fit-quality').textContent = `Match: ${quality}%`;
+
+    updateActiveSlots(depth);
+    document.getElementById('btn-convert-tileset').disabled   = false;
+    document.getElementById('btn-copy-tileset-code').disabled = false;
+}
+
+function scheduleTilesetPreview() {
+    if (_tsRafHandle) cancelAnimationFrame(_tsRafHandle);
+    _tsRafHandle = requestAnimationFrame(() => { _tsRafHandle = null; renderTilesetPreview(); });
+}
+
+async function onTilesetDropped(file) {
+    if (!file) return;
+    const status = document.getElementById('ts-status');
+    status.textContent = `Loading ${file.name}\u2026`;
+    status.classList.remove('has-file');
+    try {
+        const { imageData, width, height } = await loadImageFile(file);
+        _tsImageData = imageData;
+        _tsWidth     = width;
+        _tsHeight    = height;
+        _tsFilename  = file.name.replace(/\.[^.]+$/, '') + '.iraw';
+
+        if (!_paletteIsSet) {
+            const depth      = parseInt(document.getElementById('sel-ts-depth').value);
+            const colorCount = Math.min(1 << depth, 32);
+            const generated  = medianCutPalette(imageData, colorCount);
+            for (let i = 0; i < 32; i++) _palette[i] = generated[i] ?? 0;
+            _paletteIsSet = true;
+            updatePaletteUI();
+        }
+
+        status.textContent = `${file.name} \u2014 ${width} \u00d7 ${height} px`;
+        status.classList.add('has-file');
+        renderTilesetPreview();
+        switchToTab('tilesets');
+    } catch (err) {
+        status.textContent = `Error: ${err.message}`;
+    }
+}
+
+async function onConvertAndSaveTileset() {
+    if (!_tsImageData || !_tsLastIndices) return;
+    const btn   = document.getElementById('btn-convert-tileset');
+    const tileW = parseInt(document.getElementById('inp-ts-tw').value) || 16;
+    const tileH = parseInt(document.getElementById('inp-ts-th').value) || 16;
+    btn.disabled    = true;
+    btn.textContent = 'Saving\u2026';
+
+    try {
+        const depth      = _tsLastDepth;
+        const colorCount = 1 << depth;
+
+        const { stacked, totalH } = sliceAndStackTiles(
+            _tsLastIndices, _tsWidth, _tsHeight, tileW, tileH);
+        const planes = toPlanarBitmapInterleaved(stacked, tileW, totalH, depth);
+
+        // Prepend OCS palette — identical layout to regular .iraw files
+        const raw = new Uint8Array(colorCount * 2 + planes.length);
+        for (let i = 0; i < colorCount; i++) {
+            raw[i * 2]     = (_palette[i] >> 8) & 0xFF;
+            raw[i * 2 + 1] =  _palette[i]       & 0xFF;
+        }
+        raw.set(planes, colorCount * 2);
+
+        const defaultPath = [
+            _projectDir ? _projectDir.replace(/\\/g, '/') : null,
+            _tsFilename,
+        ].filter(Boolean).join('/');
+
+        const result = await window.assetAPI.saveAssetWithDialog({
+            defaultPath,
+            filters: [{ name: 'Amiga Interleaved Tileset', extensions: ['iraw'] }],
+            data: Array.from(raw),
+        });
+        if (!result.saved) { btn.disabled = false; btn.textContent = 'Convert & Save'; return; }
+
+        btn.textContent = 'Saved!';
+        setTimeout(() => { btn.textContent = 'Convert & Save'; btn.disabled = false; }, 1500);
+        if (_projectDir) window.assetAPI.listAssets({ projectDir: _projectDir }).then(renderAssetTree).catch(() => {});
+    } catch (err) {
+        btn.textContent = 'Error!';
+        setTimeout(() => { btn.textContent = 'Convert & Save'; btn.disabled = false; }, 2000);
+        console.error('[A-MGR Tileset]', err);
+    }
+}
+
+function onCopyTilesetCode() {
+    if (!_tsImageData) return;
+    const tileW = parseInt(document.getElementById('inp-ts-tw').value) || 16;
+    const tileH = parseInt(document.getElementById('inp-ts-th').value) || 16;
+    const code  = `LoadTileset 0, "${_tsFilename}", ${tileW}, ${tileH}`;
+    navigator.clipboard.writeText(code).catch(() => {});
+    const btn = document.getElementById('btn-copy-tileset-code');
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy Code'; }, 1200);
+}
+
+// ── Tilemaps ──────────────────────────────────────────────────────────────────
+
+function parseTilemapCSV(csvText) {
+    if (!csvText.trim()) return null;
+    const rows = csvText.trim().split(/\r?\n/).map(r =>
+        r.split(',').map(v => parseInt(v.trim(), 10) || 0)
+    );
+    const mapH = rows.length;
+    const mapW = Math.max(...rows.map(r => r.length));
+    if (mapW < 1 || mapH < 1) return null;
+    return { rows, mapW, mapH };
+}
+
+function csvToBmap(rows, mapW, mapH, tileW, tileH) {
+    const buf  = new Uint8Array(8 + mapW * mapH * 2);
+    const view = new DataView(buf.buffer);
+    view.setUint16(0, mapW,  false);
+    view.setUint16(2, mapH,  false);
+    view.setUint16(4, tileW, false);
+    view.setUint16(6, tileH, false);
+    let off = 8;
+    for (const row of rows) {
+        for (let c = 0; c < mapW; c++) {
+            view.setUint16(off, row[c] ?? 0, false);
+            off += 2;
+        }
+    }
+    return buf;
+}
+
+function onTilemapCSVInput() {
+    const parsed  = parseTilemapCSV(document.getElementById('tm-csv').value);
+    const info    = document.getElementById('tm-map-info');
+    info.textContent = parsed
+        ? `Detected: ${parsed.mapW} \u00d7 ${parsed.mapH} tiles`
+        : '';
+    document.getElementById('btn-convert-tilemap').disabled   = !parsed;
+    document.getElementById('btn-copy-tilemap-code').disabled = !parsed;
+}
+
+async function onConvertAndSaveTilemap() {
+    const csv    = document.getElementById('tm-csv').value;
+    const tileW  = parseInt(document.getElementById('inp-tm-tw').value) || 16;
+    const tileH  = parseInt(document.getElementById('inp-tm-th').value) || 16;
+    const parsed = parseTilemapCSV(csv);
+    if (!parsed) return;
+
+    const btn = document.getElementById('btn-convert-tilemap');
+    btn.disabled    = true;
+    btn.textContent = 'Saving\u2026';
+
+    try {
+        const data        = csvToBmap(parsed.rows, parsed.mapW, parsed.mapH, tileW, tileH);
+        const defaultPath = [
+            _projectDir ? _projectDir.replace(/\\/g, '/') : null,
+            'map.bmap',
+        ].filter(Boolean).join('/');
+
+        const result = await window.assetAPI.saveAssetWithDialog({
+            defaultPath,
+            filters: [{ name: 'BASSM Tilemap', extensions: ['bmap'] }],
+            data: Array.from(data),
+        });
+        if (!result.saved) { btn.disabled = false; btn.textContent = 'Convert & Save'; return; }
+
+        btn.textContent = 'Saved!';
+        setTimeout(() => { btn.textContent = 'Convert & Save'; btn.disabled = false; }, 1500);
+    } catch (err) {
+        btn.textContent = 'Error!';
+        setTimeout(() => { btn.textContent = 'Convert & Save'; btn.disabled = false; }, 2000);
+        console.error('[A-MGR Tilemap]', err);
+    }
+}
+
+function onCopyTilemapCode() {
+    const code = `LoadTilemap 0, "map.bmap"`;
+    navigator.clipboard.writeText(code).catch(() => {});
+    const btn = document.getElementById('btn-copy-tilemap-code');
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy Code'; }, 1200);
+}
+
 // ── Global drag-and-drop (whole window, no fixed drop zone) ───────────────────
 const _dropOverlay     = document.getElementById('drop-overlay');
 const _dropOverlayHint = document.getElementById('drop-overlay-hint');
@@ -438,6 +719,8 @@ document.addEventListener('dragenter', e => {
         const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab;
         _dropOverlayHint.textContent = activeTab === 'sounds'
             ? 'Drop WAV / MP3 / OGG'
+            : activeTab === 'tilesets'
+            ? 'Drop PNG sprite sheet'
             : 'Drop PNG / JPEG / BMP';
         _dropOverlay.classList.add('active');
     }
@@ -457,8 +740,13 @@ document.addEventListener('drop', e => {
     if (!file) return;
     const ext = '.' + file.name.split('.').pop().toLowerCase();
     if (SOURCE_IMAGE_EXTS.has(ext)) {
-        _imageSourceDir = '';
-        onImageDropped(file);
+        const activeTab = document.querySelector('.tab-btn.active')?.dataset.tab;
+        if (activeTab === 'tilesets') {
+            onTilesetDropped(file);
+        } else {
+            _imageSourceDir = '';
+            onImageDropped(file);
+        }
     } else if (SOURCE_SOUND_EXTS.has(ext)) {
         onSoundDropped(file);
     }
@@ -585,5 +873,17 @@ if (window.assetAPI) {
         }
     });
 }
+
+// ── Tileset controls wiring ───────────────────────────────────────────────────
+document.getElementById('sel-ts-depth').addEventListener('change', () => { if (_tsImageData) scheduleTilesetPreview(); });
+document.getElementById('inp-ts-tw')   .addEventListener('input',  () => { if (_tsImageData) scheduleTilesetPreview(); });
+document.getElementById('inp-ts-th')   .addEventListener('input',  () => { if (_tsImageData) scheduleTilesetPreview(); });
+document.getElementById('btn-convert-tileset')  .addEventListener('click', onConvertAndSaveTileset);
+document.getElementById('btn-copy-tileset-code').addEventListener('click', onCopyTilesetCode);
+
+// ── Tilemap controls wiring ───────────────────────────────────────────────────
+document.getElementById('tm-csv')              .addEventListener('input', onTilemapCSVInput);
+document.getElementById('btn-convert-tilemap')  .addEventListener('click', onConvertAndSaveTilemap);
+document.getElementById('btn-copy-tilemap-code').addEventListener('click', onCopyTilemapCode);
 
 applyProject(null);
