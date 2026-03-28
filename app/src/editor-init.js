@@ -74,8 +74,8 @@ require(['vs/editor/editor.main'], function () {
           doc: 'Load an interleaved tileset (.iraw). Tiles are tileW×tileH pixels, stacked vertically (same format as LoadAnimImage).' },
         { label: 'LoadTilemap',    insertText: 'LoadTilemap ${1:0}, "${2:map.bmap}"',                      detail: 'slot, file',
           doc: 'Load a binary tilemap (.bmap). Header: mapW, mapH, tileW, tileH — followed by mapW×mapH tile indices (0-based words).' },
-        { label: 'DrawTilemap',    insertText: 'DrawTilemap ${1:0}, ${2:0}, ${3:scrollX}',                 detail: 'tmSlot, tsSlot, scrollX',
-          doc: 'Render the visible portion of the tilemap into the back buffer. scrollX is in pixels (0..mapW×tileW−1). Fine scroll via BPLCON1.' },
+        { label: 'DrawTilemap',    insertText: 'DrawTilemap ${1:0}, ${2:0}, ${3:scrollX}, ${4:scrollY}',  detail: 'tmSlot, tsSlot, scrollX, scrollY',
+          doc: 'Render the visible portion of the tilemap into the back buffer. scrollX/scrollY are camera position in pixels. Fine X via BPLCON1, fine Y via BPLxPT offset.' },
         { label: 'SetTilemap',     insertText: 'SetTilemap ${1:0}, ${2:0}',                                detail: 'tmSlot, tsSlot',
           doc: 'Register the tilemap as the Bob background. Installs _bg_restore_tilemap so DrawBob correctly redraws tiles behind bobs.' },
         // Sound

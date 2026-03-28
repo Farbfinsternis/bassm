@@ -16,6 +16,7 @@ class BASSM {
     constructor() {
         this._preProcessor = new PreProcessor();
         this._parser       = new Parser();
+        this._parser.onError = _setErrorMarker;
         this._codegen      = new CodeGen();
         this._peephole     = new Peephole();
         this._lexer        = null;  // created after async config load
@@ -33,6 +34,7 @@ class BASSM {
             commands.map(c => c.name),  // e.g. ['Graphics', 'Cls', 'Color', …]
             keywords                    // e.g. ['If', 'Then', 'While', …]
         );
+        this._lexer.onError = _setErrorMarker;
 
         return this;
     }
@@ -112,6 +114,8 @@ function logLine(text, cls = '') {
 
 // ── Monaco error markers ───────────────────────────────────────────────────────
 
+let _currentErrors = [];
+
 function _setErrorMarker(message) {
     const ed = window._monacoEditor;
     if (!ed || !window.monaco) return;
@@ -122,19 +126,22 @@ function _setErrorMarker(message) {
     const m = /(?:line|Zeile)\s+(\d+)/i.exec(message);
     const lineNumber = m ? parseInt(m[1]) : 1;
     const lineCount  = model.getLineCount();
-    const safeeLine  = Math.min(Math.max(lineNumber, 1), lineCount);
+    const safeLine   = Math.min(Math.max(lineNumber, 1), lineCount);
 
-    window.monaco.editor.setModelMarkers(model, 'bassm', [{
-        startLineNumber: safeeLine,
-        endLineNumber:   safeeLine,
+    _currentErrors.push({
+        startLineNumber: safeLine,
+        endLineNumber:   safeLine,
         startColumn:     1,
-        endColumn:       model.getLineMaxColumn(safeeLine),
+        endColumn:       model.getLineMaxColumn(safeLine),
         message,
         severity:        window.monaco.MarkerSeverity.Error,
-    }]);
+    });
+
+    window.monaco.editor.setModelMarkers(model, 'bassm', _currentErrors);
 }
 
 function _clearMarkers() {
+    _currentErrors = [];
     const ed = window._monacoEditor;
     if (!ed || !window.monaco) return;
     const model = ed.getModel();
@@ -1046,6 +1053,7 @@ bassm.init()
         btnRun.addEventListener('click', async () => {
             const source = window._monacoEditor.getValue();
             console_.innerHTML = '';
+            _clearMarkers();
             btnRun.disabled = true;
             status.textContent = 'Compiling…';
 

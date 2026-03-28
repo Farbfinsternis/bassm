@@ -222,19 +222,50 @@
       document.getElementById('btn-halt').onclick  = () => { Module._wasm_halt(); stop_raf = true; statusEl.textContent = 'Halted'; };
       document.getElementById('btn-reset').onclick = () => { Module._wasm_reset(); statusEl.textContent = 'Reset'; };
 
+      // ── Keyboard input ───────────────────────────────────────────────
+      window.wasm_schedule_key = Module.cwrap('wasm_schedule_key', 'undefined', ['number', 'number', 'number', 'number']);
+      
+      window.addEventListener('keydown', (e) => {
+        if(e.repeat) return;
+        if(typeof translateKey2 === 'function') {
+          var key_code = translateKey2(e.code, e.key);
+          if(key_code !== undefined && key_code.raw_key[0] !== undefined) {
+               e.preventDefault();
+               if(key_code.modifier != null) window.wasm_schedule_key(key_code.modifier[0], key_code.modifier[1], 1, 0);
+               window.wasm_schedule_key(key_code.raw_key[0], key_code.raw_key[1], 1, 0);
+          }
+        }
+      });
+
+      window.addEventListener('keyup', (e) => {
+        if(typeof translateKey2 === 'function') {
+          var key_code = translateKey2(e.code, e.key);
+          if(key_code !== undefined && key_code.raw_key[0] !== undefined) {
+               e.preventDefault();
+               window.wasm_schedule_key(key_code.raw_key[0], key_code.raw_key[1], 0, 1);
+               if(key_code.modifier != null) window.wasm_schedule_key(key_code.modifier[0], key_code.modifier[1], 0, 1);
+          }
+        }
+      });
+
       // ── Mouse input → Amiga port 1 ────────────────────────────────────
       let _prevMouseX = null, _prevMouseY = null;
       canvas.addEventListener('mousemove', (e) => {
         if (!Module._wasm_mouse) return;
         if (_prevMouseX !== null) {
           const dx = e.clientX - _prevMouseX, dy = e.clientY - _prevMouseY;
-          if (dx !== 0 || dy !== 0) Module._wasm_mouse(0, dx, dy);
+          if (dx !== 0 || dy !== 0) Module._wasm_mouse(1, dx, dy);
         }
         _prevMouseX = e.clientX; _prevMouseY = e.clientY;
       });
       canvas.addEventListener('mouseleave', () => { _prevMouseX = null; _prevMouseY = null; });
-      canvas.addEventListener('mousedown', (e) => { if (Module._wasm_mouse_button) Module._wasm_mouse_button(0, e.button === 2 ? 1 : 0, 1); });
-      canvas.addEventListener('mouseup',   (e) => { if (Module._wasm_mouse_button) Module._wasm_mouse_button(0, e.button === 2 ? 1 : 0, 0); });
+      canvas.addEventListener('mousedown', (e) => { 
+        canvas.focus();
+        if (Module._wasm_mouse_button) Module._wasm_mouse_button(1, e.button === 2 ? 1 : 0, 1); 
+      });
+      canvas.addEventListener('mouseup',   (e) => { 
+        if (Module._wasm_mouse_button) Module._wasm_mouse_button(1, e.button === 2 ? 1 : 0, 0); 
+      });
 
       // ── Electron IPC bridge ─────────────────────────────────────────────
       if (window.electronAPI) window.electronAPI.onCommand((cmd) => handleCommand(cmd));
@@ -305,6 +336,7 @@
     };
   </script>
 
+  <script src="../vAmigaWeb/js/vAmiga_keyboard.js"></script>
   <script async src=vAmiga.js></script>
 </body>
 </html>

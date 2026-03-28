@@ -55,6 +55,15 @@ import { TT } from './lexer.js';
 
 export class Parser {
 
+    constructor() {
+        this.onError = null;
+    }
+
+    _warn(msg) {
+        if (this.onError) this.onError(msg);
+        else console.warn(msg);
+    }
+
     /**
      * @param {{ type, value, line }[]} tokens  Output of Lexer.tokenize()
      * @returns {object[]}  Array of statement AST nodes
@@ -269,6 +278,7 @@ export class Parser {
             if (this._peek().type === TT.EOF) break;
             const tok = this._peek();
             if (tok.type === TT.KEYWORD && tok.value === 'endtype') break;
+            if (tok.type === TT.COMMAND && tok.value === 'end' && this._peekAt(1)?.value === 'type') break;
             if (tok.type === TT.KEYWORD && tok.value === 'field') {
                 this._advance();                    // consume 'field'
                 while (!this._atEnd() &&
@@ -287,9 +297,11 @@ export class Parser {
 
         if (this._peek().type === TT.KEYWORD && this._peek().value === 'endtype') {
             this._advance();                        // consume 'endtype'
+        } else if (this._peek().type === TT.COMMAND && this._peek().value === 'end' && this._peekAt(1)?.value === 'type') {
+            this._advance(); this._advance();       // consume 'end' 'type'
         } else {
             const t = this._peek();
-            console.warn(`[Parser] Expected EndType but got '${t?.value}' on line ${t?.line}`);
+            this._warn(`[Parser] Expected EndType but got '${t?.value}' on line ${t?.line}`);
         }
         this._skipToNewline();
 
@@ -809,8 +821,13 @@ export class Parser {
         const thenBody = this._parseBlock(['elseif', 'else', 'endif']);
 
         const elseIfs = [];
-        while (this._peek().type === TT.KEYWORD && this._peek().value === 'elseif') {
-            this._advance();                        // consume 'elseif'
+        while ((this._peek().type === TT.KEYWORD && this._peek().value === 'elseif') ||
+               (this._peek().type === TT.KEYWORD && this._peek().value === 'else' && this._peekAt(1)?.value === 'if')) {
+            if (this._peek().value === 'elseif') {
+                this._advance();                        // consume 'elseif'
+            } else {
+                this._advance(); this._advance();       // consume 'else' 'if'
+            }
             const eiCond = this._parseExpr();
             this._skipToNewline();
             const eiBody = this._parseBlock(['elseif', 'else', 'endif']);
@@ -826,9 +843,11 @@ export class Parser {
 
         if (this._peek().type === TT.KEYWORD && this._peek().value === 'endif') {
             this._advance();                        // consume 'endif'
+        } else if (this._peek().type === TT.COMMAND && this._peek().value === 'end' && this._peekAt(1)?.value === 'if') {
+            this._advance(); this._advance();       // consume 'end' 'if'
         } else {
             const t = this._peek();
-            console.warn(`[Parser] Expected EndIf but got '${t?.value}' on line ${t?.line}`);
+            this._warn(`[Parser] Expected EndIf but got '${t?.value}' on line ${t?.line}`);
         }
         this._skipToNewline();
 
@@ -980,6 +999,18 @@ export class Parser {
             if (this._peek().type === TT.EOF)     break;
             const tok = this._peek();
             if (tok.type === TT.KEYWORD && stopKeywords.includes(tok.value)) break;
+
+            if (tok.type === TT.COMMAND && tok.value === 'end') {
+                const nTok = this._peekAt(1);
+                if (nTok && nTok.type === TT.KEYWORD) {
+                    if (nTok.value === 'if' && stopKeywords.includes('endif')) break;
+                    if (nTok.value === 'select' && stopKeywords.includes('endselect')) break;
+                }
+            } else if (tok.type === TT.KEYWORD && tok.value === 'else') {
+                const nTok = this._peekAt(1);
+                if (nTok && nTok.type === TT.KEYWORD && nTok.value === 'if' && stopKeywords.includes('elseif')) break;
+            }
+
             const stmt = this._parseStatement();
             if (stmt !== null) stmts.push(stmt);
         }
@@ -1008,7 +1039,11 @@ export class Parser {
             if (this._peek().type === TT.NEWLINE) { this._advance(); continue; }
             if (this._peek().type === TT.EOF)     break;
 
-            const tok = this._peek();
+            let tok = this._peek();
+            if (tok.type === TT.COMMAND && tok.value === 'end' && this._peekAt(1)?.value === 'select') {
+                this._advance(); // consume 'end'
+                tok = { type: TT.KEYWORD, value: 'endselect', line: tok.line };
+            }
             if (tok.type !== TT.KEYWORD) { this._advance(); continue; } // skip junk
 
             switch (tok.value) {
@@ -1049,9 +1084,11 @@ export class Parser {
 
         if (this._peek().type === TT.KEYWORD && this._peek().value === 'endselect') {
             this._advance();                        // consume 'endselect'
+        } else if (this._peek().type === TT.COMMAND && this._peek().value === 'end' && this._peekAt(1)?.value === 'select') {
+            this._advance(); this._advance();       // consume 'end' 'select'
         } else {
             const t = this._peek();
-            console.warn(`[Parser] Expected EndSelect but got '${t?.value}' on line ${t?.line}`);
+            this._warn(`[Parser] Expected EndSelect but got '${t?.value}' on line ${t?.line}`);
         }
         this._skipToNewline();
 

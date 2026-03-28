@@ -67,6 +67,7 @@ export class Lexer {
         // Store both sets as lowercase for case-insensitive matching
         this._commands = new Set(commandNames.map(n => n.toLowerCase()));
         this._keywords = new Set(keywordNames.map(n => n.toLowerCase()));
+        this.onError = null;
     }
 
     /**
@@ -169,7 +170,13 @@ export class Lexer {
     _readString() {
         this._pos++; // skip opening "
         let s = '';
-        while (this._pos < this._src.length && this._cur() !== '"' && this._cur() !== '\n') {
+        while (this._pos < this._src.length && this._cur() !== '\n') {
+            if (this._cur() === '\\' && this._peek1() === '"') {
+                s += '\\"';
+                this._pos += 2;
+                continue;
+            }
+            if (this._cur() === '"') break;
             s += this._src[this._pos++];
         }
         if (this._cur() === '"') this._pos++; // skip closing "
@@ -244,7 +251,9 @@ export class Lexer {
             case '\\': this._emit(TT.BACKSLASH, '\\'); break;
             default:
                 // Unknown character — skip with a console warning
-                console.warn(`[Lexer] Unexpected character '${c}' on line ${this._line}`);
+                const msg = `[Lexer] Unexpected character '${c}' on line ${this._line}`;
+                if (this.onError) this.onError(msg);
+                else console.warn(msg);
         }
     }
 }

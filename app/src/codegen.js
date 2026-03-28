@@ -81,6 +81,11 @@ export class CodeGen {
         this._tilesetAssets = new Map();  // slot (int) → { filename, label, tileW, tileH, rowbytes }
         this._tilemapAssets = new Map();  // slot (int) → { filename, label }
 
+        this._initStatementHandlers();
+        this._initCommandHandlers();
+        this._initBuiltinHandlers();
+        this._initCollectHandlers();
+
         // ── Collect Const definitions first (pre-pass, before _collectVars) ───
         for (const stmt of ast) {
             if (stmt && stmt.type === 'const_def') this._consts.set(stmt.name, stmt.value);
@@ -131,105 +136,10 @@ export class CodeGen {
         out.push('; ============================================================');
         out.push('');
 
-        // Overscan border: 32px on every side — drawing area larger than display
-        const GFXBORDER = 32;
-        const GFXBPR_val = Math.floor((W + GFXBORDER * 2) / 8);
-        const bplmod    = GFXBPR_val * D - Math.floor(W / 8); // interleaved: GFXIBPR-GFXDBPR
+        this._emitEQUs(out, W, H, D, bplcon0, vStart, diwstrt, diwstop, ddfstrt, ddfstop);
+        this._emitIncludes(out);
 
-        // EQUs
-        out.push(`${pad('GFXWIDTH',12)} EQU ${W}`);
-        out.push(`${pad('GFXHEIGHT',12)} EQU ${H}`);
-        out.push(`${pad('GFXDEPTH',12)} EQU ${D}`);
-        out.push(`${pad('GFXBORDER',12)} EQU ${GFXBORDER}`);
-        out.push(`${pad('GFXVWIDTH',12)} EQU (GFXWIDTH+GFXBORDER*2)`);
-        out.push(`${pad('GFXVHEIGHT',12)} EQU (GFXHEIGHT+GFXBORDER*2)`);
-        out.push(`${pad('GFXBPR',12)} EQU (GFXVWIDTH/8)`);
-        out.push(`${pad('GFXDBPR',12)} EQU (GFXWIDTH/8)`);
-        out.push(`${pad('GFXIBPR',12)} EQU (GFXBPR*GFXDEPTH)`);
-        out.push(`${pad('GFXBPLMOD',12)} EQU (GFXIBPR-GFXDBPR)`);
-        out.push(`${pad('GFXPSIZE',12)} EQU (GFXBPR*GFXVHEIGHT)`);
-        out.push(`${pad('GFXBUFSIZE',12)} EQU (GFXPSIZE*GFXDEPTH)`);
-        out.push(`${pad('GFXPLANEOFS',12)} EQU (GFXBORDER*GFXIBPR+GFXBORDER/8)`);
-        out.push(`${pad('GFXCOLORS',12)} EQU (1<<GFXDEPTH)`);
-        out.push(`${pad('GFXBPLCON0',12)} EQU $${hex(bplcon0)}`);
-        out.push(`${pad('GFXDIWSTRT',12)} EQU $${hex(diwstrt)}`);
-        out.push(`${pad('GFXDIWSTOP',12)} EQU $${hex(diwstop)}`);
-        out.push(`${pad('GFXDDFSTRT',12)} EQU $${hex(ddfstrt)}`);
-        out.push(`${pad('GFXDDFSTOP',12)} EQU $${hex(ddfstop)}`);
-        if (this._usesRaster) {
-            const maxLines = Math.min(H, 256 - vStart);
-            out.push(`${pad('GFXRASTER',12)} EQU ${maxLines}`);
-        }
-        if (this._usesBobs) {
-            out.push(`${pad('BOBS_MAX',12)} EQU 32`);
-        }
-        out.push('');
-
-        // Fragment INCLUDEs
-        out.push('        INCLUDE "startup.s"');
-        out.push('        INCLUDE "offload.s"');
-        out.push('        INCLUDE "graphics.s"');
-        out.push('        INCLUDE "cls.s"');
-        out.push('        INCLUDE "clscolor.s"');
-        out.push('        INCLUDE "color.s"');
-        out.push('        INCLUDE "palette.s"');
-        out.push('        INCLUDE "text.s"');
-        out.push('        INCLUDE "plot.s"');
-        out.push('        INCLUDE "line.s"');
-        out.push('        INCLUDE "rect.s"');
-        out.push('        INCLUDE "box.s"');
-        out.push('        INCLUDE "waitkey.s"');
-        out.push('        INCLUDE "flip.s"');
-        if (this._usesRaster) {
-            out.push('        INCLUDE "copper_raster.s"');
-        }
-        if (this._usesSound) {
-            out.push('        INCLUDE "sound.s"');
-        }
-        if (this._usesImage || this._usesBobs) {
-            out.push('        INCLUDE "image.s"');
-        }
-        if (this._usesBobs) {
-            out.push('        INCLUDE "bobs.s"');
-        }
-        if (this._usesRnd) {
-            out.push('        INCLUDE "rnd.s"');
-        }
-        if (this._usesMouse) {
-            out.push('        INCLUDE "mouse.s"');
-        }
-        if (this._usesTilemap) {
-            out.push('        INCLUDE "tilemap.s"');
-        }
-        out.push('');
-        out.push('        even');
-        out.push('');
-
-        // _setup_graphics subroutine
-        out.push('        SECTION gfx_init,CODE');
-        out.push('');
-        out.push('_setup_graphics:');
-        out.push('        lea     _gfx_cop_a_bpl_table,a0');
-        out.push('        move.l  _gfx_planes,a1');
-        out.push('        add.l   #GFXPLANEOFS,a1');   // offset to visible origin
-        out.push('        moveq   #GFXDEPTH,d0');
-        out.push('        move.l  #GFXBPR,d1');
-        out.push('        jsr     _PatchBitplanePtrs');
-        out.push('        lea     _gfx_cop_b_bpl_table,a0');
-        out.push('        move.l  _gfx_planes_b,a1');
-        out.push('        add.l   #GFXPLANEOFS,a1');   // offset to visible origin
-        out.push('        moveq   #GFXDEPTH,d0');
-        out.push('        move.l  #GFXBPR,d1');
-        out.push('        jsr     _PatchBitplanePtrs');
-        out.push('        lea     _gfx_copper_a,a0');
-        out.push('        jsr     _InstallCopper');
-        out.push('        jsr     _InitPalette');
-        out.push('        move.l  _gfx_planes_b,a0');
-        out.push('        add.l   #GFXPLANEOFS,a0');   // _back_planes_ptr = visible origin
-        out.push('        move.l  a0,_back_planes_ptr');
-        out.push('        clr.b   _front_is_a');
-        out.push('        rts');
-        out.push('');
+        this._emitSetupGraphics(out);
 
         // _main_program
         out.push('');
@@ -256,230 +166,11 @@ export class CodeGen {
         }
 
         // ── DATA & BSS SECTIONS (Must come after CODE for WinUAE compatibility) ──
-
-        // User variable BSS — one longword per scalar integer variable
-        if (varNames.size > 0 || this._arrays.size > 0 || this._typeInstances.size > 0 || this._usesData || this._usesTilemap) {
-            out.push('        SECTION user_vars,BSS');
-            for (const name of varNames) {
-                out.push(`_var_${name}:    ds.l    1`);
-            }
-            if (this._usesData) {
-                out.push('_data_ptr:      ds.l    1');
-            }
-            if (this._usesTilemap) {
-                out.push('_active_tilemap_ptr: ds.l    1');
-                out.push('_active_tileset_ptr: ds.l    1');
-                out.push('_active_scroll_x:    ds.l    1');
-            }
-            // Arrays: Dim arr(n) → n+1 longwords (indices 0..n, Blitz2D-compatible)
-            // N-dimensional arrays: Dim arr(d0[, d1[, ...]]) → (d0+1)*…*(dn+1) longwords
-            for (const [name, dims] of this._arrays) {
-                for (const d of dims) {
-                    if (d.type !== 'int') throw new Error(`Dim ${name}: array sizes must be integer literals`);
-                }
-                const count = dims.reduce((acc, d) => acc * (d.value + 1), 1);
-                out.push(`_arr_${name}:    ds.l    ${count}`);
-            }
-            // Type instances: AoS layout — fieldCount longwords per instance
-            for (const [instName, inst] of this._typeInstances) {
-                const typeDef = this._typeDefs.get(inst.typeName);
-                if (!typeDef) throw new Error(`Undeclared type '${inst.typeName}' for Dim ${instName}`);
-                if (inst.isArray) {
-                    if (!inst.size || inst.size.type !== 'int')
-                        throw new Error(`Dim ${instName}: typed array size must be an integer literal`);
-                    const count = inst.size.value + 1;   // 0..n inclusive
-                    out.push(`_tinst_${instName}:    ds.l    ${count * typeDef.fields.length}`);
-                } else {
-                    out.push(`_tinst_${instName}:    ds.l    ${typeDef.fields.length}`);
-                }
-            }
-            out.push('');
-        }
-
-        // User Data table — flat dc.l entries, one per Data statement (in source order)
-        if (this._usesData) {
-            out.push('        SECTION user_data,DATA');
-            out.push('_data_start:');
-            for (const stmt of this._dataStmts) {
-                if (stmt.label) {
-                    out.push(`_data_label_${stmt.label}:`);
-                }
-                if (stmt.values.length > 0) {
-                    const vals = stmt.values.map(v => this._evalDataValue(v, stmt.line));
-                    out.push(`        dc.l    ${vals.join(', ')}`);
-                }
-            }
-            if (this._dataStmts.length === 0) {
-                out.push('        dc.l    0                       ; placeholder — no Data statements');
-            }
-            out.push('');
-        }
-
-        // Bitplane buffer pointer variables live in startup.s BSS (_gfx_planes / _gfx_planes_b).
-        // The actual chip RAM data (BSS_C) is emitted below; startup.s sets the pointers via lea.
-
-        // Helper: emit display-setup copper moves (shared header for both lists)
-        const emitCopHeader = () => {
-            out.push(copMove(0x008E, diwstrt, 'DIWSTRT'));
-            out.push(copMove(0x0090, diwstop, 'DIWSTOP'));
-            out.push(copMove(0x0092, ddfstrt, 'DDFSTRT'));
-            out.push(copMove(0x0094, ddfstop, 'DDFSTOP'));
-            out.push(copMove(0x0100, bplcon0, 'BPLCON0'));
-            out.push(copMove(0x0102, 0x0000,  'BPLCON1'));
-            out.push(copMove(0x0104, 0x0000,  'BPLCON2'));
-            out.push(copMove(0x0108, bplmod,  'BPL1MOD (interleaved)'));
-            out.push(copMove(0x010A, bplmod,  'BPL2MOD (interleaved)'));
-        };
-
-        // Chip-RAM DATA — copper list A (bitplane pointers → buffer A)
-        out.push('        SECTION gfx_copper,DATA_C');
-        out.push('_gfx_copper_a:');
-        emitCopHeader();
-        out.push('_gfx_cop_a_bpl_table:');
-        for (let i = 0; i < D; i++) {
-            const [pth, ptl] = BPL_PTR_REGS[i];
-            out.push(copMove(pth, 0, `BPL${i+1}PTH`));
-            out.push(copMove(ptl, 0, `BPL${i+1}PTL`));
-        }
-        if (this._usesRaster) {
-            const maxLines = Math.min(H, 256 - vStart);
-            out.push('        XDEF    _gfx_raster_a');
-            out.push('_gfx_raster_a:');
-            for (let y = 0; y < maxLines; y++) {
-                const vpos = vStart + y;
-                out.push(`        dc.w    $${hex((vpos << 8) | 0x01)},$FF00`);
-                out.push(`        dc.w    $0180,$0000`);
-            }
-        }
-        out.push('        dc.w    $FFFF,$FFFE             ; END of copper list A');
-        out.push('');
-
-        // Chip-RAM DATA — copper list B (bitplane pointers → buffer B)
-        out.push('_gfx_copper_b:');
-        emitCopHeader();
-        out.push('_gfx_cop_b_bpl_table:');
-        for (let i = 0; i < D; i++) {
-            const [pth, ptl] = BPL_PTR_REGS[i];
-            out.push(copMove(pth, 0, `BPL${i+1}PTH`));
-            out.push(copMove(ptl, 0, `BPL${i+1}PTL`));
-        }
-        if (this._usesRaster) {
-            const maxLines = Math.min(H, 256 - vStart);
-            out.push('        XDEF    _gfx_raster_b');
-            out.push('_gfx_raster_b:');
-            for (let y = 0; y < maxLines; y++) {
-                const vpos = vStart + y;
-                out.push(`        dc.w    $${hex((vpos << 8) | 0x01)},$FF00`);
-                out.push(`        dc.w    $0180,$0000`);
-            }
-        }
-        out.push('        dc.w    $FFFF,$FFFE             ; END of copper list B');
-        out.push('');
-
-        // Chip RAM bitplane buffers — static BSS_C, zeroed by OS loader.
-        // startup.s reads their addresses into _gfx_planes / _gfx_planes_b.
-        out.push('        SECTION gfx_planes_a,BSS_C');
-        out.push('_gfx_planes_data:');
-        out.push('        ds.b    GFXBUFSIZE');
-        out.push('');
-        out.push('        SECTION gfx_planes_b,BSS_C');
-        out.push('_gfx_planes_b_data:');
-        out.push('        ds.b    GFXBUFSIZE');
-        out.push('');
-
-        // ── Audio sample data (chip RAM, one DATA_C section per unique file) ──
-        // Each sample is INCBIN'd at assembly time; length computed by the
-        // assembler from label difference (_snd_N_end - _snd_N).
-        for (const [, { filename, label: lbl }] of this._audioSamples) {
-            out.push(`        SECTION ${lbl}_sec,DATA_C`);
-            out.push(`        XDEF    ${lbl}`);
-            out.push(`${lbl}:`);
-            out.push(`        INCBIN  "${filename}"`);
-            out.push(`        EVEN`);
-            out.push(`        XDEF    ${lbl}_end`);
-            out.push(`${lbl}_end:`);
-            out.push('');
-        }
-
-        // ── Image data (chip RAM, one DATA_C section per unique file) ──────────
-        // An 8-byte header (width, height, GFXDEPTH, rowbytes) is prepended
-        // before the INCBIN so _DrawImage / _SetImagePalette can read metadata.
-        // The .raw file format (from Asset Manager): 2^depth OCS palette words,
-        // followed by depth × height × rowbytes bytes of planar bitplane data.
-        for (const [, { filename, label: lbl, width, height, rowbytes, isInterleaved }] of this._imageAssets) {
-            // Interleaved images (.iraw) set bit 15 of the depth header word so that
-            // _DrawImageFrame / _BltBobMaskedFrame can branch to the 1-blit path at runtime.
-            const depthWord = isInterleaved ? 'GFXDEPTH+$8000' : 'GFXDEPTH';
-            out.push(`        SECTION ${lbl}_sec,DATA_C`);
-            out.push(`        XDEF    ${lbl}`);
-            out.push(`${lbl}:`);
-            out.push(`        dc.w    ${width},${height},${depthWord},${rowbytes}`);
-            out.push(`        INCBIN  "${filename}"`);
-            out.push(`        EVEN`);
-            out.push('');
-        }
-
-        // ── Mask data (chip RAM, raw 1bpp transparency masks for DrawBob) ─────
-        // Format: raw bitplane-layout bytes, height × rowbytes bytes, no header.
-        // Must be in chip RAM (Blitter A channel pointer must be chip RAM).
-        for (const [, { filename, label: lbl }] of this._maskAssets) {
-            out.push(`        SECTION ${lbl}_sec,DATA_C`);
-            out.push(`        XDEF    ${lbl}`);
-            out.push(`${lbl}:`);
-            out.push(`        INCBIN  "${filename}"`);
-            out.push(`        EVEN`);
-            out.push('');
-        }
-
-        // ── Tileset data (chip RAM — Blitter source for DrawTilemap / _bg_restore_tilemap) ──
-        // Header format identical to LoadAnimImage: dc.w tileW, tileH, GFXDEPTH+$8000, rowbytes
-        // Interleaved flag (bit 15) always set — tilesets must be .iraw files.
-        for (const [, { filename, label: lbl, tileW, tileH, rowbytes }] of this._tilesetAssets) {
-            out.push(`        SECTION ${lbl}_sec,DATA_C`);
-            out.push(`        XDEF    ${lbl}`);
-            out.push(`${lbl}:`);
-            out.push(`        dc.w    ${tileW},${tileH},GFXDEPTH+$8000,${rowbytes}`);
-            out.push(`        INCBIN  "${filename}"`);
-            out.push(`        EVEN`);
-            out.push('');
-        }
-
-        // ── Tilemap data (normal RAM — CPU index lookup only, no Blitter access) ──
-        // Binary format: 8-byte header (map_w, map_h, tile_w, tile_h as dc.w)
-        // followed by map_w * map_h tile-index words (0-based, row-major).
-        for (const [, { filename, label: lbl }] of this._tilemapAssets) {
-            out.push(`        SECTION ${lbl}_sec,DATA`);
-            out.push(`        XDEF    ${lbl}`);
-            out.push(`${lbl}:`);
-            out.push(`        INCBIN  "${filename}"`);
-            out.push(`        EVEN`);
-            out.push('');
-        }
-
-        // ── Font data (fast RAM — CPU renderer, no Blitter access needed) ──────
-        // Storage: byte-padded per-glyph, 1 byte/row, left-justified with zero
-        // padding for charW < 8.  numPlanes planes stored sequentially.
-        // Each font also gets a 128-byte lookup table: charCode → glyph index,
-        // $FF means the character is not in this font (→ skip rendering).
-        for (const [, { filename, label: lbl, chars }] of this._fontAssets) {
-            // Build lookup table: charCode (0–127) → glyph index; 0xFF = not in font
-            const lookup = new Uint8Array(128).fill(0xFF);
-            for (let i = 0; i < chars.length; i++) {
-                const code = chars.charCodeAt(i);
-                if (code < 128) lookup[code] = i;
-            }
-            const lookupDc = Array.from(lookup).join(',');
-
-            out.push(`        SECTION ${lbl}_sec,DATA`);
-            out.push(`        XDEF    ${lbl}`);
-            out.push(`${lbl}:`);
-            out.push(`        INCBIN  "${filename}"`);
-            out.push(`        EVEN`);
-            out.push(`        XDEF    ${lbl}_lookup`);
-            out.push(`${lbl}_lookup:`);
-            out.push(`        dc.b    ${lookupDc}`);
-            out.push('');
-        }
+        this._emitUserVarsBSS(out, varNames);
+        this._emitDataSection(out);
+        this._emitCopperLists(out, D, H, vStart, diwstrt, diwstop, ddfstrt, ddfstop, bplcon0);
+        this._emitBufferBSS(out);
+        this._emitAssetData(out);
 
         return out.join('\n');
     }
@@ -547,151 +238,8 @@ export class CodeGen {
             } else if (stmt.type === 'restore_stmt') {
                 this._usesData = true;
             } else if (stmt.type === 'command') {
-                if (stmt.name === 'coppercolor') this._usesRaster = true;
-                if (stmt.name === 'loadsample') {
-                    this._usesSound = true;
-                    const idxArg  = stmt.args[0];
-                    const fileArg = stmt.args[1];
-                    if (idxArg && idxArg.type === 'int' && fileArg && fileArg.type === 'string') {
-                        if (!this._audioSamples.has(idxArg.value)) {
-                            const lbl = `_snd_${this._audioSamples.size}`;
-                            this._audioSamples.set(idxArg.value, { filename: fileArg.value, label: lbl });
-                        }
-                    }
-                }
-                if (stmt.name === 'loadimage') {
-                    this._usesImage = true;
-                    const idxArg  = stmt.args[0];
-                    const fileArg = stmt.args[1];
-                    const wArg    = stmt.args[2];
-                    const hArg    = stmt.args[3];
-                    if (idxArg?.type === 'int' && fileArg?.type === 'string' &&
-                        wArg?.type === 'int'   && hArg?.type  === 'int') {
-                        if (!this._imageAssets.has(idxArg.value)) {
-                            const lbl      = `_img_${this._imageAssets.size}`;
-                            const width    = wArg.value;
-                            const height   = hArg.value;
-                            // rowbytes: bytes per row, word-aligned
-                            const rowbytes = Math.ceil(Math.ceil(width / 8) / 2) * 2;
-                            // .iraw = interleaved bitplane layout (PERF-G Phase 2); flags bit 15 in header
-                            const isInterleaved = fileArg.value.toLowerCase().endsWith('.iraw');
-                            this._imageAssets.set(idxArg.value, {
-                                filename: fileArg.value, label: lbl, width, height, rowbytes,
-                                isAnim: false, frameCount: 1, isInterleaved
-                            });
-                        }
-                    }
-                }
-                if (stmt.name === 'loadanimimage') {
-                    // LoadAnimImage n,"f.raw",fw,fh,count — animated sprite strip
-                    // Same 8-byte header format as LoadImage; count is compile-time only.
-                    this._usesImage = true;
-                    const idxArg    = stmt.args[0];
-                    const fileArg   = stmt.args[1];
-                    const wArg      = stmt.args[2];
-                    const hArg      = stmt.args[3];
-                    const countArg  = stmt.args[4];
-                    if (idxArg?.type === 'int' && fileArg?.type === 'string' &&
-                        wArg?.type === 'int'   && hArg?.type  === 'int' &&
-                        countArg?.type === 'int') {
-                        if (!this._imageAssets.has(idxArg.value)) {
-                            const lbl        = `_img_${this._imageAssets.size}`;
-                            const width      = wArg.value;
-                            const height     = hArg.value;
-                            const frameCount = countArg.value;
-                            const rowbytes   = Math.ceil(Math.ceil(width / 8) / 2) * 2;
-                            // .iraw = interleaved bitplane layout (PERF-G Phase 2); flags bit 15 in header
-                            const isInterleaved = fileArg.value.toLowerCase().endsWith('.iraw');
-                            this._imageAssets.set(idxArg.value, {
-                                filename: fileArg.value, label: lbl, width, height, rowbytes,
-                                isAnim: true, frameCount, isInterleaved
-                            });
-                        }
-                    }
-                }
-                if (stmt.name === 'loadmask') {
-                    this._usesBobs = true;
-                    const idxArg  = stmt.args[0];
-                    const fileArg = stmt.args[1];
-                    if (idxArg?.type === 'int' && fileArg?.type === 'string') {
-                        if (!this._maskAssets.has(idxArg.value)) {
-                            const lbl = `_mask_${this._maskAssets.size}`;
-                            this._maskAssets.set(idxArg.value, { filename: fileArg.value, label: lbl });
-                        }
-                    }
-                }
-                if (stmt.name === 'loadfont') {
-                    const idxArg   = stmt.args[0];
-                    const charsArg = stmt.args[1];
-                    const fileArg  = stmt.args[2];
-                    const wArg     = stmt.args[3];
-                    const hArg     = stmt.args[4];
-                    if (idxArg?.type !== 'int')
-                        throw new Error(`LoadFont: erstes Argument (Index) muss ein Integer-Literal sein — Zeile ${stmt.line}`);
-                    if (charsArg?.type !== 'string')
-                        throw new Error(`LoadFont: zweites Argument (Zeichensatz) muss ein String-Literal sein — Zeile ${stmt.line}`);
-                    if (fileArg?.type !== 'string')
-                        throw new Error(`LoadFont: drittes Argument (Dateiname) muss ein String-Literal sein — Zeile ${stmt.line}`);
-                    if (wArg?.type !== 'int' || hArg?.type !== 'int')
-                        throw new Error(`LoadFont: Syntax ist LoadFont index, "chars", "file.raw", charW, charH — charW/charH fehlen oder sind keine Ganzzahlen (Zeile ${stmt.line})`);
-                    const charW = wArg.value;
-                    const charH = hArg.value;
-                    if (charW > 8)
-                        throw new Error(`LoadFont: charW darf maximal 8 sein (${charW} angegeben) — Zeile ${stmt.line}`);
-                    if (!this._fontAssets.has(idxArg.value)) {
-                        const lbl = `_font_${this._fontAssets.size}`;
-                        this._fontAssets.set(idxArg.value, {
-                            filename: fileArg.value, label: lbl,
-                            chars: charsArg.value, charW, charH
-                        });
-                    }
-                }
-                if (stmt.name === 'setbackground' || stmt.name === 'drawbob') {
-                    this._usesBobs = true;
-                    this._usesImage = true;   // bobs.s calls _DrawImageFrame — image.s must be present
-                }
-                if (stmt.name === 'loadtileset') {
-                    this._usesTilemap = true;
-                    this._usesImage   = true; // tilemap.s calls _DrawImageFrame — image.s must be present
-                    const idxArg  = stmt.args[0];
-                    const fileArg = stmt.args[1];
-                    const wArg    = stmt.args[2];
-                    const hArg    = stmt.args[3];
-                    if (idxArg?.type !== 'int')
-                        throw new Error(`LoadTileset: slot muss ein Integer-Literal sein — Zeile ${stmt.line}`);
-                    if (fileArg?.type !== 'string')
-                        throw new Error(`LoadTileset: Dateiname muss ein String-Literal sein — Zeile ${stmt.line}`);
-                    if (wArg?.type !== 'int' || hArg?.type !== 'int')
-                        throw new Error(`LoadTileset: tileW und tileH müssen Integer-Literale sein — Zeile ${stmt.line}`);
-                    if (!this._tilesetAssets.has(idxArg.value)) {
-                        const lbl      = `_tileset_${this._tilesetAssets.size}`;
-                        const tileW    = wArg.value;
-                        const tileH    = hArg.value;
-                        const rowbytes = Math.ceil(Math.ceil(tileW / 8) / 2) * 2;
-                        this._tilesetAssets.set(idxArg.value, { filename: fileArg.value, label: lbl, tileW, tileH, rowbytes });
-                    }
-                }
-                if (stmt.name === 'loadtilemap') {
-                    this._usesTilemap = true;
-                    const idxArg  = stmt.args[0];
-                    const fileArg = stmt.args[1];
-                    if (idxArg?.type !== 'int')
-                        throw new Error(`LoadTilemap: slot muss ein Integer-Literal sein — Zeile ${stmt.line}`);
-                    if (fileArg?.type !== 'string')
-                        throw new Error(`LoadTilemap: Dateiname muss ein String-Literal sein — Zeile ${stmt.line}`);
-                    if (!this._tilemapAssets.has(idxArg.value)) {
-                        const lbl = `_tilemap_${this._tilemapAssets.size}`;
-                        this._tilemapAssets.set(idxArg.value, { filename: fileArg.value, label: lbl });
-                    }
-                }
-                if (stmt.name === 'drawtilemap' || stmt.name === 'settilemap') {
-                    this._usesTilemap = true;
-                    this._usesImage   = true;
-                }
-                if (stmt.name === 'settilemap') {
-                    // _bg_restore_fn and _bg_restore_tilemap live in bobs.s
-                    this._usesBobs = true;
-                }
+                const collectHandler = this._collectCmdHandlers[stmt.name];
+                if (collectHandler) collectHandler(stmt);
                 for (const arg of stmt.args) {
                     this._collectVarsInExpr(arg, varSet);
                 }
@@ -808,869 +356,10 @@ export class CodeGen {
 
     _genStatement(stmt) {
         const lines = [];
-
-        // ── Variable assignment: target = expr ───────────────────────────────
-        if (stmt.type === 'assign') {
-            const ref  = this._varRef(stmt.target);
-            const expr = stmt.expr;
-
-            // PERF-D: direct memory operations — avoid d0 round-trip ──────────
-            // x = 0  →  clr.l ref
-            if (expr.type === 'int' && expr.value === 0) {
-                lines.push(`        clr.l   ${ref}`);
-                return lines;
-            }
-            // x = literal  →  move.l #n,ref
-            if (expr.type === 'int') {
-                lines.push(`        move.l  #${expr.value},${ref}`);
-                return lines;
-            }
-            if (expr.type === 'binop' && (expr.op === '+' || expr.op === '-')) {
-                const isAdd = expr.op === '+';
-                // x = x ± n  (1≤n≤8)  →  addq.l/subq.l #n,ref
-                if (expr.left.type === 'ident' && expr.left.name === stmt.target &&
-                    expr.right.type === 'int' &&
-                    expr.right.value >= 1 && expr.right.value <= 8) {
-                    lines.push(`        ${isAdd ? 'addq.l' : 'subq.l'}  #${expr.right.value},${ref}`);
-                    return lines;
-                }
-                // x = n + x  (commutative, 1≤n≤8)  →  addq.l #n,ref
-                if (isAdd &&
-                    expr.right.type === 'ident' && expr.right.name === stmt.target &&
-                    expr.left.type === 'int' &&
-                    expr.left.value >= 1 && expr.left.value <= 8) {
-                    lines.push(`        addq.l  #${expr.left.value},${ref}`);
-                    return lines;
-                }
-                // x = x ± y  →  move.l ref(y),d0 + add.l/sub.l d0,ref
-                if (expr.left.type === 'ident' && expr.left.name === stmt.target &&
-                    expr.right.type === 'ident') {
-                    const op = isAdd ? 'add.l' : 'sub.l';
-                    lines.push(`        move.l  ${this._varRef(expr.right.name)},d0`);
-                    lines.push(`        ${op}   d0,${ref}`);
-                    return lines;
-                }
-                // x = y + x  (commutative)  →  move.l ref(y),d0 + add.l d0,ref
-                if (isAdd &&
-                    expr.right.type === 'ident' && expr.right.name === stmt.target &&
-                    expr.left.type === 'ident') {
-                    lines.push(`        move.l  ${this._varRef(expr.left.name)},d0`);
-                    lines.push(`        add.l   d0,${ref}`);
-                    return lines;
-                }
-            }
-            // ── Generic fallback ─────────────────────────────────────────────
-            this._genExpr(expr, lines);
-            lines.push(`        move.l  d0,${ref}`);
-            return lines;
+        const handler = this._stmtHandlers[stmt.type];
+        if (handler) {
+            handler(stmt, lines);
         }
-
-        // ── Dim / Type / Function / Const / Data — declaration only, no runtime code ──
-        if (stmt.type === 'dim' || stmt.type === 'type_def' ||
-            stmt.type === 'dim_typed' || stmt.type === 'dim_typed_array' ||
-            stmt.type === 'function_def' || stmt.type === 'const_def' ||
-            stmt.type === 'data_stmt') {
-            return lines;
-        }
-
-        // ── Read — advance data pointer, load next value into variable ──────────
-        if (stmt.type === 'read_stmt') {
-            const ref = this._varRef(stmt.target);
-            lines.push(`        move.l  _data_ptr,a0`);
-            lines.push(`        move.l  (a0)+,d0`);
-            lines.push(`        move.l  a0,_data_ptr`);
-            lines.push(`        move.l  d0,${ref}`);
-            return lines;
-        }
-
-        // ── Restore — reset data pointer to start (or labeled position) ─────────
-        if (stmt.type === 'restore_stmt') {
-            const target = stmt.label ? `_data_label_${stmt.label}` : '_data_start';
-            lines.push(`        lea     ${target},a0`);
-            lines.push(`        move.l  a0,_data_ptr`);
-            return lines;
-        }
-
-        // ── Local declaration — frame-local variable (Blitz2D: default is global) ──
-        if (stmt.type === 'local_decl') {
-            if (!this._funcCtx) throw new Error(`'Local' is only valid inside a Function (line ${stmt.line})`);
-            const ref = this._varRef(stmt.name);
-            if (stmt.expr) {
-                this._genExpr(stmt.expr, lines);
-                lines.push(`        move.l  d0,${ref}`);
-            } else {
-                lines.push(`        clr.l   ${ref}`);
-            }
-            return lines;
-        }
-
-        // ── Return — exit current function ───────────────────────────────────
-        if (stmt.type === 'return') {
-            if (!this._funcCtx) throw new Error(`'Return' outside of a Function (line ${stmt.line})`);
-            if (stmt.expr) {
-                if (!this._funcCtx.hasReturn) {
-                    throw new Error(
-                        `'Return <expr>' in procedure '${this._funcCtx.name}' — procedures have no return value. ` +
-                        `Use parentheses in the Function declaration to mark it as a value-returning function.`
-                    );
-                }
-                this._genExpr(stmt.expr, lines);
-            } else {
-                lines.push('        moveq   #0,d0');
-            }
-            lines.push(`        bra.w   ${this._funcCtx.exitLabel}`);
-            return lines;
-        }
-
-        // ── User function call statement: name(args) or name args ─────────────
-        if (stmt.type === 'call_stmt') {
-            const funcDef = this._userFunctions.get(stmt.name);
-            if (!funcDef) {
-                throw new Error(`Undeclared function '${stmt.name}' called on line ${stmt.line}`);
-            }
-            this._emitFunctionCall(stmt.name, stmt.args, lines);
-            return lines;
-        }
-
-        // ── Type field write: instance\field = expr ───────────────────────────
-        if (stmt.type === 'type_field_write') {
-            this._genTypeFieldWrite(stmt, lines);
-            return lines;
-        }
-
-        // ── Array assignment: arr(indices…) = expr  (1D, 2D, ND) ──────────────
-        // flat index computed by _genFlatIndex; byte_off = flat*4
-        if (stmt.type === 'array_assign') {
-            const dimsExprs = this._arrays.get(stmt.name);
-            if (!dimsExprs) throw new Error(`Undeclared array '${stmt.name}' (line ${stmt.line})`);
-            const dims = dimsExprs.map(d => d.value);
-            this._genExpr(stmt.expr, lines);
-            lines.push(`        move.l  d0,-(sp)`);
-            this._genFlatIndex(dims, stmt.indices, lines);
-            lines.push(`        asl.l   #2,d0`);
-            lines.push(`        lea     _arr_${stmt.name},a0`);
-            lines.push(`        add.l   d0,a0`);
-            lines.push(`        move.l  (sp)+,(a0)`);
-            return lines;
-        }
-
-        // ── If / ElseIf / Else / EndIf ────────────────────────────────────────
-        if (stmt.type === 'if') {
-            this._genIf(stmt, lines);
-            return lines;
-        }
-
-        // ── While / Wend ──────────────────────────────────────────────────────
-        if (stmt.type === 'while') {
-            this._genWhile(stmt, lines);
-            return lines;
-        }
-
-        // ── For / To / Step / Next ────────────────────────────────────────────
-        if (stmt.type === 'for') {
-            this._genFor(stmt, lines);
-            return lines;
-        }
-
-        // ── Repeat / Until ────────────────────────────────────────────────────
-        if (stmt.type === 'repeat') {
-            this._genRepeat(stmt, lines);
-            return lines;
-        }
-
-        // ── Exit [n] ──────────────────────────────────────────────────────────
-        if (stmt.type === 'exit') {
-            const depth = stmt.count ?? 1;
-            const idx   = this._loopStack.length - depth;
-            if (idx < 0) throw new Error(`Exit ${depth}: not inside enough loops (line ${stmt.line})`);
-            lines.push(`        bra.w   ${this._loopStack[idx]}`);
-            return lines;
-        }
-
-        // ── Select / Case / Default / EndSelect ───────────────────────────────
-        if (stmt.type === 'select') {
-            this._genSelect(stmt, lines);
-            return lines;
-        }
-
-        if (stmt.type !== 'command') return lines;
-
-        const name = stmt.name;
-
-        switch (name) {
-
-            case 'graphics':
-                lines.push('        jsr     _setup_graphics');
-                if (this._usesMouse) lines.push('        jsr     _MouseInit');
-                break;
-
-            case 'cls':
-                lines.push('        jsr     _Cls');
-                break;
-
-            case 'clscolor': {
-                this._genExprArg(stmt, 0, 'ClsColor', lines);
-                lines.push('        jsr     _ClsColor');
-                break;
-            }
-
-            case 'color': {
-                this._genExprArg(stmt, 0, 'Color', lines);
-                lines.push('        move.w  d0,_draw_color');
-                break;
-            }
-
-            case 'palettecolor': {
-                // If all 4 args are compile-time literals, build the OCS word in the
-                // assembler and call the lighter _SetPaletteColor directly (no subroutine
-                // overhead for r/g/b assembly).
-                // If any arg is a runtime expression, push b/g/r, evaluate n, pop into
-                // d1-d3, then call _SetPaletteColorRGB which builds the OCS word at runtime.
-                if (stmt.args.every(a => a.type === 'int')) {
-                    const n   = stmt.args[0].value;
-                    const r   = stmt.args[1].value & 0xF;
-                    const g   = stmt.args[2].value & 0xF;
-                    const b   = stmt.args[3].value & 0xF;
-                    const rgb = (r << 8) | (g << 4) | b;
-                    lines.push(`        moveq   #${n},d0`);
-                    lines.push(`        move.w  #$${hex(rgb)},d1`);
-                    lines.push('        jsr     _SetPaletteColor');
-                } else {
-                    // Evaluate b, g, r and push; evaluate n last (d0=n after push/pop).
-                    // movem.l (sp)+,d1-d3 pops in register order: d1=r, d2=g, d3=b.
-                    this._genExprArg(stmt, 3, 'PaletteColor b', lines);
-                    lines.push('        move.l  d0,-(sp)');
-                    this._genExprArg(stmt, 2, 'PaletteColor g', lines);
-                    lines.push('        move.l  d0,-(sp)');
-                    this._genExprArg(stmt, 1, 'PaletteColor r', lines);
-                    lines.push('        move.l  d0,-(sp)');
-                    this._genExprArg(stmt, 0, 'PaletteColor n', lines);  // d0 = n
-                    lines.push('        movem.l (sp)+,d1-d3');            // d1=r, d2=g, d3=b
-                    lines.push('        jsr     _SetPaletteColorRGB');
-                }
-                break;
-            }
-
-            case 'end':
-                lines.push('        rts');
-                break;
-
-            case 'delay': {
-                // Delay n — wait n VBlanks.  n may be any integer expression.
-                const loopLbl = this._nextLabel();
-                const skipLbl = this._nextLabel();
-                this._genExprArg(stmt, 0, 'Delay frames', lines);
-                // Guard: skip loop if n <= 0
-                lines.push(`        tst.l   d0`);
-                lines.push(`        ble.s   ${skipLbl}`);
-                lines.push(`        subq.l  #1,d0`);
-                lines.push(`        move.l  d0,d7`);
-                lines.push(`${loopLbl}:`);
-                lines.push(`        jsr     _WaitVBL`);
-                lines.push(`        dbra    d7,${loopLbl}`);
-                lines.push(`${skipLbl}:`);
-                break;
-            }
-
-            case 'waitvbl':
-                lines.push('        jsr     _WaitVBL');
-                break;
-
-            case 'waitkey':
-                lines.push('        jsr     _WaitKey');
-                break;
-
-            case 'loadsample':
-                // LoadSample index, "file" — sample was pre-registered in _collectVars.
-                // No assembly code emitted; INCBIN sections appear at end of generate().
-                break;
-
-            case 'loadfont':
-                // LoadFont index, "chars", "file", charW, charH — pre-registered in _collectVars.
-                // No assembly code emitted; INCBIN + lookup table at end of generate().
-                break;
-
-            case 'loadimage':
-                // LoadImage 0 automatically applies the image's embedded palette at runtime.
-                // Other indices: no code emitted (data only, INCBIN at end of generate()).
-                if (stmt.args[0]?.type === 'int' && stmt.args[0].value === 0) {
-                    const slot = this._imageAssets.get(0);
-                    if (slot) {
-                        lines.push(`        lea     ${slot.label},a0`);
-                        lines.push(`        jsr     _SetImagePalette`);
-                    }
-                }
-                break;
-
-            case 'loadanimimage':
-                // LoadAnimImage index,"f.raw",fw,fh,count — data only; INCBIN at end.
-                // Index 0: apply embedded palette at runtime (same as LoadImage).
-                if (stmt.args[0]?.type === 'int' && stmt.args[0].value === 0) {
-                    const slot = this._imageAssets.get(0);
-                    if (slot) {
-                        lines.push(`        lea     ${slot.label},a0`);
-                        lines.push(`        jsr     _SetImagePalette`);
-                    }
-                }
-                break;
-
-            case 'drawimage': {
-                // DrawImage index, x, y [, frame]
-                //   index must be an integer literal (resolved at compile time)
-                //   x, y, frame may be any expression
-                //   frame (optional, default 0) — requires LoadAnimImage
-                // Convention: a0=imgptr, d0=x, d1=y → jsr _DrawImage  (frame 0)
-                //             a0=imgptr, d0=x, d1=y, d2=frame → jsr _DrawImageFrame
-                const imgIdxArg = stmt.args[0];
-                if (!imgIdxArg || imgIdxArg.type !== 'int')
-                    throw new Error(`DrawImage: index must be an integer literal (line ${stmt.line})`);
-                const imgEntry = this._imageAssets.get(imgIdxArg.value);
-                if (!imgEntry)
-                    throw new Error(`DrawImage: image index ${imgIdxArg.value} not loaded — use LoadImage first (line ${stmt.line})`);
-
-                const xExpr    = stmt.args[1] ?? { type: 'int', value: 0 };
-                const yExpr    = stmt.args[2] ?? { type: 'int', value: 0 };
-                const frameArg = stmt.args[3]; // undefined = no frame argument
-
-                if (frameArg && !imgEntry.isAnim)
-                    throw new Error(`DrawImage: frame argument requires LoadAnimImage (image ${imgIdxArg.value} was loaded with LoadImage) — line ${stmt.line}`);
-
-                if (!frameArg) {
-                    // Original 3-arg path — jsr _DrawImage (clears d2 internally)
-                    this._genExpr(yExpr, lines);
-                    lines.push('        move.l  d0,-(sp)');
-                    this._genExpr(xExpr, lines);
-                    lines.push('        move.l  (sp)+,d1');
-                    lines.push(`        lea     ${imgEntry.label},a0`);
-                    lines.push('        jsr     _DrawImage');
-                } else if (frameArg.type === 'int') {
-                    // Literal frame — moveq #N,d2  (zero Laufzeit-Overhead für N=0..7)
-                    this._genExpr(yExpr, lines);
-                    lines.push('        move.l  d0,-(sp)');
-                    this._genExpr(xExpr, lines);
-                    lines.push('        move.l  (sp)+,d1');
-                    lines.push(`        moveq   #${frameArg.value},d2`);
-                    lines.push(`        lea     ${imgEntry.label},a0`);
-                    lines.push('        jsr     _DrawImageFrame');
-                } else {
-                    // Variable frame — eval frame→push, eval y→push, eval x→d0
-                    // pop y→d1, pop frame→d2
-                    this._genExpr(frameArg, lines);
-                    lines.push('        move.l  d0,-(sp)');
-                    this._genExpr(yExpr, lines);
-                    lines.push('        move.l  d0,-(sp)');
-                    this._genExpr(xExpr, lines);
-                    lines.push('        move.l  (sp)+,d1');
-                    lines.push('        move.l  (sp)+,d2');
-                    lines.push(`        lea     ${imgEntry.label},a0`);
-                    lines.push('        jsr     _DrawImageFrame');
-                }
-                break;
-            }
-
-            case 'playsample': {
-                // PlaySample index, channel [, period [, volume]]
-                //   index   = compile-time integer literal (maps to _snd_N label)
-                //   channel = required expression (0–3)
-                //   period  = optional expression; default 428 (≈8287 Hz PAL)
-                //   volume  = optional expression; default 64  (Paula maximum)
-                //
-                // Calling convention for _PlaySample:
-                //   d0 = channel, a0 = ptr, d1 = len_words, d2 = period, d3 = volume
-                const idxArg = stmt.args[0];
-                if (!idxArg || idxArg.type !== 'int')
-                    throw new Error(`PlaySample: index must be an integer literal (line ${stmt.line})`);
-                const entry = this._audioSamples.get(idxArg.value);
-                if (!entry)
-                    throw new Error(`PlaySample: sample index ${idxArg.value} not loaded — use LoadSample first (line ${stmt.line})`);
-                const { label: lbl } = entry;
-
-                // Optional args: synthesise a literal int node when omitted
-                const volArg = stmt.args[3] ?? { type: 'int', value: 64 };
-                const perArg = stmt.args[2] ?? { type: 'int', value: 428 };
-
-                // Push: volume (deepest), period, channel (top)
-                this._genExpr(volArg, lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExpr(perArg, lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExprArg(stmt, 1, 'PlaySample channel', lines);
-                lines.push('        move.l  d0,-(sp)');
-
-                // Set a0 = sample pointer, d1 = length in words (assembler expression)
-                lines.push(`        lea     ${lbl},a0`);
-                lines.push(`        move.l  #(${lbl}_end-${lbl})/2,d1`);
-
-                // Pop: d0=channel, d2=period, d3=volume  (movem pops in reg-num order)
-                lines.push('        movem.l (sp)+,d0/d2-d3');
-                lines.push('        jsr     _PlaySample');
-                break;
-            }
-
-            case 'playsampleonce': {
-                // PlaySampleOnce index, channel [, period [, volume]]
-                // Identical calling convention to PlaySample; calls _PlaySampleOnce
-                // which uses Paula's double-buffering to play exactly once.
-                const idxArg = stmt.args[0];
-                if (!idxArg || idxArg.type !== 'int')
-                    throw new Error(`PlaySampleOnce: index must be an integer literal (line ${stmt.line})`);
-                const entry = this._audioSamples.get(idxArg.value);
-                if (!entry)
-                    throw new Error(`PlaySampleOnce: sample index ${idxArg.value} not loaded — use LoadSample first (line ${stmt.line})`);
-                const { label: lbl } = entry;
-
-                const volArg = stmt.args[3] ?? { type: 'int', value: 64 };
-                const perArg = stmt.args[2] ?? { type: 'int', value: 428 };
-
-                this._genExpr(volArg, lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExpr(perArg, lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExprArg(stmt, 1, 'PlaySampleOnce channel', lines);
-                lines.push('        move.l  d0,-(sp)');
-
-                lines.push(`        lea     ${lbl},a0`);
-                lines.push(`        move.l  #(${lbl}_end-${lbl})/2,d1`);
-
-                lines.push('        movem.l (sp)+,d0/d2-d3');
-                lines.push('        jsr     _PlaySampleOnce');
-                break;
-            }
-
-            case 'stopsample': {
-                // StopSample channel  →  d0=channel, jsr _StopSample
-                this._genExprArg(stmt, 0, 'StopSample channel', lines);
-                lines.push('        jsr     _StopSample');
-                break;
-            }
-
-            case 'screenflip':
-                if (this._usesBobs) lines.push('        jsr     _FlushBobs');
-                lines.push('        jsr     _ScreenFlip');
-                break;
-
-            case 'coppercolor': {
-                // CopperColor y,r,g,b — patch COLOR00 MOVE entry at scanline y
-                // in the back copper list (visible after next ScreenFlip).
-                //
-                // PERF-C: Intrinsic Inline — both paths expand the bodies of
-                // _SetRasterColor/_SetRasterColorRGB directly, eliminating
-                // ~120 cycles of movem.l + JSR overhead per call (~3 ms/frame
-                // when called 212× for a full rasterbar).
-                //
-                // Register contract for the runtime path:
-                //   d2  — OCS word accumulator ($0RGB built up across three
-                //          _genExprArg calls).  Safe: _genExpr only uses d0/d1.
-                //   a0  — back raster base; overwritten by lea just before use.
-                if (stmt.args.every(a => a.type === 'int')) {
-                    // ── Compile-time path: all 4 args are integer literals ────
-                    // y*8+6 is known at compile time → direct absolute write,
-                    // no register setup needed.
-                    const y      = stmt.args[0].value;
-                    const r      = stmt.args[1].value & 0xF;
-                    const g      = stmt.args[2].value & 0xF;
-                    const b      = stmt.args[3].value & 0xF;
-                    const rgb    = (r << 8) | (g << 4) | b;
-                    const offset = y * 8 + 6;
-                    const lblA   = this._nextLabel();
-                    const lblEnd = this._nextLabel();
-                    lines.push(`        tst.b   _front_is_a`);
-                    lines.push(`        bne.s   ${lblA}`);
-                    lines.push(`        move.w  #$${hex(rgb)},_gfx_raster_b+${offset}`);
-                    lines.push(`        bra.s   ${lblEnd}`);
-                    lines.push(`${lblA}:`);
-                    lines.push(`        move.w  #$${hex(rgb)},_gfx_raster_a+${offset}`);
-                    lines.push(`${lblEnd}:`);
-                } else {
-                    // ── Runtime path: any arg is a variable/expression ────────
-                    // Inline _SetRasterColorRGB + _SetRasterColor bodies.
-                    // PERF-3: skip zero-literal channels entirely
-                    const lblA = this._nextLabel();
-                    const lblW = this._nextLabel();
-
-                    const rArg = stmt.args[1];
-                    const gArg = stmt.args[2];
-                    const bArg = stmt.args[3];
-                    const rIsZero = rArg.type === 'int' && rArg.value === 0;
-                    const gIsZero = gArg.type === 'int' && gArg.value === 0;
-                    const bIsZero = bArg.type === 'int' && bArg.value === 0;
-
-                    // r → bits 11:8 of OCS word, stored in d2
-                    if (rIsZero) {
-                        lines.push('        moveq   #0,d2');
-                    } else {
-                        this._genExprArg(stmt, 1, 'CopperColor r', lines);
-                        lines.push('        andi.w  #$F,d0');
-                        lines.push('        lsl.w   #8,d0');
-                        lines.push('        move.w  d0,d2');
-                    }
-
-                    // g → bits 7:4, OR into d2
-                    if (!gIsZero) {
-                        this._genExprArg(stmt, 2, 'CopperColor g', lines);
-                        lines.push('        andi.w  #$F,d0');
-                        lines.push('        lsl.w   #4,d0');
-                        lines.push('        or.w    d0,d2');
-                    }
-
-                    // b → bits 3:0, OR into d2  →  d2 = $0RGB OCS word
-                    if (!bIsZero) {
-                        this._genExprArg(stmt, 3, 'CopperColor b', lines);
-                        lines.push('        andi.w  #$F,d0');
-                        lines.push('        or.w    d0,d2');
-                    }
-
-                    // y → d0, byte offset = y * 8  (COLOR word is at +6)
-                    this._genExprArg(stmt, 0, 'CopperColor y', lines);
-                    lines.push('        lsl.l   #3,d0');
-
-                    // Select back raster table (_front_is_a: 0=B is back, 1=A is back)
-                    lines.push('        tst.b   _front_is_a');
-                    lines.push(`        bne.s   ${lblA}`);
-                    lines.push('        lea     _gfx_raster_b,a0');
-                    lines.push(`        bra.s   ${lblW}`);
-                    lines.push(`${lblA}:`);
-                    lines.push('        lea     _gfx_raster_a,a0');
-                    lines.push(`${lblW}:`);
-                    lines.push('        move.w  d2,6(a0,d0.l)');
-                }
-                break;
-            }
-
-            case 'text': {
-                // _Text(a0=str, d0=x, d1=y) — now returns new x in d0.
-                // Supports: "literal", Str$(n), and "a" + Str$(n) + "b" concatenation.
-                const parts = this._flattenStrArg(stmt.args[2]);
-                // Evaluate y first (push), then x (into d0), pop y → d1
-                this._genExprArg(stmt, 1, 'Text y', lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExprArg(stmt, 0, 'Text x', lines);
-                lines.push('        move.l  (sp)+,d1');
-                if (parts.length === 1 && parts[0].type === 'lit') {
-                    // Fast path: single literal (original behaviour)
-                    const strLbl  = this._nextLabel();
-                    const pastLbl = this._nextLabel();
-                    lines.push(`        lea     ${strLbl},a0`);
-                    lines.push('        jsr     _Text');
-                    lines.push(`        bra.s   ${pastLbl}`);
-                    lines.push(`${strLbl}:`);
-                    lines.push(`        dc.b    "${this._escapeStr(parts[0].value)}",0`);
-                    lines.push('        even');
-                    lines.push(`${pastLbl}:`);
-                } else {
-                    // Multi-part: save y to _text_y, chain _Text calls.
-                    // Each _Text call returns new x in d0; reload _text_y into d1 each time.
-                    lines.push('        move.l  d1,_text_y');
-                    for (const part of parts) {
-                        if (part.type === 'lit') {
-                            const strLbl  = this._nextLabel();
-                            const pastLbl = this._nextLabel();
-                            lines.push(`        lea     ${strLbl},a0`);
-                            lines.push('        jsr     _Text');     // returns new x in d0
-                            lines.push(`        bra.s   ${pastLbl}`);
-                            lines.push(`${strLbl}:`);
-                            lines.push(`        dc.b    "${this._escapeStr(part.value)}",0`);
-                            lines.push('        even');
-                            lines.push(`${pastLbl}:`);
-                            lines.push('        move.l  _text_y,d1');
-                        } else {  // str_expr
-                            lines.push('        move.l  d0,-(sp)');   // save current x
-                            this._genExpr(part.expr, lines);           // d0 = integer
-                            lines.push('        jsr     _IntToStr');   // d0 = string ptr
-                            lines.push('        move.l  d0,a0');
-                            lines.push('        move.l  (sp)+,d0');    // restore x
-                            lines.push('        move.l  _text_y,d1');  // restore y
-                            lines.push('        jsr     _Text');
-                            lines.push('        move.l  _text_y,d1');
-                        }
-                    }
-                }
-                break;
-            }
-
-            case 'usefont': {
-                const idxArg = stmt.args[0];
-                const lc = this._labelCount++;
-                if (!idxArg) {
-                    // UseFont (no arg) — reset to built-in 8×8 font
-                    lines.push('        ; UseFont — built-in font');
-                    lines.push('        move.w  #8,_active_font_charW');
-                    lines.push('        move.w  #8,_active_font_charH');
-                    lines.push('        move.w  #7,_active_font_charH_m1');
-                    lines.push('        move.l  #_font8x8,_active_font_data');
-                    lines.push('        lea     _builtin_font_lookup,a0');
-                    lines.push('        lea     _active_font_lookup,a1');
-                    lines.push('        moveq   #31,d0');
-                    lines.push(`.uf_${lc}:  move.l  (a0)+,(a1)+`);
-                    lines.push(`        dbra    d0,.uf_${lc}`);
-                } else {
-                    if (idxArg.type !== 'int')
-                        throw new Error(`UseFont: Index muss ein Integer-Literal sein (Zeile ${stmt.line})`);
-                    const fontEntry = this._fontAssets.get(idxArg.value);
-                    if (!fontEntry)
-                        throw new Error(`UseFont: Font ${idxArg.value} nicht geladen — LoadFont zuerst aufrufen (Zeile ${stmt.line})`);
-                    const { label: lbl, charW, charH } = fontEntry;
-                    lines.push(`        ; UseFont ${idxArg.value} — ${fontEntry.filename}`);
-                    lines.push(`        move.w  #${charW},_active_font_charW`);
-                    lines.push(`        move.w  #${charH},_active_font_charH`);
-                    lines.push(`        move.w  #${charH - 1},_active_font_charH_m1`);
-                    lines.push(`        move.l  #${lbl},_active_font_data`);
-                    lines.push(`        lea     ${lbl}_lookup,a0`);
-                    lines.push('        lea     _active_font_lookup,a1');
-                    lines.push('        moveq   #31,d0');
-                    lines.push(`.uf_${lc}:  move.l  (a0)+,(a1)+`);
-                    lines.push(`        dbra    d0,.uf_${lc}`);
-                }
-                break;
-            }
-
-            // ── Drawing commands ──────────────────────────────────────────────
-
-            case 'plot': {
-                // Plot x, y  →  _Plot(d0=x, d1=y)
-                // Evaluate y first (push), then x → d0, pop y → d1
-                this._genExprArg(stmt, 1, 'Plot y', lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExprArg(stmt, 0, 'Plot x', lines);
-                lines.push('        move.l  (sp)+,d1');
-                lines.push('        jsr     _Plot');
-                break;
-            }
-
-            case 'line': {
-                // Line x1,y1,x2,y2  →  _Line(d0=x1, d1=y1, d2=x2, d3=y2)
-                // Push y2, x2, y1; then x1 → d0; pop y1→d1, x2→d2, y2→d3
-                this._genExprArg(stmt, 3, 'Line y2', lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExprArg(stmt, 2, 'Line x2', lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExprArg(stmt, 1, 'Line y1', lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExprArg(stmt, 0, 'Line x1', lines);
-                lines.push('        movem.l (sp)+,d1-d3');
-                lines.push('        jsr     _Line');
-                break;
-            }
-
-            case 'rect': {
-                // Rect x,y,w,h  →  _Rect(d0=x, d1=y, d2=w, d3=h)
-                // Push h, w, y; then x → d0; pop y→d1, w→d2, h→d3
-                this._genExprArg(stmt, 3, 'Rect h', lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExprArg(stmt, 2, 'Rect w', lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExprArg(stmt, 1, 'Rect y', lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExprArg(stmt, 0, 'Rect x', lines);
-                lines.push('        movem.l (sp)+,d1-d3');
-                lines.push('        jsr     _Rect');
-                break;
-            }
-
-            case 'box': {
-                // Box x,y,w,h  →  _Box(d0=x, d1=y, d2=w, d3=h)
-                // Push h, w, y; then x → d0; pop y→d1, w→d2, h→d3
-                this._genExprArg(stmt, 3, 'Box h', lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExprArg(stmt, 2, 'Box w', lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExprArg(stmt, 1, 'Box y', lines);
-                lines.push('        move.l  d0,-(sp)');
-                this._genExprArg(stmt, 0, 'Box x', lines);
-                lines.push('        movem.l (sp)+,d1-d3');
-                lines.push('        jsr     _Box');
-                break;
-            }
-
-            case 'pokeb':
-            case 'pokew':
-            case 'pokel':
-            case 'poke': {
-                // PokeB/W/L addr, val — write byte/word/longword to arbitrary address.
-                // Poke is an alias for PokeL (Blitz2D convention).
-                //
-                // Three codegen paths (fastest to most general):
-                //   1. Both literal → move.sz #val,$ADDR          (single instruction)
-                //   2. Literal addr → eval val→d0, move.sz d0,$ADDR
-                //   3. Runtime addr → eval addr→d0, push; eval val→d0; pop→a0; move.sz d0,(a0)
-                const sz      = stmt.name === 'pokeb' ? 'b' : stmt.name === 'pokew' ? 'w' : 'l';
-                const addrArg = stmt.args[0] ?? { type: 'int', value: 0 };
-                const valArg  = stmt.args[1] ?? { type: 'int', value: 0 };
-                if (addrArg.type === 'int' && valArg.type === 'int') {
-                    // Path 1: both literal — single instruction
-                    const hex = '$' + (addrArg.value >>> 0).toString(16).toUpperCase();
-                    lines.push(`        move.${sz}  #${valArg.value},${hex}`);
-                } else if (addrArg.type === 'int') {
-                    // Path 2: literal addr, runtime val — eval val, absolute store
-                    const hex = '$' + (addrArg.value >>> 0).toString(16).toUpperCase();
-                    this._genExprArg(stmt, 1, `Poke${sz.toUpperCase()} val`, lines);
-                    lines.push(`        move.${sz}  d0,${hex}`);
-                } else {
-                    // Path 3: runtime addr — save addr on stack, eval val, pop addr→a0
-                    this._genExpr(addrArg, lines);
-                    lines.push('        move.l  d0,-(sp)');
-                    this._genExprArg(stmt, 1, `Poke${sz.toUpperCase()} val`, lines);
-                    lines.push('        move.l  (sp)+,a0');
-                    lines.push(`        move.${sz}  d0,(a0)`);
-                }
-                break;
-            }
-
-            case 'setbackground': {
-                // SetBackground index — register a full-screen image as the background.
-                // _SetBackground(a0=imgptr) computes _bg_bpl_ptr and installs _bg_restore_static.
-                const idxArg = stmt.args[0];
-                if (!idxArg || idxArg.type !== 'int')
-                    throw new Error(`SetBackground: index must be an integer literal (line ${stmt.line})`);
-                const bgEntry = this._imageAssets.get(idxArg.value);
-                if (!bgEntry)
-                    throw new Error(`SetBackground: image index ${idxArg.value} not loaded — use LoadImage first (line ${stmt.line})`);
-                lines.push(`        lea     ${bgEntry.label},a0`);
-                lines.push('        jsr     _SetBackground');
-                break;
-            }
-
-            case 'loadmask':
-                // LoadMask index, "file.mask" — registered in _collectVars; no runtime code.
-                break;
-
-            case 'drawbob': {
-                // DrawBob index, x, y [, frame]
-                //   index must be an integer literal
-                //   x, y, frame may be any expression; frame defaults to 0
-                // Calling convention: _AddBob(a0=imgptr, a1=maskptr|0, d0=x, d1=y, d2=frame)
-                const idxArg = stmt.args[0];
-                if (!idxArg || idxArg.type !== 'int')
-                    throw new Error(`DrawBob: index must be an integer literal (line ${stmt.line})`);
-                const imgEntry = this._imageAssets.get(idxArg.value);
-                if (!imgEntry)
-                    throw new Error(`DrawBob: image index ${idxArg.value} not loaded — use LoadImage first (line ${stmt.line})`);
-                const maskEntry = this._maskAssets.get(idxArg.value);
-
-                const xExpr    = stmt.args[1] ?? { type: 'int', value: 0 };
-                const yExpr    = stmt.args[2] ?? { type: 'int', value: 0 };
-                const frameArg = stmt.args[3]; // undefined = no frame (default 0)
-
-                if (frameArg && !imgEntry.isAnim)
-                    throw new Error(`DrawBob: frame argument requires LoadAnimImage (image ${idxArg.value} was loaded with LoadImage) — line ${stmt.line}`);
-
-                // _AddBob always needs d2=frame.  For the no-frame / frame-0 path,
-                // evaluate y→push, x→d0, pop y→d1, then moveq #0,d2 (1 instruction).
-                // For a variable frame, push frame first, then y, then x, pop into d1/d2.
-                if (!frameArg || (frameArg.type === 'int' && frameArg.value === 0)) {
-                    // Common path: no frame or literal 0
-                    this._genExpr(yExpr, lines);
-                    lines.push('        move.l  d0,-(sp)');
-                    this._genExpr(xExpr, lines);
-                    lines.push('        move.l  (sp)+,d1');
-                    lines.push('        moveq   #0,d2');
-                } else if (frameArg.type === 'int') {
-                    // Literal non-zero frame
-                    this._genExpr(yExpr, lines);
-                    lines.push('        move.l  d0,-(sp)');
-                    this._genExpr(xExpr, lines);
-                    lines.push('        move.l  (sp)+,d1');
-                    lines.push(`        moveq   #${frameArg.value},d2`);
-                } else {
-                    // Variable frame — push frame, push y, eval x→d0, pop y→d1, pop frame→d2
-                    this._genExpr(frameArg, lines);
-                    lines.push('        move.l  d0,-(sp)');
-                    this._genExpr(yExpr, lines);
-                    lines.push('        move.l  d0,-(sp)');
-                    this._genExpr(xExpr, lines);
-                    lines.push('        move.l  (sp)+,d1');
-                    lines.push('        move.l  (sp)+,d2');
-                }
-                // Set a0/a1 AFTER expression eval (_genExpr uses a0 internally)
-                lines.push(`        lea     ${imgEntry.label},a0`);
-                if (maskEntry) {
-                    lines.push(`        lea     ${maskEntry.label},a1`);
-                } else {
-                    lines.push('        move.l  #0,a1');
-                }
-                lines.push('        jsr     _AddBob');
-                break;
-            }
-
-            case 'loadtileset':
-                // LoadTileset slot, "file.iraw", tw, th — data only; INCBIN at end of generate().
-                // Slot 0: apply the tileset's embedded palette at runtime (same as LoadImage 0).
-                if (stmt.args[0]?.type === 'int' && stmt.args[0].value === 0) {
-                    const tsEntry = this._tilesetAssets.get(0);
-                    if (tsEntry) {
-                        lines.push(`        lea     ${tsEntry.label},a0`);
-                        lines.push('        jsr     _SetImagePalette');
-                    }
-                }
-                break;
-
-            case 'loadtilemap':
-                // LoadTilemap slot, "file.bmap" — data only; INCBIN at end of generate().
-                // No runtime code needed; tilemap data is referenced by label in DrawTilemap.
-                break;
-
-            case 'drawtilemap': {
-                // DrawTilemap tmSlot, tsSlot, scrollX
-                //   tmSlot, tsSlot must be integer literals (resolved at compile time)
-                //   scrollX may be any expression
-                // Calling convention: _DrawTilemap(a0=tilemapPtr, a1=tilesetPtr, d0=scrollX)
-                const tmIdxArg = stmt.args[0];
-                const tsIdxArg = stmt.args[1];
-                if (!tmIdxArg || tmIdxArg.type !== 'int')
-                    throw new Error(`DrawTilemap: tmSlot must be an integer literal (line ${stmt.line})`);
-                if (!tsIdxArg || tsIdxArg.type !== 'int')
-                    throw new Error(`DrawTilemap: tsSlot must be an integer literal (line ${stmt.line})`);
-                const tmEntry = this._tilemapAssets.get(tmIdxArg.value);
-                if (!tmEntry)
-                    throw new Error(`DrawTilemap: tilemap slot ${tmIdxArg.value} not loaded — use LoadTilemap first (line ${stmt.line})`);
-                const tsEntry = this._tilesetAssets.get(tsIdxArg.value);
-                if (!tsEntry)
-                    throw new Error(`DrawTilemap: tileset slot ${tsIdxArg.value} not loaded — use LoadTileset first (line ${stmt.line})`);
-
-                const scrollExpr = stmt.args[2] ?? { type: 'int', value: 0 };
-                // Eval scrollX → d0 first (before any lea that might disturb a0)
-                this._genExpr(scrollExpr, lines);
-                // Save scroll position so _bg_restore_tilemap knows where we scrolled to
-                lines.push('        move.l  d0,_active_scroll_x');
-                // Load tilemap and tileset pointers (safe after expression eval)
-                lines.push(`        lea     ${tmEntry.label},a0`);
-                lines.push(`        lea     ${tsEntry.label},a1`);
-                lines.push('        jsr     _DrawTilemap');
-                break;
-            }
-
-            case 'settilemap': {
-                // SetTilemap tmSlot, tsSlot
-                //   Stores active tilemap/tileset pointers for _bg_restore_tilemap.
-                //   Installs _bg_restore_tilemap as the Bob restore function.
-                //   Both slots must be integer literals.
-                const tmIdxArg = stmt.args[0];
-                const tsIdxArg = stmt.args[1];
-                if (!tmIdxArg || tmIdxArg.type !== 'int')
-                    throw new Error(`SetTilemap: tmSlot must be an integer literal (line ${stmt.line})`);
-                if (!tsIdxArg || tsIdxArg.type !== 'int')
-                    throw new Error(`SetTilemap: tsSlot must be an integer literal (line ${stmt.line})`);
-                const tmEntry = this._tilemapAssets.get(tmIdxArg.value);
-                if (!tmEntry)
-                    throw new Error(`SetTilemap: tilemap slot ${tmIdxArg.value} not loaded — use LoadTilemap first (line ${stmt.line})`);
-                const tsEntry = this._tilesetAssets.get(tsIdxArg.value);
-                if (!tsEntry)
-                    throw new Error(`SetTilemap: tileset slot ${tsIdxArg.value} not loaded — use LoadTileset first (line ${stmt.line})`);
-
-                lines.push(`        lea     ${tmEntry.label},a0`);
-                lines.push('        move.l  a0,_active_tilemap_ptr');
-                lines.push(`        lea     ${tsEntry.label},a0`);
-                lines.push('        move.l  a0,_active_tileset_ptr');
-                lines.push('        lea     _bg_restore_tilemap,a0');
-                lines.push('        move.l  a0,_bg_restore_fn');
-                break;
-            }
-
-            default:
-                lines.push(`; [codegen] Unhandled command: ${stmt.name} (line ${stmt.line})`);
-                console.warn(`[CodeGen] No codegen for '${stmt.name}' on line ${stmt.line}`);
-        }
-
         return lines;
     }
 
@@ -1771,6 +460,52 @@ export class CodeGen {
         lines.push(`        move.l  d0,${this._varRef(stmt.var)}`);
 
         lines.push(`${topLbl}:`);
+
+        // ── DBRA Fast Path ────────────────────────────────────────────────────────
+        if (stepLit === -1 && stmt.to.type === 'int' && stmt.to.value === 0) {
+            this._activeLoopRegs = this._activeLoopRegs || 0;
+            if (this._activeLoopRegs < 4) {
+                const regIdx = 7 - this._activeLoopRegs;
+                const regNm = `d${regIdx}`;
+                this._activeLoopRegs++;
+                
+                lines.push(`        move.l  ${this._varRef(stmt.var)},d0`);
+                lines.push(`        tst.l   d0`);
+                lines.push(`        blt.w   ${endLbl}`);
+                lines.push(`        move.w  d0,${regNm}`);
+                
+                const loopLbl = this._nextLabel();
+                lines.push(`${loopLbl}:`);
+                
+                const cacheCandidate = (this._ptrCacheCtx === null && !this._funcCtx)
+                    ? this._detectPointerCacheCandidate(stmt.body, stmt.var)
+                    : null;
+                    
+                lines.push(`        move.w  ${regNm},d0`);
+                lines.push(`        ext.l   d0`);
+                lines.push(`        move.l  d0,${this._varRef(stmt.var)}`);
+                
+                if (cacheCandidate) {
+                    lines.push(`        move.l  ${this._varRef(stmt.var)},d0`);
+                    this._emitMultiplyByConst(cacheCandidate.stride, lines);
+                    lines.push(`        lea     _tinst_${cacheCandidate.instName},a1`);
+                    lines.push(`        add.l   d0,a1`);
+                    this._ptrCacheCtx = { instName: cacheCandidate.instName, regName: 'a1' };
+                }
+                
+                for (const s of stmt.body) { lines.push(...this._genStatement(s)); this._peepholeRedundantReload(lines); }
+                
+                if (cacheCandidate) this._ptrCacheCtx = null;
+                
+                lines.push(`        dbra    ${regNm},${loopLbl}`);
+                lines.push(`        move.l  #-1,${this._varRef(stmt.var)}`);
+                
+                lines.push(`${endLbl}:`);
+                this._loopStack.pop();
+                this._activeLoopRegs--;
+                return;
+            }
+        }
 
         // PERF-2: detect if body exclusively accesses one typed array via loop var.
         // Disabled when already inside an outer cached loop (no nested caching).
@@ -2061,353 +796,9 @@ export class CodeGen {
                 break;
 
             case 'call_expr': {
-                // ── Built-in functions ────────────────────────────────────────
-                // Checked before user functions so names like 'abs'/'rnd' can
-                // never be shadowed by a user-defined function of the same name.
-
-                // Abs(n) — inline: tst.l d0 / bge.s / neg.l d0
-                if (expr.name === 'abs') {
-                    const doneLbl = this._nextLabel();
-                    this._genExpr(expr.args[0] ?? { type: 'int', value: 0 }, lines);
-                    lines.push('        tst.l   d0');
-                    lines.push(`        bge.s   ${doneLbl}`);
-                    lines.push('        neg.l   d0');
-                    lines.push(`${doneLbl}:`);
-                    break;
-                }
-
-                // Rnd(n) — calls _Rnd; d1 = n (upper bound), result in d0
-                if (expr.name === 'rnd') {
-                    this._genExpr(expr.args[0] ?? { type: 'int', value: 1 }, lines);
-                    lines.push('        move.l  d0,d1');
-                    lines.push('        jsr     _Rnd');
-                    break;
-                }
-
-                // ── JoyUp/JoyDown/JoyLeft/JoyRight(port) — inline joystick read ──
-                //
-                // JOY0DAT = $DFF00A (port 0),  JOY1DAT = $DFF00C (port 1)
-                // XOR decode:  move.w; move.w d0,d1; lsr.w #1,d1; eor.w d0,d1
-                //   d1 bit 0  = RIGHT  (bit1 XOR bit0  of raw)
-                //   d1 bit 1  = LEFT   (bit1 of raw; bit2 = 0 for digital joystick)
-                //   d1 bit 8  = DOWN   (bit9 XOR bit8  of raw)
-                //   d1 bit 9  = UP     (bit9 of raw; bit10 = 0 for digital joystick)
-                // Returns -1 (pressed) or 0 (not pressed).
-                {
-                    const joyBit = { joyright: 0, joyleft: 1, joydown: 8, joyup: 9 };
-                    if (Object.prototype.hasOwnProperty.call(joyBit, expr.name)) {
-                        const bitN   = joyBit[expr.name];
-                        const portArg = expr.args[0] ?? { type: 'int', value: 1 };
-                        if (portArg.type === 'int') {
-                            const addr = portArg.value === 0 ? '$DFF00A' : '$DFF00C';
-                            lines.push(`        move.w  ${addr},d0`);
-                        } else {
-                            // runtime port (0 or 1): JOYxDAT = $DFF00A + port*2
-                            this._genExpr(portArg, lines);
-                            lines.push('        add.l   d0,d0');
-                            lines.push('        lea     $DFF00A,a0');
-                            lines.push('        move.w  0(a0,d0.w),d0');
-                        }
-                        lines.push('        move.w  d0,d1');
-                        lines.push('        lsr.w   #1,d1');
-                        lines.push('        eor.w   d0,d1');
-                        lines.push(`        btst    #${bitN},d1`);
-                        lines.push('        sne     d0');
-                        lines.push('        ext.w   d0');
-                        lines.push('        ext.l   d0');
-                        break;
-                    }
-                }
-
-                // ── Joyfire(port) — CIAAPRA ($BFE001), active low ────────────────
-                // Port 0: bit 7,  Port 1: bit 6.
-                // Bit = 0 when fire is pressed (active low) → invert then sne.
-                // Returns -1 (pressed) or 0 (not pressed).
-                if (expr.name === 'joyfire') {
-                    const portArg = expr.args[0] ?? { type: 'int', value: 1 };
-                    lines.push('        move.b  $BFE001,d0');
-                    lines.push('        not.b   d0');           // invert: pressed → bit set
-                    if (portArg.type === 'int') {
-                        const bitN = portArg.value === 0 ? 7 : 6;
-                        lines.push(`        btst    #${bitN},d0`);
-                    } else {
-                        // runtime port: fire bit = 7 - port  (port0→7, port1→6)
-                        this._genExpr(portArg, lines);
-                        lines.push('        move.l  d0,d1');
-                        lines.push('        moveq   #7,d0');
-                        lines.push('        sub.l   d1,d0');
-                        lines.push('        move.l  d0,d1');
-                        lines.push('        move.b  $BFE001,d0');
-                        lines.push('        not.b   d0');
-                        lines.push('        btst    d1,d0');
-                    }
-                    lines.push('        sne     d0');
-                    lines.push('        ext.w   d0');
-                    lines.push('        ext.l   d0');
-                    break;
-                }
-
-                // ── MouseX() / MouseY() — current mouse position ─────────────────
-                if (expr.name === 'mousex') {
-                    lines.push('        move.w  _mouse_x,d0');
-                    lines.push('        ext.l   d0');
-                    break;
-                }
-                if (expr.name === 'mousey') {
-                    lines.push('        move.w  _mouse_y,d0');
-                    lines.push('        ext.l   d0');
-                    break;
-                }
-
-                // ── MouseDown(n) — is button n currently held? ───────────────────
-                // n=0: left (_mouse_down_0),  n=1: right (_mouse_down_1)
-                // Returns -1 (held) or 0 (not held).
-                if (expr.name === 'mousedown') {
-                    const btn = expr.args[0] ?? { type: 'int', value: 0 };
-                    if (btn.type === 'int') {
-                        const v = btn.value === 0 ? '_mouse_down_0' : '_mouse_down_1';
-                        lines.push(`        move.b  ${v},d0`);
-                    } else {
-                        this._genExpr(btn, lines);
-                        lines.push('        move.l  d0,d1');
-                        lines.push('        lea     _mouse_down_0,a0');
-                        lines.push('        move.b  0(a0,d1.l),d0');
-                    }
-                    lines.push('        ext.w   d0');
-                    lines.push('        ext.l   d0');
-                    break;
-                }
-
-                // ── MouseHit(n) — was button n clicked since last call? ───────────
-                // Returns -1 if hit, 0 otherwise. Clears the hit flag on read.
-                if (expr.name === 'mousehit') {
-                    const btn = expr.args[0] ?? { type: 'int', value: 0 };
-                    if (btn.type === 'int') {
-                        const v = btn.value === 0 ? '_mouse_hit_0' : '_mouse_hit_1';
-                        lines.push(`        move.b  ${v},d0`);
-                        lines.push(`        clr.b   ${v}`);
-                    } else {
-                        this._genExpr(btn, lines);
-                        lines.push('        move.l  d0,d1');
-                        lines.push('        lea     _mouse_hit_0,a0');
-                        lines.push('        move.b  0(a0,d1.l),d0');
-                        lines.push('        clr.b   0(a0,d1.l)');
-                    }
-                    lines.push('        ext.w   d0');
-                    lines.push('        ext.l   d0');
-                    break;
-                }
-
-                // ── KeyDown(scancode) — non-blocking key state from _kbd_matrix ──
-                //
-                // _kbd_matrix is a 16-byte (128-bit) array maintained by the Level-2
-                // keyboard interrupt handler in startup.s.
-                // Bit n of the matrix is set while scancode n is held down.
-                //   byte = scancode >> 3,  bit = scancode & 7
-                // Returns -1 (held) or 0 (not held).
-                if (expr.name === 'keydown') {
-                    this._genExpr(expr.args[0] ?? { type: 'int', value: 0 }, lines);
-                    lines.push('        move.l  d0,d1');
-                    lines.push('        lsr.l   #3,d1');        // d1 = byte index
-                    lines.push('        and.l   #7,d0');        // d0 = bit index
-                    lines.push('        lea     _kbd_matrix,a0');
-                    lines.push('        add.l   d1,a0');        // a0 → matrix byte
-                    lines.push('        btst    d0,(a0)');      // test bit (mod 8 for memory)
-                    lines.push('        sne     d0');
-                    lines.push('        ext.w   d0');
-                    lines.push('        ext.l   d0');
-                    break;
-                }
-
-                // Str$(n) — integer to decimal ASCII string pointer
-                if (expr.name === 'str$') {
-                    this._genExpr(expr.args[0] ?? { type: 'int', value: 0 }, lines);
-                    lines.push('        jsr     _IntToStr');    // d0 = string ptr
-                    break;
-                }
-
-                // ── PeekB/PeekW/PeekL(addr) — direct memory/hardware read ───────
-                // All three sizes are fully inlined (no fragment needed).
-                // Literal addr: direct absolute addressing (1–2 instructions).
-                // Runtime addr: eval addr→d0, load into a0, then read via (a0).
-                // PeekB zero-extends (0–255); PeekW sign-extends; PeekL full 32-bit.
-                {
-                    const peekSz = { peekb: 'b', peekw: 'w', peekl: 'l' };
-                    if (Object.prototype.hasOwnProperty.call(peekSz, expr.name)) {
-                        const sz      = peekSz[expr.name];
-                        const addrArg = expr.args[0] ?? { type: 'int', value: 0 };
-                        if (addrArg.type === 'int') {
-                            const hex = '$' + (addrArg.value >>> 0).toString(16).toUpperCase();
-                            if (sz === 'b') {
-                                lines.push('        moveq   #0,d0');
-                                lines.push(`        move.b  ${hex},d0`);
-                            } else if (sz === 'w') {
-                                lines.push(`        move.w  ${hex},d0`);
-                                lines.push('        ext.l   d0');
-                            } else {
-                                lines.push(`        move.l  ${hex},d0`);
-                            }
-                        } else {
-                            this._genExpr(addrArg, lines);
-                            lines.push('        move.l  d0,a0');
-                            if (sz === 'b') {
-                                lines.push('        moveq   #0,d0');
-                                lines.push('        move.b  (a0),d0');
-                            } else if (sz === 'w') {
-                                lines.push('        move.w  (a0),d0');
-                                lines.push('        ext.l   d0');
-                            } else {
-                                lines.push('        move.l  (a0),d0');
-                            }
-                        }
-                        break;
-                    }
-                }
-
-                // ── RectsOverlap(x1,y1,w1,h1, x2,y2,w2,h2) → -1/0 ─────────────
-                // Pure inline AABB test.  No fragment, no JSR.
-                // Push all 8 args; movem.l (sp)+,d0-d7 loads them in reverse:
-                //   d0=h2  d1=w2  d2=y2  d3=x2  d4=h1  d5=w1  d6=y1  d7=x1
-                // a1 saves x1 across test1→test2; a2 saves y1 across test3→test4.
-                if (expr.name === 'rectsoverlap') {
-                    if (expr.args.length < 8)
-                        throw new Error('RectsOverlap: requires 8 arguments (x1,y1,w1,h1,x2,y2,w2,h2)');
-                    for (const arg of expr.args) {
-                        this._genExpr(arg, lines);
-                        lines.push('        move.l  d0,-(sp)');
-                    }
-                    lines.push('        movem.l (sp)+,d0-d7');
-                    // d0=h2, d1=w2, d2=y2, d3=x2, d4=h1, d5=w1, d6=y1, d7=x1
-                    const rfLbl = this._nextLabel();
-                    const reLbl = this._nextLabel();
-                    lines.push('        move.l  d7,a1');       // a1 = x1
-                    lines.push('        add.l   d5,d7');       // d7 = x1+w1
-                    lines.push('        cmp.l   d3,d7');       // x1+w1 vs x2
-                    lines.push(`        ble.s   ${rfLbl}`);
-                    lines.push('        add.l   d1,d3');       // d3 = x2+w2
-                    lines.push('        cmp.l   a1,d3');       // x2+w2 vs x1
-                    lines.push(`        ble.s   ${rfLbl}`);
-                    lines.push('        move.l  d6,a2');       // a2 = y1
-                    lines.push('        add.l   d4,d6');       // d6 = y1+h1
-                    lines.push('        cmp.l   d2,d6');       // y1+h1 vs y2
-                    lines.push(`        ble.s   ${rfLbl}`);
-                    lines.push('        add.l   d0,d2');       // d2 = y2+h2
-                    lines.push('        cmp.l   a2,d2');       // y2+h2 vs y1
-                    lines.push(`        ble.s   ${rfLbl}`);
-                    lines.push('        moveq   #-1,d0');
-                    lines.push(`        bra.s   ${reLbl}`);
-                    lines.push(`${rfLbl}:`);
-                    lines.push('        moveq   #0,d0');
-                    lines.push(`${reLbl}:`);
-                    break;
-                }
-
-                // ── ImagesOverlap(img1,x1,y1, img2,x2,y2) → -1/0 ───────────────
-                // Reads w/h from image headers (compile-time labels); then same
-                // inline AABB as RectsOverlap.
-                // Push x2,y2,x1,y1; movem→d0-d3 (d0=y1,d1=x1,d2=y2,d3=x2? no ↓)
-                //   push order: x1,y1,x2,y2 → d0=y2,d1=x2,d2=y1,d3=x1
-                //   d4=w1,d5=h1,d6=w2,d7=h2 from headers.
-                if (expr.name === 'imagesoverlap') {
-                    if (expr.args.length < 6)
-                        throw new Error('ImagesOverlap: requires 6 arguments (img1,x1,y1,img2,x2,y2)');
-                    const idx1a = expr.args[0], idx2a = expr.args[3];
-                    if (!idx1a || idx1a.type !== 'int')
-                        throw new Error('ImagesOverlap: arg 0 (img1) must be an integer literal');
-                    if (!idx2a || idx2a.type !== 'int')
-                        throw new Error('ImagesOverlap: arg 3 (img2) must be an integer literal');
-                    const ast1 = this._imageAssets.get(idx1a.value);
-                    const ast2 = this._imageAssets.get(idx2a.value);
-                    if (!ast1) throw new Error(`ImagesOverlap: no image at index ${idx1a.value}`);
-                    if (!ast2) throw new Error(`ImagesOverlap: no image at index ${idx2a.value}`);
-                    // Push x1, y1, x2, y2 (in that order → d0=y2, d1=x2, d2=y1, d3=x1)
-                    for (const argIdx of [1, 2, 4, 5]) {
-                        this._genExpr(expr.args[argIdx], lines);
-                        lines.push('        move.l  d0,-(sp)');
-                    }
-                    lines.push('        movem.l (sp)+,d0-d3');
-                    // d0=y2, d1=x2, d2=y1, d3=x1 — load dims from headers
-                    lines.push(`        move.w  ${ast1.label}+0,d4`);
-                    lines.push('        ext.l   d4');           // d4 = w1
-                    lines.push(`        move.w  ${ast1.label}+2,d5`);
-                    lines.push('        ext.l   d5');           // d5 = h1
-                    lines.push(`        move.w  ${ast2.label}+0,d6`);
-                    lines.push('        ext.l   d6');           // d6 = w2
-                    lines.push(`        move.w  ${ast2.label}+2,d7`);
-                    lines.push('        ext.l   d7');           // d7 = h2
-                    // AABB: x1+w1>x2 AND x2+w2>x1 AND y1+h1>y2 AND y2+h2>y1
-                    const ifLbl = this._nextLabel();
-                    const ieLbl = this._nextLabel();
-                    lines.push('        move.l  d3,a1');       // a1 = x1
-                    lines.push('        add.l   d4,d3');       // d3 = x1+w1
-                    lines.push('        cmp.l   d1,d3');       // x1+w1 vs x2
-                    lines.push(`        ble.s   ${ifLbl}`);
-                    lines.push('        add.l   d6,d1');       // d1 = x2+w2
-                    lines.push('        cmp.l   a1,d1');       // x2+w2 vs x1
-                    lines.push(`        ble.s   ${ifLbl}`);
-                    lines.push('        move.l  d2,a2');       // a2 = y1
-                    lines.push('        add.l   d5,d2');       // d2 = y1+h1
-                    lines.push('        cmp.l   d0,d2');       // y1+h1 vs y2
-                    lines.push(`        ble.s   ${ifLbl}`);
-                    lines.push('        add.l   d7,d0');       // d0 = y2+h2
-                    lines.push('        cmp.l   a2,d0');       // y2+h2 vs y1
-                    lines.push(`        ble.s   ${ifLbl}`);
-                    lines.push('        moveq   #-1,d0');
-                    lines.push(`        bra.s   ${ieLbl}`);
-                    lines.push(`${ifLbl}:`);
-                    lines.push('        moveq   #0,d0');
-                    lines.push(`${ieLbl}:`);
-                    break;
-                }
-
-                // ── ImageRectOverlap(img,x,y, rx,ry,rw,rh) → -1/0 ──────────────
-                // img w/h from header; rect dims from args; same inline AABB.
-                // Push x,y,rx,ry,rw,rh (6 exprs) → movem→d0-d5:
-                //   d0=rh, d1=rw, d2=ry, d3=rx, d4=y, d5=x
-                //   d6=img_w, d7=img_h from header.
-                if (expr.name === 'imagerectoverlap') {
-                    if (expr.args.length < 7)
-                        throw new Error('ImageRectOverlap: requires 7 arguments (img,x,y,rx,ry,rw,rh)');
-                    const imgIdxA = expr.args[0];
-                    if (!imgIdxA || imgIdxA.type !== 'int')
-                        throw new Error('ImageRectOverlap: arg 0 (img) must be an integer literal');
-                    const imgAst = this._imageAssets.get(imgIdxA.value);
-                    if (!imgAst) throw new Error(`ImageRectOverlap: no image at index ${imgIdxA.value}`);
-                    // Push x,y,rx,ry,rw,rh in order (→ d0=rh,d1=rw,d2=ry,d3=rx,d4=y,d5=x)
-                    for (const argIdx of [1, 2, 3, 4, 5, 6]) {
-                        this._genExpr(expr.args[argIdx], lines);
-                        lines.push('        move.l  d0,-(sp)');
-                    }
-                    lines.push('        movem.l (sp)+,d0-d5');
-                    // d0=rh, d1=rw, d2=ry, d3=rx, d4=y, d5=x — load img dims
-                    lines.push(`        move.w  ${imgAst.label}+0,d6`);
-                    lines.push('        ext.l   d6');           // d6 = img_w
-                    lines.push(`        move.w  ${imgAst.label}+2,d7`);
-                    lines.push('        ext.l   d7');           // d7 = img_h
-                    // AABB: x+w>rx AND rx+rw>x AND y+h>ry AND ry+rh>y
-                    const ioLbl = this._nextLabel();
-                    const ioELbl = this._nextLabel();
-                    lines.push('        move.l  d5,a1');       // a1 = x
-                    lines.push('        add.l   d6,d5');       // d5 = x+img_w
-                    lines.push('        cmp.l   d3,d5');       // x+w vs rx
-                    lines.push(`        ble.s   ${ioLbl}`);
-                    lines.push('        add.l   d1,d3');       // d3 = rx+rw
-                    lines.push('        cmp.l   a1,d3');       // rx+rw vs x
-                    lines.push(`        ble.s   ${ioLbl}`);
-                    lines.push('        move.l  d4,a2');       // a2 = y
-                    lines.push('        add.l   d7,d4');       // d4 = y+img_h
-                    lines.push('        cmp.l   d2,d4');       // y+h vs ry
-                    lines.push(`        ble.s   ${ioLbl}`);
-                    lines.push('        add.l   d0,d2');       // d2 = ry+rh
-                    lines.push('        cmp.l   a2,d2');       // ry+rh vs y
-                    lines.push(`        ble.s   ${ioLbl}`);
-                    lines.push('        moveq   #-1,d0');
-                    lines.push(`        bra.s   ${ioELbl}`);
-                    lines.push(`${ioLbl}:`);
-                    lines.push('        moveq   #0,d0');
-                    lines.push(`${ioELbl}:`);
-                    break;
-                }
+                // ── Built-in function dispatch (Phase 3 refactoring) ─────────
+                const builtinFn = this._builtinHandlers[expr.name];
+                if (builtinFn) { builtinFn(expr, lines); break; }
 
                 // ── User function call or array read ──────────────────────────
                 const funcDef = this._userFunctions.get(expr.name);
@@ -2576,6 +967,338 @@ export class CodeGen {
             lines.push(`        move.l  #${n},d1`);
             lines.push(`        muls.w  d1,d0`);
         }
+    }
+
+    // ── T20: EQU definitions ──────────────────────────────────────────────────
+    _emitEQUs(out, W, H, D, bplcon0, vStart, diwstrt, diwstop, ddfstrt, ddfstop) {
+        // Overscan border: 32px on every side — drawing area larger than display
+        const GFXBORDER = 32;
+        out.push(`${pad('GFXWIDTH',12)} EQU ${W}`);
+        out.push(`${pad('GFXHEIGHT',12)} EQU ${H}`);
+        out.push(`${pad('GFXDEPTH',12)} EQU ${D}`);
+        out.push(`${pad('GFXBORDER',12)} EQU ${GFXBORDER}`);
+        out.push(`${pad('GFXVWIDTH',12)} EQU (GFXWIDTH+GFXBORDER*2)`);
+        out.push(`${pad('GFXVHEIGHT',12)} EQU (GFXHEIGHT+GFXBORDER*2)`);
+        out.push(`${pad('GFXBPR',12)} EQU (GFXVWIDTH/8)`);
+        out.push(`${pad('GFXDBPR',12)} EQU (GFXWIDTH/8)`);
+        out.push(`${pad('GFXIBPR',12)} EQU (GFXBPR*GFXDEPTH)`);
+        out.push(`${pad('GFXBPLMOD',12)} EQU (GFXIBPR-GFXDBPR)`);
+        out.push(`${pad('GFXPSIZE',12)} EQU (GFXBPR*GFXVHEIGHT)`);
+        out.push(`${pad('GFXBUFSIZE',12)} EQU (GFXPSIZE*GFXDEPTH)`);
+        if (this._usesTilemap && this._tilesetAssets.size > 0) {
+            const tileH = this._tilesetAssets.get(0)?.tileH ?? 16;
+            out.push(`${pad('GFXVPAD',12)} EQU ${tileH}`);
+            out.push(`${pad('GFXBUFSIZE_VSCROLL',12)} EQU ((GFXVHEIGHT+GFXVPAD)*GFXBPR*GFXDEPTH)`);
+        }
+        out.push(`${pad('GFXPLANEOFS',12)} EQU (GFXBORDER*GFXIBPR+GFXBORDER/8)`);
+        out.push(`${pad('GFXCOLORS',12)} EQU (1<<GFXDEPTH)`);
+        out.push(`${pad('GFXBPLCON0',12)} EQU $${hex(bplcon0)}`);
+        out.push(`${pad('GFXDIWSTRT',12)} EQU $${hex(diwstrt)}`);
+        out.push(`${pad('GFXDIWSTOP',12)} EQU $${hex(diwstop)}`);
+        out.push(`${pad('GFXDDFSTRT',12)} EQU $${hex(ddfstrt)}`);
+        out.push(`${pad('GFXDDFSTOP',12)} EQU $${hex(ddfstop)}`);
+        if (this._usesRaster) {
+            const maxLines = Math.min(H, 256 - vStart);
+            out.push(`${pad('GFXRASTER',12)} EQU ${maxLines}`);
+        }
+        if (this._usesBobs) {
+            out.push(`${pad('BOBS_MAX',12)} EQU 32`);
+        }
+        out.push('');
+    }
+
+    // ── T20: Fragment INCLUDEs ──────────────────────────────────────────────
+    _emitIncludes(out) {
+        out.push('        INCLUDE "startup.s"');
+        out.push('        INCLUDE "offload.s"');
+        out.push('        INCLUDE "graphics.s"');
+        out.push('        INCLUDE "cls.s"');
+        out.push('        INCLUDE "clscolor.s"');
+        out.push('        INCLUDE "color.s"');
+        out.push('        INCLUDE "palette.s"');
+        out.push('        INCLUDE "text.s"');
+        out.push('        INCLUDE "plot.s"');
+        out.push('        INCLUDE "line.s"');
+        out.push('        INCLUDE "rect.s"');
+        out.push('        INCLUDE "box.s"');
+        out.push('        INCLUDE "waitkey.s"');
+        out.push('        INCLUDE "flip.s"');
+        if (this._usesRaster) {
+            out.push('        INCLUDE "copper_raster.s"');
+        }
+        if (this._usesSound) {
+            out.push('        INCLUDE "sound.s"');
+        }
+        if (this._usesImage || this._usesBobs) {
+            out.push('        INCLUDE "image.s"');
+        }
+        if (this._usesBobs) {
+            out.push('        INCLUDE "bobs.s"');
+        }
+        if (this._usesRnd) {
+            out.push('        INCLUDE "rnd.s"');
+        }
+        if (this._usesMouse) {
+            out.push('        INCLUDE "mouse.s"');
+        }
+        if (this._usesTilemap) {
+            out.push('        INCLUDE "tilemap.s"');
+        }
+        out.push('');
+        out.push('        even');
+        out.push('');
+    }
+
+    // ── T21: Copper lists (DATA_C) ────────────────────────────────────────────
+    _emitCopperLists(out, D, H, vStart, diwstrt, diwstop, ddfstrt, ddfstop, bplcon0) {
+        // Compute interleaved modulo for copper header
+        const GFXBORDER = 32;
+        const GFXBPR_val = Math.floor((320 + GFXBORDER * 2) / 8);
+        const bplmod = GFXBPR_val * D - Math.floor(320 / 8);
+
+        // Helper: emit display-setup copper moves (shared header for both lists)
+        const emitCopHeader = () => {
+            out.push(copMove(0x008E, diwstrt, 'DIWSTRT'));
+            out.push(copMove(0x0090, diwstop, 'DIWSTOP'));
+            out.push(copMove(0x0092, ddfstrt, 'DDFSTRT'));
+            out.push(copMove(0x0094, ddfstop, 'DDFSTOP'));
+            out.push(copMove(0x0100, bplcon0, 'BPLCON0'));
+            out.push(copMove(0x0102, 0x0000,  'BPLCON1'));
+            out.push(copMove(0x0104, 0x0000,  'BPLCON2'));
+            out.push(copMove(0x0108, bplmod,  'BPL1MOD (interleaved)'));
+            out.push(copMove(0x010A, bplmod,  'BPL2MOD (interleaved)'));
+        };
+
+        // Chip-RAM DATA — copper list A (bitplane pointers → buffer A)
+        out.push('        SECTION gfx_copper,DATA_C');
+        out.push('_gfx_copper_a:');
+        emitCopHeader();
+        out.push('_gfx_cop_a_bpl_table:');
+        for (let i = 0; i < D; i++) {
+            const [pth, ptl] = BPL_PTR_REGS[i];
+            out.push(copMove(pth, 0, `BPL${i+1}PTH`));
+            out.push(copMove(ptl, 0, `BPL${i+1}PTL`));
+        }
+        if (this._usesRaster) {
+            const maxLines = Math.min(H, 256 - vStart);
+            out.push('        XDEF    _gfx_raster_a');
+            out.push('_gfx_raster_a:');
+            for (let y = 0; y < maxLines; y++) {
+                const vpos = vStart + y;
+                out.push(`        dc.w    $${hex((vpos << 8) | 0x01)},$FF00`);
+                out.push(`        dc.w    $0180,$0000`);
+            }
+        }
+        out.push('        dc.w    $FFFF,$FFFE             ; END of copper list A');
+        out.push('');
+
+        // Chip-RAM DATA — copper list B (bitplane pointers → buffer B)
+        out.push('_gfx_copper_b:');
+        emitCopHeader();
+        out.push('_gfx_cop_b_bpl_table:');
+        for (let i = 0; i < D; i++) {
+            const [pth, ptl] = BPL_PTR_REGS[i];
+            out.push(copMove(pth, 0, `BPL${i+1}PTH`));
+            out.push(copMove(ptl, 0, `BPL${i+1}PTL`));
+        }
+        if (this._usesRaster) {
+            const maxLines = Math.min(H, 256 - vStart);
+            out.push('        XDEF    _gfx_raster_b');
+            out.push('_gfx_raster_b:');
+            for (let y = 0; y < maxLines; y++) {
+                const vpos = vStart + y;
+                out.push(`        dc.w    $${hex((vpos << 8) | 0x01)},$FF00`);
+                out.push(`        dc.w    $0180,$0000`);
+            }
+        }
+        out.push('        dc.w    $FFFF,$FFFE             ; END of copper list B');
+        out.push('');
+    }
+
+    // ── T22: User variable BSS section ────────────────────────────────────────
+    _emitUserVarsBSS(out, varNames) {
+        if (varNames.size > 0 || this._arrays.size > 0 || this._typeInstances.size > 0 || this._usesData || this._usesTilemap) {
+            out.push('        SECTION user_vars,BSS');
+            for (const name of varNames) {
+                out.push(`_var_${name}:    ds.l    1`);
+            }
+            if (this._usesData) {
+                out.push('_data_ptr:      ds.l    1');
+            }
+            if (this._usesTilemap) {
+                out.push('_active_tilemap_ptr: ds.l    1');
+                out.push('_active_tileset_ptr: ds.l    1');
+                out.push('_active_scroll_x:    ds.l    1');
+                out.push('_active_scroll_y:    ds.l    1');
+            }
+            if (this._usesBobs || this._usesTilemap) {
+                out.push('_active_fine_y:      ds.w    1');  // written by DrawTilemap, read by FlushBobs (0 = no scroll)
+            }
+            // Arrays: Dim arr(n) → n+1 longwords (indices 0..n, Blitz2D-compatible)
+            // N-dimensional arrays: Dim arr(d0[, d1[, ...]]) → (d0+1)*…*(dn+1) longwords
+            for (const [name, dims] of this._arrays) {
+                for (const d of dims) {
+                    if (d.type !== 'int') throw new Error(`Dim ${name}: array sizes must be integer literals`);
+                }
+                const count = dims.reduce((acc, d) => acc * (d.value + 1), 1);
+                out.push(`_arr_${name}:    ds.l    ${count}`);
+            }
+            // Type instances: AoS layout — fieldCount longwords per instance
+            for (const [instName, inst] of this._typeInstances) {
+                const typeDef = this._typeDefs.get(inst.typeName);
+                if (!typeDef) throw new Error(`Undeclared type '${inst.typeName}' for Dim ${instName}`);
+                if (inst.isArray) {
+                    if (!inst.size || inst.size.type !== 'int')
+                        throw new Error(`Dim ${instName}: typed array size must be an integer literal`);
+                    const count = inst.size.value + 1;   // 0..n inclusive
+                    out.push(`_tinst_${instName}:    ds.l    ${count * typeDef.fields.length}`);
+                } else {
+                    out.push(`_tinst_${instName}:    ds.l    ${typeDef.fields.length}`);
+                }
+            }
+            out.push('');
+        }
+    }
+
+    // ── T22: User Data table (Data/Read/Restore) ───────────────────────────
+    _emitDataSection(out) {
+        if (this._usesData) {
+            out.push('        SECTION user_data,DATA');
+            out.push('_data_start:');
+            for (const stmt of this._dataStmts) {
+                if (stmt.label) {
+                    out.push(`_data_label_${stmt.label}:`);
+                }
+                if (stmt.values.length > 0) {
+                    const vals = stmt.values.map(v => this._evalDataValue(v, stmt.line));
+                    out.push(`        dc.l    ${vals.join(', ')}`);
+                }
+            }
+            if (this._dataStmts.length === 0) {
+                out.push('        dc.l    0                       ; placeholder — no Data statements');
+            }
+            out.push('');
+        }
+    }
+
+    // ── T22: Chip RAM bitplane buffers (BSS_C) ─────────────────────────────
+    _emitBufferBSS(out) {
+        const planeBufSize = (this._usesTilemap && this._tilesetAssets.size > 0)
+            ? 'GFXBUFSIZE_VSCROLL' : 'GFXBUFSIZE';
+        out.push('        SECTION gfx_planes_a,BSS_C');
+        out.push('_gfx_planes_data:');
+        out.push(`        ds.b    ${planeBufSize}`);
+        out.push('');
+        out.push('        SECTION gfx_planes_b,BSS_C');
+        out.push('_gfx_planes_b_data:');
+        out.push(`        ds.b    ${planeBufSize}`);
+        out.push('');
+    }
+
+    // ── T22: Asset data sections (audio, images, masks, tilesets, tilemaps, fonts) ──
+    _emitAssetData(out) {
+        // Audio sample data (chip RAM, one DATA_C section per unique file)
+        for (const [, { filename, label: lbl }] of this._audioSamples) {
+            out.push(`        SECTION ${lbl}_sec,DATA_C`);
+            out.push(`        XDEF    ${lbl}`);
+            out.push(`${lbl}:`);
+            out.push(`        INCBIN  "${filename}"`);
+            out.push(`        EVEN`);
+            out.push(`        XDEF    ${lbl}_end`);
+            out.push(`${lbl}_end:`);
+            out.push('');
+        }
+
+        // Image data (chip RAM, one DATA_C section per unique file)
+        for (const [, { filename, label: lbl, width, height, rowbytes, isInterleaved }] of this._imageAssets) {
+            const depthWord = isInterleaved ? 'GFXDEPTH+$8000' : 'GFXDEPTH';
+            out.push(`        SECTION ${lbl}_sec,DATA_C`);
+            out.push(`        XDEF    ${lbl}`);
+            out.push(`${lbl}:`);
+            out.push(`        dc.w    ${width},${height},${depthWord},${rowbytes}`);
+            out.push(`        INCBIN  "${filename}"`);
+            out.push(`        EVEN`);
+            out.push('');
+        }
+
+        // Mask data (chip RAM, raw 1bpp transparency masks for DrawBob)
+        for (const [, { filename, label: lbl }] of this._maskAssets) {
+            out.push(`        SECTION ${lbl}_sec,DATA_C`);
+            out.push(`        XDEF    ${lbl}`);
+            out.push(`${lbl}:`);
+            out.push(`        INCBIN  "${filename}"`);
+            out.push(`        EVEN`);
+            out.push('');
+        }
+
+        // Tileset data (chip RAM — Blitter source for DrawTilemap / _bg_restore_tilemap)
+        for (const [, { filename, label: lbl, tileW, tileH, rowbytes }] of this._tilesetAssets) {
+            out.push(`        SECTION ${lbl}_sec,DATA_C`);
+            out.push(`        XDEF    ${lbl}`);
+            out.push(`${lbl}:`);
+            out.push(`        dc.w    ${tileW},${tileH},GFXDEPTH+$8000,${rowbytes}`);
+            out.push(`        INCBIN  "${filename}"`);
+            out.push(`        EVEN`);
+            out.push('');
+        }
+
+        // Tilemap data (normal RAM — CPU index lookup only, no Blitter access)
+        for (const [, { filename, label: lbl }] of this._tilemapAssets) {
+            out.push(`        SECTION ${lbl}_sec,DATA`);
+            out.push(`        XDEF    ${lbl}`);
+            out.push(`${lbl}:`);
+            out.push(`        INCBIN  "${filename}"`);
+            out.push(`        EVEN`);
+            out.push('');
+        }
+
+        // Font data (fast RAM — CPU renderer, no Blitter access needed)
+        for (const [, { filename, label: lbl, chars }] of this._fontAssets) {
+            const lookup = new Uint8Array(128).fill(0xFF);
+            for (let i = 0; i < chars.length; i++) {
+                const code = chars.charCodeAt(i);
+                if (code < 128) lookup[code] = i;
+            }
+            const lookupDc = Array.from(lookup).join(',');
+
+            out.push(`        SECTION ${lbl}_sec,DATA`);
+            out.push(`        XDEF    ${lbl}`);
+            out.push(`${lbl}:`);
+            out.push(`        INCBIN  "${filename}"`);
+            out.push(`        EVEN`);
+            out.push(`        XDEF    ${lbl}_lookup`);
+            out.push(`${lbl}_lookup:`);
+            out.push(`        dc.b    ${lookupDc}`);
+            out.push('');
+        }
+    }
+
+    // ── T23: _setup_graphics subroutine ───────────────────────────────────────
+    _emitSetupGraphics(out) {
+        out.push('        SECTION gfx_init,CODE');
+        out.push('');
+        out.push('_setup_graphics:');
+        out.push('        lea     _gfx_cop_a_bpl_table,a0');
+        out.push('        move.l  _gfx_planes,a1');
+        out.push('        add.l   #GFXPLANEOFS,a1');   // offset to visible origin
+        out.push('        moveq   #GFXDEPTH,d0');
+        out.push('        move.l  #GFXBPR,d1');
+        out.push('        jsr     _PatchBitplanePtrs');
+        out.push('        lea     _gfx_cop_b_bpl_table,a0');
+        out.push('        move.l  _gfx_planes_b,a1');
+        out.push('        add.l   #GFXPLANEOFS,a1');   // offset to visible origin
+        out.push('        moveq   #GFXDEPTH,d0');
+        out.push('        move.l  #GFXBPR,d1');
+        out.push('        jsr     _PatchBitplanePtrs');
+        out.push('        lea     _gfx_copper_a,a0');
+        out.push('        jsr     _InstallCopper');
+        out.push('        jsr     _InitPalette');
+        out.push('        move.l  _gfx_planes_b,a0');
+        out.push('        add.l   #GFXPLANEOFS,a0');   // _back_planes_ptr = visible origin
+        out.push('        move.l  a0,_back_planes_ptr');
+        out.push('        clr.b   _front_is_a');
+        out.push('        rts');
+        out.push('');
     }
 
     /** PERF-4: Remove `move.l d0,_var_X` immediately followed by `move.l _var_X,d0`. */
@@ -3003,6 +1726,7 @@ export class CodeGen {
         lines.push(`        XDEF    _func_${name}`);
         lines.push(`_func_${name}:`);
         lines.push(`        link    a6,#${localSpace > 0 ? -localSpace : 0}`);
+        lines.push('        movem.l d4-d7,-(sp)');
 
         for (const stmt of body) {
             if (!stmt) continue;
@@ -3013,11 +1737,1232 @@ export class CodeGen {
         // Default return value (0) if control falls off the end
         lines.push('        moveq   #0,d0');
         lines.push(`${exitLabel}:`);
+        lines.push('        movem.l (sp)+,d4-d7');
         lines.push('        unlk    a6');
         lines.push('        rts');
 
         this._funcCtx = null;
         return lines;
+    }
+
+    // ── Statement handler methods (Phase 2 refactoring) ─────────────────────
+
+    _genStmt_assign(stmt, lines) {
+        const ref  = this._varRef(stmt.target);
+        const expr = stmt.expr;
+
+        // PERF-D: direct memory operations — avoid d0 round-trip
+        if (expr.type === 'int' && expr.value === 0) {
+            lines.push(`        clr.l   ${ref}`);
+            return;
+        }
+        if (expr.type === 'int') {
+            lines.push(`        move.l  #${expr.value},${ref}`);
+            return;
+        }
+        if (expr.type === 'binop' && (expr.op === '+' || expr.op === '-')) {
+            const isAdd = expr.op === '+';
+            if (expr.left.type === 'ident' && expr.left.name === stmt.target &&
+                expr.right.type === 'int' &&
+                expr.right.value >= 1 && expr.right.value <= 8) {
+                lines.push(`        ${isAdd ? 'addq.l' : 'subq.l'}  #${expr.right.value},${ref}`);
+                return;
+            }
+            if (isAdd &&
+                expr.right.type === 'ident' && expr.right.name === stmt.target &&
+                expr.left.type === 'int' &&
+                expr.left.value >= 1 && expr.left.value <= 8) {
+                lines.push(`        addq.l  #${expr.left.value},${ref}`);
+                return;
+            }
+            if (expr.left.type === 'ident' && expr.left.name === stmt.target &&
+                expr.right.type === 'ident') {
+                const op = isAdd ? 'add.l' : 'sub.l';
+                lines.push(`        move.l  ${this._varRef(expr.right.name)},d0`);
+                lines.push(`        ${op}   d0,${ref}`);
+                return;
+            }
+            if (isAdd &&
+                expr.right.type === 'ident' && expr.right.name === stmt.target &&
+                expr.left.type === 'ident') {
+                lines.push(`        move.l  ${this._varRef(expr.left.name)},d0`);
+                lines.push(`        add.l   d0,${ref}`);
+                return;
+            }
+        }
+        // Generic fallback
+        this._genExpr(expr, lines);
+        lines.push(`        move.l  d0,${ref}`);
+    }
+
+    _genStmt_read(stmt, lines) {
+        const ref = this._varRef(stmt.target);
+        lines.push(`        move.l  _data_ptr,a0`);
+        lines.push(`        move.l  (a0)+,d0`);
+        lines.push(`        move.l  a0,_data_ptr`);
+        lines.push(`        move.l  d0,${ref}`);
+    }
+
+    _genStmt_restore(stmt, lines) {
+        const target = stmt.label ? `_data_label_${stmt.label}` : '_data_start';
+        lines.push(`        lea     ${target},a0`);
+        lines.push(`        move.l  a0,_data_ptr`);
+    }
+
+    _genStmt_local(stmt, lines) {
+        if (!this._funcCtx) throw new Error(`'Local' is only valid inside a Function (line ${stmt.line})`);
+        const ref = this._varRef(stmt.name);
+        if (stmt.expr) {
+            this._genExpr(stmt.expr, lines);
+            lines.push(`        move.l  d0,${ref}`);
+        } else {
+            lines.push(`        clr.l   ${ref}`);
+        }
+    }
+
+    _genStmt_return(stmt, lines) {
+        if (!this._funcCtx) throw new Error(`'Return' outside of a Function (line ${stmt.line})`);
+        if (stmt.expr) {
+            if (!this._funcCtx.hasReturn) {
+                throw new Error(
+                    `'Return <expr>' in procedure '${this._funcCtx.name}' — procedures have no return value. ` +
+                    `Use parentheses in the Function declaration to mark it as a value-returning function.`
+                );
+            }
+            this._genExpr(stmt.expr, lines);
+        } else {
+            lines.push('        moveq   #0,d0');
+        }
+        lines.push(`        bra.w   ${this._funcCtx.exitLabel}`);
+    }
+
+    _genStmt_call(stmt, lines) {
+        const funcDef = this._userFunctions.get(stmt.name);
+        if (!funcDef) {
+            throw new Error(`Undeclared function '${stmt.name}' called on line ${stmt.line}`);
+        }
+        this._emitFunctionCall(stmt.name, stmt.args, lines);
+    }
+
+    _genStmt_typeFieldWrite(stmt, lines) {
+        this._genTypeFieldWrite(stmt, lines);
+    }
+
+    _genStmt_arrayAssign(stmt, lines) {
+        const dimsExprs = this._arrays.get(stmt.name);
+        if (!dimsExprs) throw new Error(`Undeclared array '${stmt.name}' (line ${stmt.line})`);
+        const dims = dimsExprs.map(d => d.value);
+        this._genExpr(stmt.expr, lines);
+        lines.push(`        move.l  d0,-(sp)`);
+        this._genFlatIndex(dims, stmt.indices, lines);
+        lines.push(`        asl.l   #2,d0`);
+        lines.push(`        lea     _arr_${stmt.name},a0`);
+        lines.push(`        add.l   d0,a0`);
+        lines.push(`        move.l  (sp)+,(a0)`);
+    }
+
+    _genStmt_exit(stmt, lines) {
+        const depth = stmt.count ?? 1;
+        const idx   = this._loopStack.length - depth;
+        if (idx < 0) throw new Error(`Exit ${depth}: not inside enough loops (line ${stmt.line})`);
+        lines.push(`        bra.w   ${this._loopStack[idx]}`);
+    }
+
+    _genStmt_command(stmt, lines) {
+        const handler = this._cmdHandlers[stmt.name];
+        if (handler) {
+            handler(stmt, lines);
+        } else {
+            lines.push(`; [codegen] Unhandled command: ${stmt.name} (line ${stmt.line})`);
+            console.warn(`[CodeGen] No codegen for '${stmt.name}' on line ${stmt.line}`);
+        }
+    }
+
+    // ── Command handler table (Phase 1 refactoring) ─────────────────────────
+
+    _initStatementHandlers() {
+        const noop = () => {};
+        this._stmtHandlers = {
+            assign:           (s, l) => this._genStmt_assign(s, l),
+            dim:              noop,
+            type_def:         noop,
+            dim_typed:        noop,
+            dim_typed_array:  noop,
+            function_def:     noop,
+            const_def:        noop,
+            data_stmt:        noop,
+            read_stmt:        (s, l) => this._genStmt_read(s, l),
+            restore_stmt:     (s, l) => this._genStmt_restore(s, l),
+            local_decl:       (s, l) => this._genStmt_local(s, l),
+            return:           (s, l) => this._genStmt_return(s, l),
+            call_stmt:        (s, l) => this._genStmt_call(s, l),
+            type_field_write: (s, l) => this._genStmt_typeFieldWrite(s, l),
+            array_assign:     (s, l) => this._genStmt_arrayAssign(s, l),
+            exit:             (s, l) => this._genStmt_exit(s, l),
+            if:               (s, l) => this._genIf(s, l),
+            while:            (s, l) => this._genWhile(s, l),
+            for:              (s, l) => this._genFor(s, l),
+            repeat:           (s, l) => this._genRepeat(s, l),
+            select:           (s, l) => this._genSelect(s, l),
+            command:          (s, l) => this._genStmt_command(s, l),
+        };
+    }
+
+    _initCommandHandlers() {
+        this._cmdHandlers = {
+            cls:        (stmt, lines) => this._cmd_cls(stmt, lines),
+            clscolor:   (stmt, lines) => this._cmd_clscolor(stmt, lines),
+            color:      (stmt, lines) => this._cmd_color(stmt, lines),
+            end:        (stmt, lines) => this._cmd_end(stmt, lines),
+            waitvbl:    (stmt, lines) => this._cmd_waitvbl(stmt, lines),
+            waitkey:    (stmt, lines) => this._cmd_waitkey(stmt, lines),
+            graphics:   (stmt, lines) => this._cmd_graphics(stmt, lines),
+            screenflip: (stmt, lines) => this._cmd_screenflip(stmt, lines),
+            plot:       (stmt, lines) => this._cmd_plot(stmt, lines),
+            line:       (stmt, lines) => this._cmd_line(stmt, lines),
+            rect:       (stmt, lines) => this._cmd_rect(stmt, lines),
+            box:        (stmt, lines) => this._cmd_box(stmt, lines),
+            playsample:     (stmt, lines) => this._cmd_playsample(stmt, lines),
+            playsampleonce: (stmt, lines) => this._cmd_playsampleonce(stmt, lines),
+            stopsample:     (stmt, lines) => this._cmd_stopsample(stmt, lines),
+            loadsample:     (stmt, lines) => this._cmd_loadsample(stmt, lines),
+            loadfont:       (stmt, lines) => this._cmd_loadfont(stmt, lines),
+            loadimage:      (stmt, lines) => this._cmd_loadimage(stmt, lines),
+            loadanimimage:  (stmt, lines) => this._cmd_loadanimimage(stmt, lines),
+            loadmask:       (stmt, lines) => this._cmd_loadmask(stmt, lines),
+            drawimage:      (stmt, lines) => this._cmd_drawimage(stmt, lines),
+            drawbob:        (stmt, lines) => this._cmd_drawbob(stmt, lines),
+            setbackground:  (stmt, lines) => this._cmd_setbackground(stmt, lines),
+            text:           (stmt, lines) => this._cmd_text(stmt, lines),
+            usefont:        (stmt, lines) => this._cmd_usefont(stmt, lines),
+            pokeb:          (stmt, lines) => this._cmd_poke(stmt, lines),
+            pokew:          (stmt, lines) => this._cmd_poke(stmt, lines),
+            pokel:          (stmt, lines) => this._cmd_poke(stmt, lines),
+            poke:           (stmt, lines) => this._cmd_poke(stmt, lines),
+            palettecolor:   (stmt, lines) => this._cmd_palettecolor(stmt, lines),
+            coppercolor:    (stmt, lines) => this._cmd_coppercolor(stmt, lines),
+            loadtileset:    (stmt, lines) => this._cmd_loadtileset(stmt, lines),
+            loadtilemap:    (stmt, lines) => this._cmd_loadtilemap(stmt, lines),
+            drawtilemap:    (stmt, lines) => this._cmd_drawtilemap(stmt, lines),
+            settilemap:     (stmt, lines) => this._cmd_settilemap(stmt, lines),
+            delay:          (stmt, lines) => this._cmd_delay(stmt, lines),
+        };
+    }
+
+    _cmd_cls(stmt, lines) {
+        lines.push('        jsr     _Cls');
+    }
+
+    _cmd_clscolor(stmt, lines) {
+        this._genExprArg(stmt, 0, 'ClsColor', lines);
+        lines.push('        jsr     _ClsColor');
+    }
+
+    _cmd_color(stmt, lines) {
+        this._genExprArg(stmt, 0, 'Color', lines);
+        lines.push('        move.w  d0,_draw_color');
+    }
+
+    _cmd_end(stmt, lines) {
+        lines.push('        rts');
+    }
+
+    _cmd_waitvbl(stmt, lines) {
+        lines.push('        jsr     _WaitVBL');
+    }
+
+    _cmd_waitkey(stmt, lines) {
+        lines.push('        jsr     _WaitKey');
+    }
+
+    _cmd_graphics(stmt, lines) {
+        lines.push('        jsr     _setup_graphics');
+        if (this._usesMouse) lines.push('        jsr     _MouseInit');
+    }
+
+    _cmd_screenflip(stmt, lines) {
+        if (this._usesBobs) lines.push('        jsr     _FlushBobs');
+        lines.push('        jsr     _ScreenFlip');
+    }
+
+    _cmd_plot(stmt, lines) {
+        // Plot x, y  →  _Plot(d0=x, d1=y)
+        this._genExprArg(stmt, 1, 'Plot y', lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExprArg(stmt, 0, 'Plot x', lines);
+        lines.push('        move.l  (sp)+,d1');
+        lines.push('        jsr     _Plot');
+    }
+
+    _cmd_line(stmt, lines) {
+        // Line x1,y1,x2,y2  →  _Line(d0=x1, d1=y1, d2=x2, d3=y2)
+        this._genExprArg(stmt, 3, 'Line y2', lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExprArg(stmt, 2, 'Line x2', lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExprArg(stmt, 1, 'Line y1', lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExprArg(stmt, 0, 'Line x1', lines);
+        lines.push('        movem.l (sp)+,d1-d3');
+        lines.push('        jsr     _Line');
+    }
+
+    _cmd_rect(stmt, lines) {
+        // Rect x,y,w,h  →  _Rect(d0=x, d1=y, d2=w, d3=h)
+        this._genExprArg(stmt, 3, 'Rect h', lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExprArg(stmt, 2, 'Rect w', lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExprArg(stmt, 1, 'Rect y', lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExprArg(stmt, 0, 'Rect x', lines);
+        lines.push('        movem.l (sp)+,d1-d3');
+        lines.push('        jsr     _Rect');
+    }
+
+    _cmd_box(stmt, lines) {
+        // Box x,y,w,h  →  _Box(d0=x, d1=y, d2=w, d3=h)
+        this._genExprArg(stmt, 3, 'Box h', lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExprArg(stmt, 2, 'Box w', lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExprArg(stmt, 1, 'Box y', lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExprArg(stmt, 0, 'Box x', lines);
+        lines.push('        movem.l (sp)+,d1-d3');
+        lines.push('        jsr     _Box');
+    }
+
+    _cmd_playsample(stmt, lines) {
+        // PlaySample index, channel [, period [, volume]]
+        const idxArg = stmt.args[0];
+        if (!idxArg || idxArg.type !== 'int')
+            throw new Error(`PlaySample: index must be an integer literal (line ${stmt.line})`);
+        const entry = this._audioSamples.get(idxArg.value);
+        if (!entry)
+            throw new Error(`PlaySample: sample index ${idxArg.value} not loaded — use LoadSample first (line ${stmt.line})`);
+        const { label: lbl } = entry;
+
+        const volArg = stmt.args[3] ?? { type: 'int', value: 64 };
+        const perArg = stmt.args[2] ?? { type: 'int', value: 428 };
+
+        this._genExpr(volArg, lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExpr(perArg, lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExprArg(stmt, 1, 'PlaySample channel', lines);
+        lines.push('        move.l  d0,-(sp)');
+
+        lines.push(`        lea     ${lbl},a0`);
+        lines.push(`        move.l  #(${lbl}_end-${lbl})/2,d1`);
+
+        lines.push('        movem.l (sp)+,d0/d2-d3');
+        lines.push('        jsr     _PlaySample');
+    }
+
+    _cmd_playsampleonce(stmt, lines) {
+        // PlaySampleOnce index, channel [, period [, volume]]
+        const idxArg = stmt.args[0];
+        if (!idxArg || idxArg.type !== 'int')
+            throw new Error(`PlaySampleOnce: index must be an integer literal (line ${stmt.line})`);
+        const entry = this._audioSamples.get(idxArg.value);
+        if (!entry)
+            throw new Error(`PlaySampleOnce: sample index ${idxArg.value} not loaded — use LoadSample first (line ${stmt.line})`);
+        const { label: lbl } = entry;
+
+        const volArg = stmt.args[3] ?? { type: 'int', value: 64 };
+        const perArg = stmt.args[2] ?? { type: 'int', value: 428 };
+
+        this._genExpr(volArg, lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExpr(perArg, lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExprArg(stmt, 1, 'PlaySampleOnce channel', lines);
+        lines.push('        move.l  d0,-(sp)');
+
+        lines.push(`        lea     ${lbl},a0`);
+        lines.push(`        move.l  #(${lbl}_end-${lbl})/2,d1`);
+
+        lines.push('        movem.l (sp)+,d0/d2-d3');
+        lines.push('        jsr     _PlaySampleOnce');
+    }
+
+    _cmd_stopsample(stmt, lines) {
+        // StopSample channel  →  d0=channel, jsr _StopSample
+        this._genExprArg(stmt, 0, 'StopSample channel', lines);
+        lines.push('        jsr     _StopSample');
+    }
+
+    _cmd_loadsample(stmt, lines) {
+        // LoadSample index, "file" — pre-registered in _collectVars; no runtime code.
+    }
+
+    _cmd_loadfont(stmt, lines) {
+        // LoadFont index, "chars", "file", charW, charH — pre-registered in _collectVars; no runtime code.
+    }
+
+    _cmd_loadimage(stmt, lines) {
+        // LoadImage 0 automatically applies the image's embedded palette at runtime.
+        // Other indices: no code emitted (data only, INCBIN at end of generate()).
+        if (stmt.args[0]?.type === 'int' && stmt.args[0].value === 0) {
+            const slot = this._imageAssets.get(0);
+            if (slot) {
+                lines.push(`        lea     ${slot.label},a0`);
+                lines.push(`        jsr     _SetImagePalette`);
+            }
+        }
+    }
+
+    _cmd_loadanimimage(stmt, lines) {
+        // LoadAnimImage index,"f.raw",fw,fh,count — data only; INCBIN at end.
+        // Index 0: apply embedded palette at runtime (same as LoadImage).
+        if (stmt.args[0]?.type === 'int' && stmt.args[0].value === 0) {
+            const slot = this._imageAssets.get(0);
+            if (slot) {
+                lines.push(`        lea     ${slot.label},a0`);
+                lines.push(`        jsr     _SetImagePalette`);
+            }
+        }
+    }
+
+    _cmd_loadmask(stmt, lines) {
+        // LoadMask index, "file.mask" — registered in _collectVars; no runtime code.
+    }
+
+    _cmd_drawimage(stmt, lines) {
+        // DrawImage index, x, y [, frame]
+        const imgIdxArg = stmt.args[0];
+        if (!imgIdxArg || imgIdxArg.type !== 'int')
+            throw new Error(`DrawImage: index must be an integer literal (line ${stmt.line})`);
+        const imgEntry = this._imageAssets.get(imgIdxArg.value);
+        if (!imgEntry)
+            throw new Error(`DrawImage: image index ${imgIdxArg.value} not loaded — use LoadImage first (line ${stmt.line})`);
+
+        const xExpr    = stmt.args[1] ?? { type: 'int', value: 0 };
+        const yExpr    = stmt.args[2] ?? { type: 'int', value: 0 };
+        const frameArg = stmt.args[3];
+
+        if (frameArg && !imgEntry.isAnim)
+            throw new Error(`DrawImage: frame argument requires LoadAnimImage (image ${imgIdxArg.value} was loaded with LoadImage) — line ${stmt.line}`);
+
+        if (!frameArg) {
+            this._genExpr(yExpr, lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExpr(xExpr, lines);
+            lines.push('        move.l  (sp)+,d1');
+            lines.push(`        lea     ${imgEntry.label},a0`);
+            lines.push('        jsr     _DrawImage');
+        } else if (frameArg.type === 'int') {
+            this._genExpr(yExpr, lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExpr(xExpr, lines);
+            lines.push('        move.l  (sp)+,d1');
+            lines.push(`        moveq   #${frameArg.value},d2`);
+            lines.push(`        lea     ${imgEntry.label},a0`);
+            lines.push('        jsr     _DrawImageFrame');
+        } else {
+            this._genExpr(frameArg, lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExpr(yExpr, lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExpr(xExpr, lines);
+            lines.push('        move.l  (sp)+,d1');
+            lines.push('        move.l  (sp)+,d2');
+            lines.push(`        lea     ${imgEntry.label},a0`);
+            lines.push('        jsr     _DrawImageFrame');
+        }
+    }
+
+    _cmd_drawbob(stmt, lines) {
+        // DrawBob index, x, y [, frame]
+        const idxArg = stmt.args[0];
+        if (!idxArg || idxArg.type !== 'int')
+            throw new Error(`DrawBob: index must be an integer literal (line ${stmt.line})`);
+        const imgEntry = this._imageAssets.get(idxArg.value);
+        if (!imgEntry)
+            throw new Error(`DrawBob: image index ${idxArg.value} not loaded — use LoadImage first (line ${stmt.line})`);
+        const maskEntry = this._maskAssets.get(idxArg.value);
+
+        const xExpr    = stmt.args[1] ?? { type: 'int', value: 0 };
+        const yExpr    = stmt.args[2] ?? { type: 'int', value: 0 };
+        const frameArg = stmt.args[3];
+
+        if (frameArg && !imgEntry.isAnim)
+            throw new Error(`DrawBob: frame argument requires LoadAnimImage (image ${idxArg.value} was loaded with LoadImage) — line ${stmt.line}`);
+
+        if (!frameArg || (frameArg.type === 'int' && frameArg.value === 0)) {
+            this._genExpr(yExpr, lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExpr(xExpr, lines);
+            lines.push('        move.l  (sp)+,d1');
+            lines.push('        moveq   #0,d2');
+        } else if (frameArg.type === 'int') {
+            this._genExpr(yExpr, lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExpr(xExpr, lines);
+            lines.push('        move.l  (sp)+,d1');
+            lines.push(`        moveq   #${frameArg.value},d2`);
+        } else {
+            this._genExpr(frameArg, lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExpr(yExpr, lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExpr(xExpr, lines);
+            lines.push('        move.l  (sp)+,d1');
+            lines.push('        move.l  (sp)+,d2');
+        }
+        lines.push(`        lea     ${imgEntry.label},a0`);
+        if (maskEntry) {
+            lines.push(`        lea     ${maskEntry.label},a1`);
+        } else {
+            lines.push('        move.l  #0,a1');
+        }
+        lines.push('        jsr     _AddBob');
+    }
+
+    _cmd_setbackground(stmt, lines) {
+        // SetBackground index — register a full-screen image as the background.
+        const idxArg = stmt.args[0];
+        if (!idxArg || idxArg.type !== 'int')
+            throw new Error(`SetBackground: index must be an integer literal (line ${stmt.line})`);
+        const bgEntry = this._imageAssets.get(idxArg.value);
+        if (!bgEntry)
+            throw new Error(`SetBackground: image index ${idxArg.value} not loaded — use LoadImage first (line ${stmt.line})`);
+        lines.push(`        lea     ${bgEntry.label},a0`);
+        lines.push('        jsr     _SetBackground');
+    }
+
+    _cmd_delay(stmt, lines) {
+        const loopLbl = this._nextLabel();
+        const skipLbl = this._nextLabel();
+        this._genExprArg(stmt, 0, 'Delay frames', lines);
+        lines.push(`        tst.l   d0`);
+        lines.push(`        ble.s   ${skipLbl}`);
+        lines.push(`        subq.l  #1,d0`);
+        lines.push(`        move.l  d0,d7`);
+        lines.push(`${loopLbl}:`);
+        lines.push(`        jsr     _WaitVBL`);
+        lines.push(`        dbra    d7,${loopLbl}`);
+        lines.push(`${skipLbl}:`);
+    }
+
+    // ── T6: Text Commands ─────────────────────────────────────────────────────
+
+    _cmd_text(stmt, lines) {
+        const parts = this._flattenStrArg(stmt.args[2]);
+        this._genExprArg(stmt, 1, 'Text y', lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExprArg(stmt, 0, 'Text x', lines);
+        lines.push('        move.l  (sp)+,d1');
+        if (parts.length === 1 && parts[0].type === 'lit') {
+            const strLbl  = this._nextLabel();
+            const pastLbl = this._nextLabel();
+            lines.push(`        lea     ${strLbl},a0`);
+            lines.push('        jsr     _Text');
+            lines.push(`        bra.s   ${pastLbl}`);
+            lines.push(`${strLbl}:`);
+            lines.push(`        dc.b    "${this._escapeStr(parts[0].value)}",0`);
+            lines.push('        even');
+            lines.push(`${pastLbl}:`);
+        } else {
+            lines.push('        move.l  d1,_text_y');
+            for (const part of parts) {
+                if (part.type === 'lit') {
+                    const strLbl  = this._nextLabel();
+                    const pastLbl = this._nextLabel();
+                    lines.push(`        lea     ${strLbl},a0`);
+                    lines.push('        jsr     _Text');
+                    lines.push(`        bra.s   ${pastLbl}`);
+                    lines.push(`${strLbl}:`);
+                    lines.push(`        dc.b    "${this._escapeStr(part.value)}",0`);
+                    lines.push('        even');
+                    lines.push(`${pastLbl}:`);
+                    lines.push('        move.l  _text_y,d1');
+                } else {
+                    lines.push('        move.l  d0,-(sp)');
+                    this._genExpr(part.expr, lines);
+                    lines.push('        jsr     _IntToStr');
+                    lines.push('        move.l  d0,a0');
+                    lines.push('        move.l  (sp)+,d0');
+                    lines.push('        move.l  _text_y,d1');
+                    lines.push('        jsr     _Text');
+                    lines.push('        move.l  _text_y,d1');
+                }
+            }
+        }
+    }
+
+    _cmd_usefont(stmt, lines) {
+        const idxArg = stmt.args[0];
+        const lc = this._labelCount++;
+        if (!idxArg) {
+            lines.push('        ; UseFont — built-in font');
+            lines.push('        move.w  #8,_active_font_charW');
+            lines.push('        move.w  #8,_active_font_charH');
+            lines.push('        move.w  #7,_active_font_charH_m1');
+            lines.push('        move.l  #_font8x8,_active_font_data');
+            lines.push('        lea     _builtin_font_lookup,a0');
+            lines.push('        lea     _active_font_lookup,a1');
+            lines.push('        moveq   #31,d0');
+            lines.push(`.uf_${lc}:  move.l  (a0)+,(a1)+`);
+            lines.push(`        dbra    d0,.uf_${lc}`);
+        } else {
+            if (idxArg.type !== 'int')
+                throw new Error(`UseFont: Index muss ein Integer-Literal sein (Zeile ${stmt.line})`);
+            const fontEntry = this._fontAssets.get(idxArg.value);
+            if (!fontEntry)
+                throw new Error(`UseFont: Font ${idxArg.value} nicht geladen — LoadFont zuerst aufrufen (Zeile ${stmt.line})`);
+            const { label: lbl, charW, charH } = fontEntry;
+            lines.push(`        ; UseFont ${idxArg.value} — ${fontEntry.filename}`);
+            lines.push(`        move.w  #${charW},_active_font_charW`);
+            lines.push(`        move.w  #${charH},_active_font_charH`);
+            lines.push(`        move.w  #${charH - 1},_active_font_charH_m1`);
+            lines.push(`        move.l  #${lbl},_active_font_data`);
+            lines.push(`        lea     ${lbl}_lookup,a0`);
+            lines.push('        lea     _active_font_lookup,a1');
+            lines.push('        moveq   #31,d0');
+            lines.push(`.uf_${lc}:  move.l  (a0)+,(a1)+`);
+            lines.push(`        dbra    d0,.uf_${lc}`);
+        }
+    }
+
+    // ── T7: Poke/Palette Commands ─────────────────────────────────────────────
+
+    _cmd_poke(stmt, lines) {
+        const sz      = stmt.name === 'pokeb' ? 'b' : stmt.name === 'pokew' ? 'w' : 'l';
+        const addrArg = stmt.args[0] ?? { type: 'int', value: 0 };
+        const valArg  = stmt.args[1] ?? { type: 'int', value: 0 };
+        if (addrArg.type === 'int' && valArg.type === 'int') {
+            const hex = '$' + (addrArg.value >>> 0).toString(16).toUpperCase();
+            lines.push(`        move.${sz}  #${valArg.value},${hex}`);
+        } else if (addrArg.type === 'int') {
+            const hex = '$' + (addrArg.value >>> 0).toString(16).toUpperCase();
+            this._genExprArg(stmt, 1, `Poke${sz.toUpperCase()} val`, lines);
+            lines.push(`        move.${sz}  d0,${hex}`);
+        } else {
+            this._genExpr(addrArg, lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExprArg(stmt, 1, `Poke${sz.toUpperCase()} val`, lines);
+            lines.push('        move.l  (sp)+,a0');
+            lines.push(`        move.${sz}  d0,(a0)`);
+        }
+    }
+
+    _cmd_palettecolor(stmt, lines) {
+        if (stmt.args.every(a => a.type === 'int')) {
+            const n   = stmt.args[0].value;
+            const r   = stmt.args[1].value & 0xF;
+            const g   = stmt.args[2].value & 0xF;
+            const b   = stmt.args[3].value & 0xF;
+            const rgb = (r << 8) | (g << 4) | b;
+            lines.push(`        moveq   #${n},d0`);
+            lines.push(`        move.w  #$${hex(rgb)},d1`);
+            lines.push('        jsr     _SetPaletteColor');
+        } else {
+            this._genExprArg(stmt, 3, 'PaletteColor b', lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExprArg(stmt, 2, 'PaletteColor g', lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExprArg(stmt, 1, 'PaletteColor r', lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExprArg(stmt, 0, 'PaletteColor n', lines);
+            lines.push('        movem.l (sp)+,d1-d3');
+            lines.push('        jsr     _SetPaletteColorRGB');
+        }
+    }
+
+    // ── T8: CopperColor ───────────────────────────────────────────────────────
+
+    _cmd_coppercolor(stmt, lines) {
+        if (stmt.args.every(a => a.type === 'int')) {
+            const y      = stmt.args[0].value;
+            const r      = stmt.args[1].value & 0xF;
+            const g      = stmt.args[2].value & 0xF;
+            const b      = stmt.args[3].value & 0xF;
+            const rgb    = (r << 8) | (g << 4) | b;
+            const offset = y * 8 + 6;
+            const lblA   = this._nextLabel();
+            const lblEnd = this._nextLabel();
+            lines.push(`        tst.b   _front_is_a`);
+            lines.push(`        bne.s   ${lblA}`);
+            lines.push(`        move.w  #$${hex(rgb)},_gfx_raster_b+${offset}`);
+            lines.push(`        bra.s   ${lblEnd}`);
+            lines.push(`${lblA}:`);
+            lines.push(`        move.w  #$${hex(rgb)},_gfx_raster_a+${offset}`);
+            lines.push(`${lblEnd}:`);
+        } else {
+            const lblA = this._nextLabel();
+            const lblW = this._nextLabel();
+
+            const rArg = stmt.args[1];
+            const gArg = stmt.args[2];
+            const bArg = stmt.args[3];
+            const rIsZero = rArg.type === 'int' && rArg.value === 0;
+            const gIsZero = gArg.type === 'int' && gArg.value === 0;
+            const bIsZero = bArg.type === 'int' && bArg.value === 0;
+
+            if (rIsZero) {
+                lines.push('        moveq   #0,d2');
+            } else {
+                this._genExprArg(stmt, 1, 'CopperColor r', lines);
+                lines.push('        andi.w  #$F,d0');
+                lines.push('        lsl.w   #8,d0');
+                lines.push('        move.w  d0,d2');
+            }
+
+            if (!gIsZero) {
+                this._genExprArg(stmt, 2, 'CopperColor g', lines);
+                lines.push('        andi.w  #$F,d0');
+                lines.push('        lsl.w   #4,d0');
+                lines.push('        or.w    d0,d2');
+            }
+
+            if (!bIsZero) {
+                this._genExprArg(stmt, 3, 'CopperColor b', lines);
+                lines.push('        andi.w  #$F,d0');
+                lines.push('        or.w    d0,d2');
+            }
+
+            this._genExprArg(stmt, 0, 'CopperColor y', lines);
+            lines.push('        lsl.l   #3,d0');
+
+            lines.push('        tst.b   _front_is_a');
+            lines.push(`        bne.s   ${lblA}`);
+            lines.push('        lea     _gfx_raster_b,a0');
+            lines.push(`        bra.s   ${lblW}`);
+            lines.push(`${lblA}:`);
+            lines.push('        lea     _gfx_raster_a,a0');
+            lines.push(`${lblW}:`);
+            lines.push('        move.w  d2,6(a0,d0.l)');
+        }
+    }
+
+    // ── T9: Tilemap Commands ──────────────────────────────────────────────────
+
+    _cmd_loadtileset(stmt, lines) {
+        if (stmt.args[0]?.type === 'int' && stmt.args[0].value === 0) {
+            const tsEntry = this._tilesetAssets.get(0);
+            if (tsEntry) {
+                lines.push(`        lea     ${tsEntry.label},a0`);
+                lines.push('        jsr     _SetImagePalette');
+            }
+        }
+    }
+
+    _cmd_loadtilemap(stmt, lines) {
+        // LoadTilemap slot, "file.bmap" — data only; no runtime code.
+    }
+
+    _cmd_drawtilemap(stmt, lines) {
+        const tmIdxArg = stmt.args[0];
+        const tsIdxArg = stmt.args[1];
+        if (!tmIdxArg || tmIdxArg.type !== 'int')
+            throw new Error(`DrawTilemap: tmSlot must be an integer literal (line ${stmt.line})`);
+        if (!tsIdxArg || tsIdxArg.type !== 'int')
+            throw new Error(`DrawTilemap: tsSlot must be an integer literal (line ${stmt.line})`);
+        const tmEntry = this._tilemapAssets.get(tmIdxArg.value);
+        if (!tmEntry)
+            throw new Error(`DrawTilemap: tilemap slot ${tmIdxArg.value} not loaded — use LoadTilemap first (line ${stmt.line})`);
+        const tsEntry = this._tilesetAssets.get(tsIdxArg.value);
+        if (!tsEntry)
+            throw new Error(`DrawTilemap: tileset slot ${tsIdxArg.value} not loaded — use LoadTileset first (line ${stmt.line})`);
+
+        const scrollXExpr = stmt.args[2] ?? { type: 'int', value: 0 };
+        const scrollYExpr = stmt.args[3] ?? { type: 'int', value: 0 };
+        this._genExpr(scrollXExpr, lines);
+        lines.push('        move.l  d0,_active_scroll_x');
+        this._genExpr(scrollYExpr, lines);
+        lines.push('        move.l  d0,d1');
+        lines.push('        move.l  d0,_active_scroll_y');
+        lines.push('        move.l  _active_scroll_x,d0');
+        lines.push(`        lea     ${tmEntry.label},a0`);
+        lines.push(`        lea     ${tsEntry.label},a1`);
+        lines.push('        jsr     _DrawTilemap');
+    }
+
+    _cmd_settilemap(stmt, lines) {
+        const tmIdxArg = stmt.args[0];
+        const tsIdxArg = stmt.args[1];
+        if (!tmIdxArg || tmIdxArg.type !== 'int')
+            throw new Error(`SetTilemap: tmSlot must be an integer literal (line ${stmt.line})`);
+        if (!tsIdxArg || tsIdxArg.type !== 'int')
+            throw new Error(`SetTilemap: tsSlot must be an integer literal (line ${stmt.line})`);
+        const tmEntry = this._tilemapAssets.get(tmIdxArg.value);
+        if (!tmEntry)
+            throw new Error(`SetTilemap: tilemap slot ${tmIdxArg.value} not loaded — use LoadTilemap first (line ${stmt.line})`);
+        const tsEntry = this._tilesetAssets.get(tsIdxArg.value);
+        if (!tsEntry)
+            throw new Error(`SetTilemap: tileset slot ${tsIdxArg.value} not loaded — use LoadTileset first (line ${stmt.line})`);
+
+        lines.push(`        lea     ${tmEntry.label},a0`);
+        lines.push('        move.l  a0,_active_tilemap_ptr');
+        lines.push(`        lea     ${tsEntry.label},a0`);
+        lines.push('        move.l  a0,_active_tileset_ptr');
+        lines.push('        lea     _bg_restore_tilemap,a0');
+        lines.push('        move.l  a0,_bg_restore_fn');
+    }
+
+    // ── Built-in function handler table (Phase 3 refactoring) ───────────────
+
+    _initBuiltinHandlers() {
+        this._builtinHandlers = {
+            abs:    (expr, lines) => this._builtin_abs(expr, lines),
+            rnd:    (expr, lines) => this._builtin_rnd(expr, lines),
+            'str$': (expr, lines) => this._builtin_str(expr, lines),
+            // T15: Joystick
+            joyup:      (expr, lines) => this._builtin_joydir(expr, lines, 9),
+            joydown:    (expr, lines) => this._builtin_joydir(expr, lines, 8),
+            joyleft:    (expr, lines) => this._builtin_joydir(expr, lines, 1),
+            joyright:   (expr, lines) => this._builtin_joydir(expr, lines, 0),
+            joyfire:    (expr, lines) => this._builtin_joyfire(expr, lines),
+            // T16: Mouse
+            mousex:     (expr, lines) => this._builtin_mousex(expr, lines),
+            mousey:     (expr, lines) => this._builtin_mousey(expr, lines),
+            mousedown:  (expr, lines) => this._builtin_mousedown(expr, lines),
+            mousehit:   (expr, lines) => this._builtin_mousehit(expr, lines),
+            // T17: Keyboard + Peek
+            keydown:    (expr, lines) => this._builtin_keydown(expr, lines),
+            peekb:      (expr, lines) => this._builtin_peek(expr, lines, 'b'),
+            peekw:      (expr, lines) => this._builtin_peek(expr, lines, 'w'),
+            peekl:      (expr, lines) => this._builtin_peek(expr, lines, 'l'),
+            // T18: Collision
+            rectsoverlap:     (expr, lines) => this._builtin_rectsoverlap(expr, lines),
+            imagesoverlap:    (expr, lines) => this._builtin_imagesoverlap(expr, lines),
+            imagerectoverlap: (expr, lines) => this._builtin_imagerectoverlap(expr, lines),
+        };
+    }
+
+    // ── T24: _collectVars command handler map ─────────────────────────────────
+    _initCollectHandlers() {
+        this._collectCmdHandlers = {
+            coppercolor: () => { this._usesRaster = true; },
+
+            loadsample: (stmt) => {
+                this._usesSound = true;
+                const idxArg  = stmt.args[0];
+                const fileArg = stmt.args[1];
+                if (idxArg && idxArg.type === 'int' && fileArg && fileArg.type === 'string') {
+                    if (!this._audioSamples.has(idxArg.value)) {
+                        const lbl = `_snd_${this._audioSamples.size}`;
+                        this._audioSamples.set(idxArg.value, { filename: fileArg.value, label: lbl });
+                    }
+                }
+            },
+
+            loadimage: (stmt) => {
+                this._usesImage = true;
+                const idxArg  = stmt.args[0];
+                const fileArg = stmt.args[1];
+                const wArg    = stmt.args[2];
+                const hArg    = stmt.args[3];
+                if (idxArg?.type === 'int' && fileArg?.type === 'string' &&
+                    wArg?.type === 'int'   && hArg?.type  === 'int') {
+                    if (!this._imageAssets.has(idxArg.value)) {
+                        const lbl      = `_img_${this._imageAssets.size}`;
+                        const width    = wArg.value;
+                        const height   = hArg.value;
+                        const rowbytes = Math.ceil(Math.ceil(width / 8) / 2) * 2;
+                        const isInterleaved = fileArg.value.toLowerCase().endsWith('.iraw');
+                        this._imageAssets.set(idxArg.value, {
+                            filename: fileArg.value, label: lbl, width, height, rowbytes,
+                            isAnim: false, frameCount: 1, isInterleaved
+                        });
+                    }
+                }
+            },
+
+            loadanimimage: (stmt) => {
+                this._usesImage = true;
+                const idxArg    = stmt.args[0];
+                const fileArg   = stmt.args[1];
+                const wArg      = stmt.args[2];
+                const hArg      = stmt.args[3];
+                const countArg  = stmt.args[4];
+                if (idxArg?.type === 'int' && fileArg?.type === 'string' &&
+                    wArg?.type === 'int'   && hArg?.type  === 'int' &&
+                    countArg?.type === 'int') {
+                    if (!this._imageAssets.has(idxArg.value)) {
+                        const lbl        = `_img_${this._imageAssets.size}`;
+                        const width      = wArg.value;
+                        const height     = hArg.value;
+                        const frameCount = countArg.value;
+                        const rowbytes   = Math.ceil(Math.ceil(width / 8) / 2) * 2;
+                        const isInterleaved = fileArg.value.toLowerCase().endsWith('.iraw');
+                        this._imageAssets.set(idxArg.value, {
+                            filename: fileArg.value, label: lbl, width, height, rowbytes,
+                            isAnim: true, frameCount, isInterleaved
+                        });
+                    }
+                }
+            },
+
+            loadmask: (stmt) => {
+                this._usesBobs = true;
+                const idxArg  = stmt.args[0];
+                const fileArg = stmt.args[1];
+                if (idxArg?.type === 'int' && fileArg?.type === 'string') {
+                    if (!this._maskAssets.has(idxArg.value)) {
+                        const lbl = `_mask_${this._maskAssets.size}`;
+                        this._maskAssets.set(idxArg.value, { filename: fileArg.value, label: lbl });
+                    }
+                }
+            },
+
+            loadfont: (stmt) => {
+                const idxArg   = stmt.args[0];
+                const charsArg = stmt.args[1];
+                const fileArg  = stmt.args[2];
+                const wArg     = stmt.args[3];
+                const hArg     = stmt.args[4];
+                if (idxArg?.type !== 'int')
+                    throw new Error(`LoadFont: erstes Argument (Index) muss ein Integer-Literal sein — Zeile ${stmt.line}`);
+                if (charsArg?.type !== 'string')
+                    throw new Error(`LoadFont: zweites Argument (Zeichensatz) muss ein String-Literal sein — Zeile ${stmt.line}`);
+                if (fileArg?.type !== 'string')
+                    throw new Error(`LoadFont: drittes Argument (Dateiname) muss ein String-Literal sein — Zeile ${stmt.line}`);
+                if (wArg?.type !== 'int' || hArg?.type !== 'int')
+                    throw new Error(`LoadFont: Syntax ist LoadFont index, "chars", "file.raw", charW, charH — charW/charH fehlen oder sind keine Ganzzahlen (Zeile ${stmt.line})`);
+                const charW = wArg.value;
+                const charH = hArg.value;
+                if (charW > 8)
+                    throw new Error(`LoadFont: charW darf maximal 8 sein (${charW} angegeben) — Zeile ${stmt.line}`);
+                if (!this._fontAssets.has(idxArg.value)) {
+                    const lbl = `_font_${this._fontAssets.size}`;
+                    this._fontAssets.set(idxArg.value, {
+                        filename: fileArg.value, label: lbl,
+                        chars: charsArg.value, charW, charH
+                    });
+                }
+            },
+
+            setbackground: () => { this._usesBobs = true; this._usesImage = true; },
+            drawbob:       () => { this._usesBobs = true; this._usesImage = true; },
+
+            loadtileset: (stmt) => {
+                this._usesTilemap = true;
+                this._usesImage   = true;
+                const idxArg  = stmt.args[0];
+                const fileArg = stmt.args[1];
+                const wArg    = stmt.args[2];
+                const hArg    = stmt.args[3];
+                if (idxArg?.type !== 'int')
+                    throw new Error(`LoadTileset: slot muss ein Integer-Literal sein — Zeile ${stmt.line}`);
+                if (fileArg?.type !== 'string')
+                    throw new Error(`LoadTileset: Dateiname muss ein String-Literal sein — Zeile ${stmt.line}`);
+                if (wArg?.type !== 'int' || hArg?.type !== 'int')
+                    throw new Error(`LoadTileset: tileW und tileH müssen Integer-Literale sein — Zeile ${stmt.line}`);
+                if (!this._tilesetAssets.has(idxArg.value)) {
+                    const lbl      = `_tileset_${this._tilesetAssets.size}`;
+                    const tileW    = wArg.value;
+                    const tileH    = hArg.value;
+                    const rowbytes = Math.ceil(Math.ceil(tileW / 8) / 2) * 2;
+                    this._tilesetAssets.set(idxArg.value, { filename: fileArg.value, label: lbl, tileW, tileH, rowbytes });
+                }
+            },
+
+            loadtilemap: (stmt) => {
+                this._usesTilemap = true;
+                const idxArg  = stmt.args[0];
+                const fileArg = stmt.args[1];
+                if (idxArg?.type !== 'int')
+                    throw new Error(`LoadTilemap: slot muss ein Integer-Literal sein — Zeile ${stmt.line}`);
+                if (fileArg?.type !== 'string')
+                    throw new Error(`LoadTilemap: Dateiname muss ein String-Literal sein — Zeile ${stmt.line}`);
+                if (!this._tilemapAssets.has(idxArg.value)) {
+                    const lbl = `_tilemap_${this._tilemapAssets.size}`;
+                    this._tilemapAssets.set(idxArg.value, { filename: fileArg.value, label: lbl });
+                }
+            },
+
+            drawtilemap: () => { this._usesTilemap = true; this._usesImage = true; },
+
+            settilemap: () => {
+                this._usesTilemap = true;
+                this._usesImage   = true;
+                this._usesBobs    = true; // _bg_restore_fn and _bg_restore_tilemap live in bobs.s
+            },
+        };
+    }
+
+    _builtin_abs(expr, lines) {
+        const doneLbl = this._nextLabel();
+        this._genExpr(expr.args[0] ?? { type: 'int', value: 0 }, lines);
+        lines.push('        tst.l   d0');
+        lines.push(`        bge.s   ${doneLbl}`);
+        lines.push('        neg.l   d0');
+        lines.push(`${doneLbl}:`);
+    }
+
+    _builtin_rnd(expr, lines) {
+        this._genExpr(expr.args[0] ?? { type: 'int', value: 1 }, lines);
+        lines.push('        move.l  d0,d1');
+        lines.push('        jsr     _Rnd');
+    }
+
+    _builtin_str(expr, lines) {
+        this._genExpr(expr.args[0] ?? { type: 'int', value: 0 }, lines);
+        lines.push('        jsr     _IntToStr');
+    }
+
+    // ── T15: Joystick ─────────────────────────────────────────────────────────
+
+    _builtin_joydir(expr, lines, bitN) {
+        const portArg = expr.args[0] ?? { type: 'int', value: 1 };
+        if (portArg.type === 'int') {
+            const addr = portArg.value === 0 ? '$DFF00A' : '$DFF00C';
+            lines.push(`        move.w  ${addr},d0`);
+        } else {
+            this._genExpr(portArg, lines);
+            lines.push('        add.l   d0,d0');
+            lines.push('        lea     $DFF00A,a0');
+            lines.push('        move.w  0(a0,d0.w),d0');
+        }
+        lines.push('        move.w  d0,d1');
+        lines.push('        lsr.w   #1,d1');
+        lines.push('        eor.w   d0,d1');
+        lines.push(`        btst    #${bitN},d1`);
+        lines.push('        sne     d0');
+        lines.push('        ext.w   d0');
+        lines.push('        ext.l   d0');
+    }
+
+    _builtin_joyfire(expr, lines) {
+        const portArg = expr.args[0] ?? { type: 'int', value: 1 };
+        lines.push('        move.b  $BFE001,d0');
+        lines.push('        not.b   d0');
+        if (portArg.type === 'int') {
+            const bitN = portArg.value === 0 ? 7 : 6;
+            lines.push(`        btst    #${bitN},d0`);
+        } else {
+            this._genExpr(portArg, lines);
+            lines.push('        move.l  d0,d1');
+            lines.push('        moveq   #7,d0');
+            lines.push('        sub.l   d1,d0');
+            lines.push('        move.l  d0,d1');
+            lines.push('        move.b  $BFE001,d0');
+            lines.push('        not.b   d0');
+            lines.push('        btst    d1,d0');
+        }
+        lines.push('        sne     d0');
+        lines.push('        ext.w   d0');
+        lines.push('        ext.l   d0');
+    }
+
+    // ── T16: Mouse ────────────────────────────────────────────────────────────
+
+    _builtin_mousex(expr, lines) {
+        lines.push('        move.w  _mouse_x,d0');
+        lines.push('        ext.l   d0');
+    }
+
+    _builtin_mousey(expr, lines) {
+        lines.push('        move.w  _mouse_y,d0');
+        lines.push('        ext.l   d0');
+    }
+
+    _builtin_mousedown(expr, lines) {
+        const btn = expr.args[0] ?? { type: 'int', value: 0 };
+        if (btn.type === 'int') {
+            const v = btn.value === 0 ? '_mouse_down_0' : '_mouse_down_1';
+            lines.push(`        move.b  ${v},d0`);
+        } else {
+            this._genExpr(btn, lines);
+            lines.push('        move.l  d0,d1');
+            lines.push('        lea     _mouse_down_0,a0');
+            lines.push('        move.b  0(a0,d1.l),d0');
+        }
+        lines.push('        ext.w   d0');
+        lines.push('        ext.l   d0');
+    }
+
+    _builtin_mousehit(expr, lines) {
+        const btn = expr.args[0] ?? { type: 'int', value: 0 };
+        if (btn.type === 'int') {
+            const v = btn.value === 0 ? '_mouse_hit_0' : '_mouse_hit_1';
+            lines.push(`        move.b  ${v},d0`);
+            lines.push(`        clr.b   ${v}`);
+        } else {
+            this._genExpr(btn, lines);
+            lines.push('        move.l  d0,d1');
+            lines.push('        lea     _mouse_hit_0,a0');
+            lines.push('        move.b  0(a0,d1.l),d0');
+            lines.push('        clr.b   0(a0,d1.l)');
+        }
+        lines.push('        ext.w   d0');
+        lines.push('        ext.l   d0');
+    }
+
+    // ── T17: Keyboard + Peek ──────────────────────────────────────────────────
+
+    _builtin_keydown(expr, lines) {
+        this._genExpr(expr.args[0] ?? { type: 'int', value: 0 }, lines);
+        lines.push('        move.l  d0,d1');
+        lines.push('        lsr.l   #3,d1');
+        lines.push('        and.l   #7,d0');
+        lines.push('        lea     _kbd_matrix,a0');
+        lines.push('        add.l   d1,a0');
+        lines.push('        btst    d0,(a0)');
+        lines.push('        sne     d0');
+        lines.push('        ext.w   d0');
+        lines.push('        ext.l   d0');
+    }
+
+    _builtin_peek(expr, lines, sz) {
+        const addrArg = expr.args[0] ?? { type: 'int', value: 0 };
+        if (addrArg.type === 'int') {
+            const hex = '$' + (addrArg.value >>> 0).toString(16).toUpperCase();
+            if (sz === 'b') {
+                lines.push('        moveq   #0,d0');
+                lines.push(`        move.b  ${hex},d0`);
+            } else if (sz === 'w') {
+                lines.push(`        move.w  ${hex},d0`);
+                lines.push('        ext.l   d0');
+            } else {
+                lines.push(`        move.l  ${hex},d0`);
+            }
+        } else {
+            this._genExpr(addrArg, lines);
+            lines.push('        move.l  d0,a0');
+            if (sz === 'b') {
+                lines.push('        moveq   #0,d0');
+                lines.push('        move.b  (a0),d0');
+            } else if (sz === 'w') {
+                lines.push('        move.w  (a0),d0');
+                lines.push('        ext.l   d0');
+            } else {
+                lines.push('        move.l  (a0),d0');
+            }
+        }
+    }
+
+    // ── T18: Collision ────────────────────────────────────────────────────────
+
+    _builtin_rectsoverlap(expr, lines) {
+        if (expr.args.length < 8)
+            throw new Error('RectsOverlap: requires 8 arguments (x1,y1,w1,h1,x2,y2,w2,h2)');
+        for (const arg of expr.args) {
+            this._genExpr(arg, lines);
+            lines.push('        move.l  d0,-(sp)');
+        }
+        lines.push('        movem.l d4-d7,-(sp)    ; save loop registers');
+        lines.push('        movem.l 16(sp),d0-d7   ; peek args');
+        lines.push('        add.w   #32,sp         ; pop args');
+        const rfLbl = this._nextLabel();
+        const reLbl = this._nextLabel();
+        lines.push('        move.l  d7,a1');
+        lines.push('        add.l   d5,d7');
+        lines.push('        cmp.l   d3,d7');
+        lines.push(`        ble.s   ${rfLbl}`);
+        lines.push('        add.l   d1,d3');
+        lines.push('        cmp.l   a1,d3');
+        lines.push(`        ble.s   ${rfLbl}`);
+        lines.push('        move.l  d6,a2');
+        lines.push('        add.l   d4,d6');
+        lines.push('        cmp.l   d2,d6');
+        lines.push(`        ble.s   ${rfLbl}`);
+        lines.push('        add.l   d0,d2');
+        lines.push('        cmp.l   a2,d2');
+        lines.push(`        ble.s   ${rfLbl}`);
+        lines.push('        moveq   #-1,d0');
+        lines.push(`        bra.s   ${reLbl}`);
+        lines.push(`${rfLbl}:`);
+        lines.push('        moveq   #0,d0');
+        lines.push(`${reLbl}:`);
+        lines.push('        movem.l (sp)+,d4-d7');
+    }
+
+    _builtin_imagesoverlap(expr, lines) {
+        if (expr.args.length < 6)
+            throw new Error('ImagesOverlap: requires 6 arguments (img1,x1,y1,img2,x2,y2)');
+        const idx1a = expr.args[0], idx2a = expr.args[3];
+        if (!idx1a || idx1a.type !== 'int')
+            throw new Error('ImagesOverlap: arg 0 (img1) must be an integer literal');
+        if (!idx2a || idx2a.type !== 'int')
+            throw new Error('ImagesOverlap: arg 3 (img2) must be an integer literal');
+        const ast1 = this._imageAssets.get(idx1a.value);
+        const ast2 = this._imageAssets.get(idx2a.value);
+        if (!ast1) throw new Error(`ImagesOverlap: no image at index ${idx1a.value}`);
+        if (!ast2) throw new Error(`ImagesOverlap: no image at index ${idx2a.value}`);
+        for (const argIdx of [1, 2, 4, 5]) {
+            this._genExpr(expr.args[argIdx], lines);
+            lines.push('        move.l  d0,-(sp)');
+        }
+        lines.push('        movem.l d4-d7,-(sp)    ; save loop registers');
+        lines.push('        movem.l 16(sp),d0-d3');
+        lines.push('        add.w   #16,sp');
+        lines.push(`        move.w  ${ast1.label}+0,d4`);
+        lines.push('        ext.l   d4');
+        lines.push(`        move.w  ${ast1.label}+2,d5`);
+        lines.push('        ext.l   d5');
+        lines.push(`        move.w  ${ast2.label}+0,d6`);
+        lines.push('        ext.l   d6');
+        lines.push(`        move.w  ${ast2.label}+2,d7`);
+        lines.push('        ext.l   d7');
+        const ifLbl = this._nextLabel();
+        const ieLbl = this._nextLabel();
+        lines.push('        move.l  d3,a1');
+        lines.push('        add.l   d4,d3');
+        lines.push('        cmp.l   d1,d3');
+        lines.push(`        ble.s   ${ifLbl}`);
+        lines.push('        add.l   d6,d1');
+        lines.push('        cmp.l   a1,d1');
+        lines.push(`        ble.s   ${ifLbl}`);
+        lines.push('        move.l  d2,a2');
+        lines.push('        add.l   d5,d2');
+        lines.push('        cmp.l   d0,d2');
+        lines.push(`        ble.s   ${ifLbl}`);
+        lines.push('        add.l   d7,d0');
+        lines.push('        cmp.l   a2,d0');
+        lines.push(`        ble.s   ${ifLbl}`);
+        lines.push('        moveq   #-1,d0');
+        lines.push(`        bra.s   ${ieLbl}`);
+        lines.push(`${ifLbl}:`);
+        lines.push('        moveq   #0,d0');
+        lines.push(`${ieLbl}:`);
+        lines.push('        movem.l (sp)+,d4-d7');
+    }
+
+    _builtin_imagerectoverlap(expr, lines) {
+        if (expr.args.length < 7)
+            throw new Error('ImageRectOverlap: requires 7 arguments (img,x,y,rx,ry,rw,rh)');
+        const imgIdxA = expr.args[0];
+        if (!imgIdxA || imgIdxA.type !== 'int')
+            throw new Error('ImageRectOverlap: arg 0 (img) must be an integer literal');
+        const imgAst = this._imageAssets.get(imgIdxA.value);
+        if (!imgAst) throw new Error(`ImageRectOverlap: no image at index ${imgIdxA.value}`);
+        for (const argIdx of [1, 2, 3, 4, 5, 6]) {
+            this._genExpr(expr.args[argIdx], lines);
+            lines.push('        move.l  d0,-(sp)');
+        }
+        lines.push('        movem.l d4-d7,-(sp)    ; save loop registers');
+        lines.push('        movem.l 16(sp),d0-d5');
+        lines.push('        add.w   #24,sp');
+        lines.push(`        move.w  ${imgAst.label}+0,d6`);
+        lines.push('        ext.l   d6');
+        lines.push(`        move.w  ${imgAst.label}+2,d7`);
+        lines.push('        ext.l   d7');
+        const ioLbl = this._nextLabel();
+        const ioELbl = this._nextLabel();
+        lines.push('        move.l  d5,a1');
+        lines.push('        add.l   d6,d5');
+        lines.push('        cmp.l   d3,d5');
+        lines.push(`        ble.s   ${ioLbl}`);
+        lines.push('        add.l   d1,d3');
+        lines.push('        cmp.l   a1,d3');
+        lines.push(`        ble.s   ${ioLbl}`);
+        lines.push('        move.l  d4,a2');
+        lines.push('        add.l   d7,d4');
+        lines.push('        cmp.l   d2,d4');
+        lines.push(`        ble.s   ${ioLbl}`);
+        lines.push('        add.l   d0,d2');
+        lines.push('        cmp.l   a2,d2');
+        lines.push(`        ble.s   ${ioLbl}`);
+        lines.push('        moveq   #-1,d0');
+        lines.push(`        bra.s   ${ioELbl}`);
+        lines.push(`${ioLbl}:`);
+        lines.push('        moveq   #0,d0');
+        lines.push(`${ioELbl}:`);
+        lines.push('        movem.l (sp)+,d4-d7');
     }
 
     /** Return a globally unique local label string. */

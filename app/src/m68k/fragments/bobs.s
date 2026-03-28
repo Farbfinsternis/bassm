@@ -225,8 +225,9 @@ _FlushBobs:
         clr.l   d0
         move.w  8(a4),d0               ; d0.l = x (zero-extended)
         clr.l   d1
-        move.w  10(a4),d1              ; d1.l = y (zero-extended)
-        jsr     (a6)                    ; _bg_restore_fn(a0=imgptr, d0=x, d1=y) — frame-agnostic
+        move.w  10(a4),d1              ; d1.l = visual_y (zero-extended)
+        add.w   _active_fine_y,d1      ; d1 = buf_y = visual_y + fine_y (0 when no tilemap scroll)
+        jsr     (a6)                    ; _bg_restore_fn(a0=imgptr, d0=x, d1=buf_y)
         lea     16(a4),a4               ; advance to next slot (BOBS_SLOT_SZ = 16)
         dbra    d7,.restore_loop
 

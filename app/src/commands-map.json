@@ -328,13 +328,14 @@
     },
     {
         "name": "DrawTilemap",
-        "description": "Render the visible portion of a tilemap into the back buffer. scrollX is the camera position in pixels (0 = leftmost tile). Tile dimensions and map size are read from the tilemap header at runtime.",
+        "description": "Render the visible portion of a tilemap into the back buffer. scrollX/scrollY are the camera position in pixels (0,0 = top-left). Tile dimensions and map size are read from the tilemap header at runtime.",
         "type": "global",
         "return": "void",
         "args": [
             { "name": "tmSlot",  "type": "integer" },
             { "name": "tsSlot",  "type": "integer" },
-            { "name": "scrollX", "type": "integer" }
+            { "name": "scrollX", "type": "integer" },
+            { "name": "scrollY", "type": "integer", "optional": true }
         ]
     },
     {
