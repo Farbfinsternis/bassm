@@ -82,6 +82,68 @@ Eine detaillierte Übersicht aller **bereits implementierten Features und behobe
 
 ---
 
+## Epic 7: Visueller Node-Editor (Prio 7)
+*Unreal-Blueprint-artiger Editor als zweite Ansicht neben dem Text-Editor. Macht Amiga-Spielentwicklung auch ohne Coding-Erfahrung zugänglich.*
+
+- [ ] **TOOL-VNE-1: Node-Editor V1 — Core-Renderer**
+  - ✓ **Kein externes Framework.** Eigenes DIV/SVG-Layer-System innerhalb eines parent-Containers, der immer **exakt in den Viewport passt** (100% Breite/Höhe, kein Scrolling nach außen).
+  - ✓ **Layering im World-Space**:
+    - ✓ `bnc-grid`: Basis-DIV-Layer für ein visuelles Raster, unterteilt in Minor- und Major-Grid-Linien (skaliert und pannt automatisch mit).
+    - ✓ `bnc-noodles`: SVG-Layer (kubische Bézier-Noodles in World-Space) exakt über dem Grid.
+    - ✓ `bnc-nodes`: DIV-Schicht (ein `<div>` pro Node) über den Noodles.
+  - ✓ **UI-Layer (Fixed)**: `bnc-ui` Layer (Toolbar, Minimap, Panels). Kein Transform! Mauseingaben (Drag, Scrollrad) auf UI-Elementen werden geblockt (`stopPropagation`), um ungewolltes Navigieren im World-Space zu verhindern.
+  - ✓ **Drag-to-Connect** via SVG-Preview-Noodle (gestrichelt); ✓ Zoom um Maus-Zentrum; ✓ Proximity-basierter Pin-Snap (30px Radius).
+  - ✓ **Pin-System**: Exec-Pins (weiß, Dreiecke, Ausführungsreihenfolge) + Data-Pins (farbig: blau=int, grün=string, gelb=bool, grau=asset-handle).
+  - ✓ **Node-Dragging, Selektion & Löschung**: Header-Drag, Rubber-Band-Selektion, Entf-Taste (geschützte Nodes ausgenommen).
+
+- [ ] **TOOL-VNE-1a: PLAY- & LOOP-Architektur (Zwei-Zonen-Modell)**
+  - ✓ **PLAY-Node (Execution Start)**: Der Graph startet mit einer fixierten „PLAY"-Node. Diese Spezial-Node **kann nicht gelöscht** und **nicht mehrfach instanziiert** werden. Sie erscheint nicht im Node-Picker.
+  - **LOOP-Node (Frame-Schleife)**: Der Nutzer kann über den Node-Picker **genau eine** LOOP-Node platzieren (Singleton). Die LOOP-Node markiert den Anfang des `While 1 … ScreenFlip … Wend`-Blocks. Sobald eine LOOP-Node existiert, verschwindet sie aus dem Picker. Die LOOP-Node kann nicht gelöscht werden.
+  - **Zonen-Klassifikation**: Jeder Command aus `commands-map.json` erhält eine Zone-Eigenschaft:
+    - `setup` — Nur nach PLAY (einmalige Init): `Graphics`, `LoadImage`, `LoadAnimImage`, `LoadMask`, `LoadSample`, `LoadFont`, `LoadTileset`, `LoadTilemap`, `SetViewport`, `SetBackground`, `SetTilemap`, `PaletteColor`.
+    - `frame` — Nur nach LOOP (pro Frame): `Cls`, `ClsColor`, `Color`, `DrawImage`, `DrawBob`, `DrawTilemap`, `ScreenFlip`, `Viewport`, `SetCamera`, `Text`, `Plot`, `Line`, `Rect`, `Box`.
+    - `any` — Beide Zonen: `WaitKey`, `WaitVbl`, `Delay`, `End`, `PlaySample`, `PlaySampleOnce`, `StopSample`, `CopperColor`, `UseFont`, `PokeB`, `PokeW`, `PokeL`, `Poke`.
+  - **Wiring-Validierung**: An Exec-Ketten dürfen nur zonen-kompatible Nodes angehängt werden. Die Zugehörigkeit wird per Rückwärts-Trace der Exec-Kette ermittelt (endet bei PLAY → setup; endet bei LOOP → frame).
+
+- [ ] **TOOL-VNE-1b: Node-Picker & Kontext-Filter**
+  - ✓ **Node-Picker (Global)**: Doppelklick auf das leere Grid öffnet den Picker mit Suchfeld und auf-/zuklappbaren Kategorien. Zeigt **alle** verfügbaren Nodes an (inklusive LOOP, solange keine existiert).
+  - **Node-Picker (Contextual / Noodle-Drop)**: Zieht man eine Noodle aus einem Exec-Pin und lässt sie im Leeren fallen, öffnet sich der Picker **kontextsensitiv gefiltert**: Befindet sich die Quell-Node in der Setup-Kette (Rückwärts-Trace endet bei PLAY), werden nur `setup`- und `any`-Nodes angezeigt. Befindet sie sich in der Frame-Kette (Trace endet bei LOOP), nur `frame`- und `any`-Nodes. Zusätzlich filtert der Picker bei Data-Pins nach kompatiblem Datentyp (Int→Int, String→String, etc.).
+
+- [ ] **TOOL-VNE-1c: Editor Side-Panel (Variables & Assets)**
+  - **Variable Manager**: Globale und lokale Variablen inkl. Typen (Int, String, Array) in einer Liste anlegen und verwalten. Drag & Drop einer Variable auf den Canvas erzeugt automatisch Getter/Setter-Nodes.
+  - **Asset Outliner**: Baumnavigation für Projekt-Assets (.iraw, .mask, etc.). Drag & Drop eines Assets auf den Canvas erzeugt intelligente Nodes (z.B. LoadImage mit vorbereiteten Metadaten).
+
+- [ ] **TOOL-VNE-1d: Amiga-spezifische Features**
+  - **Hardware-Budget-Overlay**: Jeder Node trägt zu Chip-RAM / Fast-RAM / Disk / DMA / Paula-Kanäle bei. Budget-Bars live in der Toolbar.
+  - **Copper-Timeline-Panel**: Vertikale PAL-Zeilenskala (0–255), markiert welcher Viewport welche Zeilen belegt. Sofortiges visuelles Feedback (lückenlose Abdeckung).
+  - **Constraint-Warnings** vor Code-Generierung: DrawBob vor Viewport, CopperColor + SetViewport, ScreenFlip fehlt, Paula-Kanal doppelt belegt, Chip-RAM überschritten.
+
+- [ ] **TOOL-VNE-2: Persistenz & IDE-Integration**
+  - **Speichern/Laden** als `.bnode` (JSON, versioniert), TOOL-TREE-Integration.
+  - `.bnode`-Dateien im Projektbaum doppelklickbar; Editor öffnet sich als zweite Ansicht.
+  - Vollständige Node-Library aus `commands-map.json` generiert.
+
+- [ ] **TOOL-VNE-3: Graph → BASSM Code-Generierung**
+  - **Topologische Sortierung** der Exec-Pins. Startpunkt: PLAY-Node.
+  - Setup-Kette (PLAY → … → LOOP) wird als linearer Code vor dem Main-Loop emittiert.
+  - Frame-Kette (LOOP → …) wird in `While 1 … ScreenFlip … Wend` gewrappt.
+  - "Generate & Compile" startet direkt den Build.
+
+- [ ] **TOOL-VNE-4: BASSM → Graph Import**
+  - BASSM-Parser AST → natives `.bnode` JSON.
+  - Auto-Layout (z.B. via Sugiyama-Algorithmus), um generierten Graphen visuell aufzuräumen.
+  - "Import Code"-Button: bestehendes `.bas` wird in editierbaren Graph überführt.
+
+- [ ] **TOOL-VNE-5: Live-Sync (Code ↔ Visual)**
+  - Graph-Änderungen regenerieren BASSM-Code sofort (One-Way → Live).
+  - Bidirektionaler Tab: Text-Edit → Graph aktualisiert wenn parsebar.
+
+- [ ] **TOOL-VNE-6: Subgraphs & Custom Functions**
+  - Kapselung von Spiellogik: Nutzer können eigene Function-Nodes erstellen.
+  - **Isolierter Canvas**: Doppelklick auf eine Custom Function öffnet einen neuen Graph-Tab mit dedizierten Entry- und Return-Pins zur Parameterübergabe, analog zur `Function … EndFunction` Architektur.
+
+---
+
 ## Epic 6: Backlog / Low-Level Optimierungen (Prio 6)
 *Nice-to-have Features und Mikro-Optimierungen (wenn alles andere fertig ist).*
 

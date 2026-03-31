@@ -18,6 +18,9 @@
 //   { type: 'local_decl',  name: string, expr: Expr|null, line: number }
 //   { type: 'return',       expr: Expr|null, line: number }
 //   { type: 'call_stmt',    name: string, args: Expr[], line: number }
+//   { type: 'set_viewport', index: number, y1: number, y2: number, line: number }
+//   { type: 'viewport_cmd', index: number, line: number }
+//   { type: 'set_camera',   x: Expr, y: Expr, line: number }
 //
 // EXPRESSION NODES
 //   { type: 'int',       value: number }
@@ -122,6 +125,9 @@ export class Parser {
             if (tok.value === 'data')        return this._parseData();
             if (tok.value === 'read')        return this._parseRead();
             if (tok.value === 'restore')     return this._parseRestore();
+            if (tok.value === 'setviewport') return this._parseSetViewport();
+            if (tok.value === 'viewport')    return this._parseViewport();
+            if (tok.value === 'setcamera')   return this._parseSetCamera();
         }
 
         // Bare IDENT at statement level (no =, (, \) → user function call statement
@@ -403,6 +409,58 @@ export class Parser {
             label = this._advance().value.toLowerCase();
         }
         return { type: 'restore_stmt', label, line: tok.line };
+    }
+
+    // ── SetViewport statement: SetViewport index, y1, y2 ─────────────────────
+    // All three arguments must be integer literals — buffer sizes and Copper
+    // layout are determined at compile time.
+
+    _parseSetViewport() {
+        const tok = this._advance();                // consume 'setviewport' KEYWORD
+        const readIntLit = (name) => {
+            const t = this._peek();
+            if (!t || t.type !== TT.INT) {
+                throw new Error(`[Parser] SetViewport: ${name} must be an integer literal on line ${tok.line}`);
+            }
+            return this._advance().value;
+        };
+        const index = readIntLit('index');
+        if (this._peek().type !== TT.COMMA)
+            throw new Error(`[Parser] SetViewport: expected ',' after index on line ${tok.line}`);
+        this._advance();                            // consume ','
+        const y1 = readIntLit('y1');
+        if (this._peek().type !== TT.COMMA)
+            throw new Error(`[Parser] SetViewport: expected ',' after y1 on line ${tok.line}`);
+        this._advance();                            // consume ','
+        const y2 = readIntLit('y2');
+        this._skipToNewline();
+        return { type: 'set_viewport', index, y1, y2, line: tok.line };
+    }
+
+    // ── Viewport statement: Viewport index ───────────────────────────────────
+    // index must be an integer literal (compile-time context switch, V1).
+
+    _parseViewport() {
+        const tok = this._advance();                // consume 'viewport' KEYWORD
+        const t = this._peek();
+        if (!t || t.type !== TT.INT) {
+            throw new Error(`[Parser] Viewport: index must be an integer literal on line ${tok.line}`);
+        }
+        const index = this._advance().value;
+        this._skipToNewline();
+        return { type: 'viewport_cmd', index, line: tok.line };
+    }
+
+    // ── SetCamera statement: SetCamera x, y ──────────────────────────────────
+    // x and y are full expressions (variables and arithmetic allowed).
+
+    _parseSetCamera() {
+        const tok = this._advance();                // consume 'setcamera' KEYWORD
+        const x = this._parseExpr();
+        if (this._peek().type === TT.COMMA) this._advance();  // consume ','
+        const y = this._parseExpr();
+        this._skipToNewline();
+        return { type: 'set_camera', x, y, line: tok.line };
     }
 
     _parseDim() {

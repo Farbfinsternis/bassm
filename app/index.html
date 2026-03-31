@@ -17,6 +17,7 @@
 			<span class="toolbar-sep"></span>
 			<button id="btn-run"           title="Run — compile + run  (F5)"><i class="codicon codicon-play"></i></button>
 			<button id="btn-assets"        title="Asset Manager"><i class="codicon codicon-package"></i></button>
+			<button id="btn-toggle-editor" title="Toggle Blueprint Editor"><i class="codicon codicon-circuit-board"></i></button>
 			<button id="btn-emulator-exit" title="Exit fullscreen  (F11 / ESC)"><i class="codicon codicon-screen-normal"></i></button>
 			<span id="project-name"></span>
 			<span id="status">Initialising...</span>
@@ -58,6 +59,17 @@
 				</div>
 
 				<div id="editor"></div>
+
+				<div id="node-editor-panel">
+					<div id="bnc-world-container">
+						<div id="bnc-world">
+							<div id="bnc-grid"></div>
+							<svg id="bnc-noodles"></svg>
+							<div id="bnc-nodes"></div>
+						</div>
+					</div>
+					<div id="bnc-ui"></div>
+				</div>
 				<div id="budget-strip">
 					<div class="budget-item">
 						<span class="budget-label">CPU</span>
@@ -101,6 +113,7 @@
 
 		<script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
 		<script src="src/editor-init.js"></script>
+		<script type="module" src="src/node-editor.js"></script>
 		<script type="module" src="src/bassm.js"></script>
 	</body>
 </html>

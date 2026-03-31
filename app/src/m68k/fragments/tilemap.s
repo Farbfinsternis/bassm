@@ -58,8 +58,9 @@
 ;   2x2 = 4 tiles for a 16x16 bob on a 16x16 tile grid.
 ;
 ; DEPENDENCY
-;   startup.s  — Blitter EQUs, _WaitBlit, _back_planes_ptr, _front_is_a, a5=$DFF000.
-;   graphics.s — _PatchBitplanePtrs, _gfx_copper_a/b, _gfx_cop_a/b_bpl_table.
+;   startup.s  — Blitter EQUs, _WaitBlit, _back_planes_ptr, a5=$DFF000.
+;   graphics.s — _PatchBitplanePtrs.
+;   codegen.js — _active_cop_base (BSS), VP_COP_* EQUs.
 ;   image.s    — _DrawImageFrame (blits one tile per call).
 ;   codegen.js — GFXWIDTH, GFXHEIGHT, GFXDEPTH, GFXBPR, GFXBPLMOD, GFXIBPR.
 ;   bobs.s     — _bg_restore_fn, _active_tilemap_ptr, _active_tileset_ptr,
@@ -90,18 +91,13 @@
 ; Trashes: nothing (saves/restores d0-d7/a0-a4)
 ; Side-effects: writes _active_fine_y (BSS) for use by _FlushBobs.
 ;
-; ── COPPER LIST LAYOUT (offsets from _gfx_copper_X base) ────────────────────
-;   Each copper MOVE instruction = 4 bytes: dc.w reg_addr, value
-;   Offset  0: DIWSTRT  (value at +2)
-;   Offset  4: DIWSTOP  (value at +6)
-;   Offset  8: DDFSTRT  (value at +10)  ← patched to $0030
-;   Offset 12: DDFSTOP  (value at +14)
-;   Offset 16: BPLCON0  (value at +18)
-;   Offset 20: BPLCON1  (value at +22)  ← patched to (fine_x<<4)|fine_x
-;   Offset 24: BPLCON2  (value at +26)
-;   Offset 28: BPL1MOD  (value at +30)  ← patched to GFXBPLMOD-2
-;   Offset 32: BPL2MOD  (value at +34)  ← patched to GFXBPLMOD-2
-;   Offset 36: _gfx_cop_X_bpl_table     ← BPLxPT entries re-patched via fn
+; ── COPPER LIST LAYOUT (offsets from _active_cop_base) ──────────────────────
+;   Uses VP_COP_* EQUs (emitted by codegen.js for multi-viewport support):
+;   VP_COP_DDFSTRT  EQU  2   ← patched to $0030
+;   VP_COP_BPLCON1  EQU 14   ← patched to (fine_x<<4)|fine_x
+;   VP_COP_BPL1MOD  EQU 22   ← patched to GFXBPLMOD-2
+;   VP_COP_BPL2MOD  EQU 26   ← patched to GFXBPLMOD-2
+;   VP_COP_BPL      EQU 28   ← BPLxPT table, re-patched via _PatchBitplanePtrs
 ;
 ; ── STACK LAYOUT DURING TILE LOOP ────────────────────────────────────────────
 ;   0(sp) = tile_rows_draw (word, counts down)
@@ -134,36 +130,25 @@ _DrawTilemap:
         and.l   #$0000FFFF,d1   ; clear garbage upper word
         move.w  d1,_active_fine_y  ; save for _FlushBobs
 
-        ; ── Patch back copper list ──────────────────────────────────────────
-        ; _front_is_a = 0 → front=A, back=B;  _front_is_a = 1 → front=B, back=A
-        tst.b   _front_is_a
-        bne.s   .cop_a
+        ; ── Patch back copper list (via _active_cop_base, set by Viewport N) ──
+        move.l  _active_cop_base,a0
 
-        lea     _gfx_copper_b,a0
-        lea     _gfx_cop_b_bpl_table,a1
-        bra.s   .cop_patch
-
-.cop_a:
-        lea     _gfx_copper_a,a0
-        lea     _gfx_cop_a_bpl_table,a1
-
-.cop_patch:
         ; BPLCON1 = (fine_x << 4) | fine_x  (same scroll for odd and even planes)
         move.w  d0,d1
         lsl.w   #4,d1
         or.w    d0,d1
-        move.w  d1,22(a0)       ; patch BPLCON1 value word (offset 22)
+        move.w  d1,VP_COP_BPLCON1(a0)
 
         ; DDFSTRT = $0030 — fetch 21 words (336px) instead of 20 (320px)
-        move.w  #$0030,10(a0)   ; patch DDFSTRT value word (offset 10)
+        move.w  #$0030,VP_COP_DDFSTRT(a0)
 
         ; BPL1MOD/BPL2MOD = GFXBPLMOD-2 — compensate for 2 extra fetched bytes
-        move.w  #(GFXBPLMOD-2),30(a0)  ; BPL1MOD value (offset 30)
-        move.w  #(GFXBPLMOD-2),34(a0)  ; BPL2MOD value (offset 34)
+        move.w  #(GFXBPLMOD-2),VP_COP_BPL1MOD(a0)
+        move.w  #(GFXBPLMOD-2),VP_COP_BPL2MOD(a0)
 
         ; BPLxPT: horizontal -2 bytes + vertical fine_y * GFXBPR bytes.
         ; NOTE: _PatchBitplanePtrs trashes d0-d3 — header re-read follows.
-        move.l  a1,a0                   ; a0 = _gfx_cop_X_bpl_table
+        lea     VP_COP_BPL(a0),a0      ; a0 = BPLxPT table in active VP section
         move.l  _back_planes_ptr,a1
         subq.l  #2,a1                   ; horizontal: 16px (2 bytes) left headroom
         moveq   #0,d1                   ; vertical: fine_y * GFXBPR byte offset

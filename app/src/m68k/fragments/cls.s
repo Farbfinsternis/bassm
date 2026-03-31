@@ -43,9 +43,10 @@
 ;   Both are XDEF'd for use by box.s.
 ;
 ; CODEGEN CONTRACT
-;   GFXDEPTH, GFXHEIGHT, GFXBPR, GFXPSIZE must be defined as EQUs.
-;   _gfx_planes must label the chip-RAM bitplane buffer.
-;   Generated code for Cls:   jsr _Cls
+;   GFXDEPTH, GFXBPR must be defined as EQUs.
+;   Generated code for Cls:
+;         move.w  #(HEIGHT<<6|(GFXBPR/2)),d0   ; HEIGHT = viewport visible height
+;         jsr     _Cls
 ;
 ; DEPENDENCY
 ;   startup.s must be included first (defines _WaitBlit, Blitter register EQUs,
@@ -64,13 +65,14 @@
 ; Fills all GFXDEPTH bitplanes with the pattern stored in _cls_color.
 ; One Blitter operation per plane.
 ;
-; Args:   none
+; Args:   d0.w = BLTSIZE (height<<6 | width_words) — set by codegen per viewport
 ; Trashes: nothing (saves/restores d0-d5/a0-a1)
 
         XDEF    _Cls
 _Cls:
         movem.l d0-d5/a0-a1,-(sp)
 
+        move.w  d0,d3                   ; d3 = BLTSIZE (preserved across loop)
         move.l  _back_planes_ptr,a0     ; a0 = back buffer base (double-buffering)
         move.l  _cls_color,d4           ; d4 = colour index bitfield
         moveq   #GFXDEPTH-1,d5         ; d5 = plane loop counter (dbra = GFXDEPTH iters)
@@ -118,7 +120,7 @@ _Cls:
 
         ; BLTSIZE write triggers the blit immediately.
         ; bits 15:6 = height in scan lines, bits 5:0 = width in 16-bit words.
-        move.w  #(GFXHEIGHT<<6)|(GFXBPR/2),BLTSIZE(a5)
+        move.w  d3,BLTSIZE(a5)
 
         ; ── Advance to next plane ─────────────────────────────────────────────
         add.l   #GFXBPR,a0             ; next bitplane (interleaved: one row ahead)

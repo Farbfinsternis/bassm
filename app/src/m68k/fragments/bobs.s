@@ -89,6 +89,24 @@ _bobs_old_a:     ds.b    BOBS_MAX*16     ; old queue for buffer A
 _bobs_old_b:     ds.b    BOBS_MAX*16     ; old queue for buffer B
 
 
+; ── Bob-State-Block EQUs (T25) ──────────────────────────────────────────────
+;   Per-viewport state block layout.  Each viewport has one BSS block of
+;   BOB_ST_SIZE bytes (emitted by codegen.js, T26).
+;   All .l fields are longword-aligned (offset 8+).
+
+BOB_ST_NEW_CNT    EQU 0            ; .w — bobs queued this frame
+BOB_ST_OLD_CNT_A  EQU 2            ; .w — old bob count for buffer A
+BOB_ST_OLD_CNT_B  EQU 4            ; .w — old bob count for buffer B
+                                    ; EQU 6: .w padding (longword alignment)
+BOB_ST_RESTORE_FN EQU 8            ; .l — fn ptr (0 / _bg_restore_static / _bg_restore_tilemap)
+BOB_ST_BG_BPL_PTR EQU 12           ; .l — ptr to bg image bitplane-0 data
+BOB_ST_FINE_X     EQU 16           ; .w — fine-scroll X offset (0..tileW-1)
+BOB_ST_FINE_Y     EQU 18           ; .w — fine-scroll Y offset (0..tileH-1)
+BOB_ST_NEW        EQU 20           ; Bob-Queue new  (BOBS_MAX × 16 bytes)
+BOB_ST_OLD_A      EQU (20+BOBS_MAX*16)
+BOB_ST_OLD_B      EQU (20+BOBS_MAX*2*16)
+BOB_ST_SIZE       EQU (20+BOBS_MAX*3*16)
+
 ; ── CODE ────────────────────────────────────────────────────────────────────
 
         SECTION bobs_code,CODE
@@ -100,15 +118,15 @@ _bobs_old_b:     ds.b    BOBS_MAX*16     ; old queue for buffer B
 ; background pixels under each bob before drawing the new frame.
 ;
 ; Computes the pointer to bitplane-0 data (skipping the 8-byte header and the
-; embedded OCS palette) and stores it in _bg_bpl_ptr.  Installs
-; _bg_restore_static as the active restore function.
+; embedded OCS palette) and stores it in the active VP's Bob-State-Block.
+; Installs _bg_restore_static as the active restore function.
 ;
 ; Args:   a0 = image label address (8-byte header + palette + bitplane data)
-; Trashes: nothing (saves/restores d0-d1/a0)
+; Trashes: nothing (saves/restores d0-d1/a0-a1)
 
         XDEF    _SetBackground
 _SetBackground:
-        movem.l d0-d1/a0,-(sp)
+        movem.l d0-d1/a0-a1,-(sp)
 
         ; Skip the 8-byte header (width.w, height.w, depth.w, rowbytes.w)
         ; and the palette block that follows it.
@@ -121,19 +139,20 @@ _SetBackground:
         addq.l  #8,a0                   ; skip 8-byte header
         add.l   d1,a0                   ; skip palette → a0 = bitplane-0 data start
 
-        move.l  a0,_bg_bpl_ptr
+        move.l  _active_bob_state,a1
+        move.l  a0,BOB_ST_BG_BPL_PTR(a1)
 
         ; Install the restore function
         lea     _bg_restore_static,a0
-        move.l  a0,_bg_restore_fn
+        move.l  a0,BOB_ST_RESTORE_FN(a1)
 
-        movem.l (sp)+,d0-d1/a0
+        movem.l (sp)+,d0-d1/a0-a1
         rts
 
 
 ; ── _AddBob ───────────────────────────────────────────────────────────────────
 ;
-; Appends one entry to the current-frame bob queue (_bobs_new).
+; Appends one entry to the active viewport's bob queue (via _active_bob_state).
 ; Silently discards the request when the queue is full (BOBS_MAX slots).
 ;
 ; Args:   a0 = image pointer (image label: 8-byte header + palette + planes)
@@ -141,33 +160,34 @@ _SetBackground:
 ;         d0 = x  (word-aligned pixel position, x % 16 == 0)
 ;         d1 = y
 ;         d2 = frame index  (0 = first frame / non-animated)
-; Trashes: nothing (saves/restores d0-d2/a0-a2)
+; Trashes: nothing (saves/restores d0-d2/a0-a4)
 
         XDEF    _AddBob
 _AddBob:
-        movem.l d0-d2/a0-a2,-(sp)
+        movem.l d0-d2/a0-a4,-(sp)
 
-        move.w  _bobs_new_cnt,d2
+        move.l  _active_bob_state,a4    ; a4 = VP Bob-State-Block
+        move.w  BOB_ST_NEW_CNT(a4),d2
         cmp.w   #BOBS_MAX,d2
         bge.s   .full                   ; queue full — discard
 
-        ; Slot address = _bobs_new + cnt * 16
+        ; Slot address = BOB_ST_NEW(a4) + cnt * 16
         ; d0/d1/a0/a1 still hold x/y/imgptr/maskptr (only d2 was clobbered by count)
         ; Saved d2 (frame index) is at 8(sp) in the movem frame.
         mulu.w  #16,d2                  ; BOBS_SLOT_SZ = 16
-        lea     _bobs_new,a2
-        add.l   d2,a2                   ; a2 = slot start
+        lea     BOB_ST_NEW(a4),a3
+        add.l   d2,a3                   ; a3 = slot start
 
-        move.l  a0,(a2)+               ; +0:  imgptr
-        move.l  a1,(a2)+               ; +4:  maskptr (0 = no mask)
-        move.w  d0,(a2)+               ; +8:  x
-        move.w  d1,(a2)+               ; +10: y
-        move.w  8(sp),(a2)+            ; +12: frame index (read from saved d2 on stack)
-        clr.w   (a2)                    ; +14: padding
+        move.l  a0,(a3)+               ; +0:  imgptr
+        move.l  a1,(a3)+               ; +4:  maskptr (0 = no mask)
+        move.w  d0,(a3)+               ; +8:  x
+        move.w  d1,(a3)+               ; +10: y
+        move.w  8(sp),(a3)+            ; +12: frame index (read from saved d2 on stack)
+        clr.w   (a3)                    ; +14: padding
 
-        addq.w  #1,_bobs_new_cnt
+        addq.w  #1,BOB_ST_NEW_CNT(a4)
 .full:
-        movem.l (sp)+,d0-d2/a0-a2
+        movem.l (sp)+,d0-d2/a0-a4
         rts
 
 

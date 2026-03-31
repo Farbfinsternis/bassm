@@ -10,6 +10,7 @@ import { Parser }       from './parser.js';
 import { CodeGen }      from './codegen.js';
 import { Peephole }     from './peephole.js';
 import { analyzeBudget } from './budget.js';
+import { BASSMNodeEditor } from './node-editor.js';
 
 class BASSM {
 
@@ -989,6 +990,18 @@ bassm.init()
 
         document.getElementById('btn-assets').addEventListener('click', () => {
             window.electronAPI.openAssetManager({ projectDir: _projectDir });
+        });
+
+        let _nodeEditor = null;
+        document.getElementById('btn-toggle-editor').addEventListener('click', () => {
+            if (!_projectDir) {
+                alert('Bitte öffne zuerst ein Projekt, um den Blueprint-Editor zu nutzen.');
+                return;
+            }
+            document.body.classList.toggle('state-node-editor');
+            if (document.body.classList.contains('state-node-editor') && !_nodeEditor) {
+                _nodeEditor = new BASSMNodeEditor();
+            }
         });
 
         // Root-level context menu on the project panel header

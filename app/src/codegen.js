@@ -80,6 +80,11 @@ export class CodeGen {
         this._usesTilemap   = false;      // true if any LoadTileset/LoadTilemap/DrawTilemap/SetTilemap present
         this._tilesetAssets = new Map();  // slot (int) → { filename, label, tileW, tileH, rowbytes }
         this._tilemapAssets = new Map();  // slot (int) → { filename, label }
+        this._viewports            = new Map();   // index → { y1, y2, height, scroll } (T3)
+        this._hasExplicitViewports = false;        // true iff user wrote at least one SetViewport (T3)
+        this._activeViewportIdx    = 0;            // compile-time active viewport (T15)
+        this._cameraVPs            = new Set();    // VP indices that use SetCamera (T19)
+        this._gfxHeight            = 0;            // set after Graphics validation; used by T32
 
         this._initStatementHandlers();
         this._initCommandHandlers();
@@ -110,6 +115,7 @@ export class CodeGen {
         if (D < 1 || D > 6) {
             throw new Error(`Graphics depth ${D} out of range — must be 1–6 bitplanes.`);
         }
+        this._gfxHeight = H;
 
         // ── Display timing constants ──────────────────────────────────────────
         const colors  = 1 << D;
@@ -126,6 +132,14 @@ export class CodeGen {
         // ── Collect scalar variable names and array declarations ─────────────
         const varNames = new Set();
         this._collectVars(ast, varNames);
+
+        // ── Collect and validate SetViewport declarations (T3) ────────────────
+        this._collectViewports(ast, H);
+
+        // ── T32: Inject implicit VP0 when no explicit SetViewport present ─────
+        if (!this._hasExplicitViewports) {
+            this._viewports.set(0, { y1: 0, y2: H - 1, height: H, scroll: false });
+        }
 
         // ── Build output ──────────────────────────────────────────────────────
         const out = [];
@@ -349,6 +363,83 @@ export class CodeGen {
             case 'unary':
                 this._collectVarsInExpr(expr.operand, varSet);
                 break;
+        }
+    }
+
+    // ── T3: SetViewport pre-pass — collect, sort and validate all viewports ─────
+    //
+    // Called after _collectVars so _usesRaster is already set.
+    // Populates this._viewports and this._hasExplicitViewports.
+    // Does NOT inject the implicit VP0 — that is done in T32 just before codegen.
+
+    _collectViewports(ast, H) {
+        const vpNodes = ast.filter(s => s && s.type === 'set_viewport');
+
+        if (vpNodes.length === 0) {
+            this._hasExplicitViewports = false;
+            return;
+        }
+
+        // Sort by declared index so validation order is predictable
+        vpNodes.sort((a, b) => a.index - b.index);
+
+        // Indices must be contiguous starting at 0
+        for (let i = 0; i < vpNodes.length; i++) {
+            if (vpNodes[i].index !== i) {
+                throw new Error(
+                    `SetViewport: indices must be contiguous starting at 0 — ` +
+                    `expected index ${i}, got ${vpNodes[i].index} on line ${vpNodes[i].line}`
+                );
+            }
+        }
+
+        // First viewport must start at y1 = 0
+        if (vpNodes[0].y1 !== 0) {
+            throw new Error(
+                `SetViewport 0: y1 must be 0, got ${vpNodes[0].y1} on line ${vpNodes[0].line}`
+            );
+        }
+
+        // Last viewport must end at y2 = H-1
+        const last = vpNodes[vpNodes.length - 1];
+        if (last.y2 !== H - 1) {
+            throw new Error(
+                `SetViewport ${last.index}: y2 must be ${H - 1} (GFXHEIGHT-1), ` +
+                `got ${last.y2} on line ${last.line}`
+            );
+        }
+
+        // Each viewport: 0 ≤ y1 < y2 ≤ H-1, and no gaps between consecutive viewports
+        for (let i = 0; i < vpNodes.length; i++) {
+            const vp = vpNodes[i];
+            if (vp.y1 < 0 || vp.y1 >= vp.y2 || vp.y2 > H - 1) {
+                throw new Error(
+                    `SetViewport ${vp.index}: invalid range y1=${vp.y1} y2=${vp.y2} ` +
+                    `(must satisfy 0 ≤ y1 < y2 ≤ ${H - 1}) on line ${vp.line}`
+                );
+            }
+            if (i > 0 && vp.y1 !== vpNodes[i - 1].y2 + 1) {
+                throw new Error(
+                    `SetViewport: gap between viewport ${i - 1} (y2=${vpNodes[i - 1].y2}) ` +
+                    `and viewport ${i} (y1=${vp.y1}) — viewports must be contiguous on line ${vp.line}`
+                );
+            }
+            this._viewports.set(vp.index, {
+                y1:     vp.y1,
+                y2:     vp.y2,
+                height: vp.y2 - vp.y1 + 1,
+                scroll: false,   // T32 / T9 may set this true when SetTilemap is used in this VP
+            });
+        }
+
+        this._hasExplicitViewports = true;
+
+        // D9: CopperColor raster effects are incompatible with multi-viewport (V1)
+        if (this._usesRaster) {
+            console.warn(
+                `[CodeGen] Warning: CopperColor is not supported together with SetViewport ` +
+                `(D9) — raster effects will be ignored.`
+            );
         }
     }
 
@@ -1004,6 +1095,36 @@ export class CodeGen {
         if (this._usesBobs) {
             out.push(`${pad('BOBS_MAX',12)} EQU 32`);
         }
+        // T4: Viewport Copper-Section offsets — only when explicit viewports are used.
+        // Offsets are relative to the section-base label (_vpN_cop_a/b:).
+        // Each Copper move is a dc.w pair (4 bytes): register word + value word.
+        // VP_COP_x points to the VALUE word that needs to be patched at runtime.
+        if (this._hasExplicitViewports) {
+            out.push('');
+            out.push('; ── Viewport Copper-Section offsets (relative to _vpN_cop_a/b:) ─');
+            out.push(`${pad('VP_COP_DDFSTRT',16)} EQU 2`);   // value word of DDFSTRT move (+0/+2)
+            out.push(`${pad('VP_COP_BPLCON1',16)} EQU 14`);  // value word of BPLCON1 move (+12/+14)
+            out.push(`${pad('VP_COP_BPL1MOD',16)} EQU 22`);  // value word of BPL1MOD move (+20/+22)
+            out.push(`${pad('VP_COP_BPL2MOD',16)} EQU 26`);  // value word of BPL2MOD move (+24/+26)
+            out.push(`${pad('VP_COP_BPL',16)} EQU 28`);      // start of BPLxPT table (+28)
+
+            // T8: Per-Viewport geometry EQUs
+            out.push('');
+            out.push('; ── Per-Viewport geometry ───────────────────────────────────────');
+            out.push(`${pad('VP_COUNT',16)} EQU ${this._viewports.size}`);
+            for (const [vpIdx, vp] of this._viewports) {
+                const N = vpIdx;
+                out.push(`${pad(`VP_${N}_Y1`,16)} EQU ${vp.y1}`);
+                out.push(`${pad(`VP_${N}_Y2`,16)} EQU ${vp.y2}`);
+                out.push(`${pad(`VP_${N}_HEIGHT`,16)} EQU ${vp.height}`);
+                out.push(`${pad(`VP_${N}_VHEIGHT`,16)} EQU (VP_${N}_HEIGHT+GFXBORDER*2)`);
+                out.push(`${pad(`VP_${N}_PSIZE`,16)} EQU (GFXBPR*VP_${N}_VHEIGHT)`);
+                out.push(`${pad(`VP_${N}_BUFSIZE`,16)} EQU (VP_${N}_PSIZE*GFXDEPTH)`);
+                if (vp.scroll) {
+                    out.push(`${pad(`VP_${N}_BUFSIZE_SCROLL`,16)} EQU ((VP_${N}_VHEIGHT+GFXVPAD)*GFXBPR*GFXDEPTH)`);
+                }
+            }
+        }
         out.push('');
     }
 
@@ -1049,75 +1170,141 @@ export class CodeGen {
         out.push('');
     }
 
-    // ── T21: Copper lists (DATA_C) ────────────────────────────────────────────
+    // ── T5: Copper lists (DATA_C) — one section per viewport ─────────────────
     _emitCopperLists(out, D, H, vStart, diwstrt, diwstop, ddfstrt, ddfstop, bplcon0) {
-        // Compute interleaved modulo for copper header
-        const GFXBORDER = 32;
+        const GFXBORDER  = 32;
         const GFXBPR_val = Math.floor((320 + GFXBORDER * 2) / 8);
-        const bplmod = GFXBPR_val * D - Math.floor(320 / 8);
+        const bplmod     = GFXBPR_val * D - Math.floor(320 / 8);
+        const colors     = 1 << D;
 
-        // Helper: emit display-setup copper moves (shared header for both lists)
-        const emitCopHeader = () => {
+        const emitList = (ab) => {
+            // ── Global list header ───────────────────────────────────────────
+            // _gfx_copper_a/b always marks the list start (used by flip.s etc.)
+            out.push(`        XDEF    _gfx_copper_${ab}`);
+            out.push(`_gfx_copper_${ab}:`);
+
+            if (!this._hasExplicitViewports) {
+                // Legacy: _vp0_cop_x shares the list-start position (before DIWSTRT).
+                // T7 alias strategy: double-label so both old and new names resolve.
+                out.push(`        XDEF    _vp0_cop_${ab}`);
+                out.push(`_vp0_cop_${ab}:`);
+            }
+
+            // DIWSTRT / DIWSTOP are global (precede all viewport sections)
             out.push(copMove(0x008E, diwstrt, 'DIWSTRT'));
             out.push(copMove(0x0090, diwstop, 'DIWSTOP'));
-            out.push(copMove(0x0092, ddfstrt, 'DDFSTRT'));
-            out.push(copMove(0x0094, ddfstop, 'DDFSTOP'));
-            out.push(copMove(0x0100, bplcon0, 'BPLCON0'));
-            out.push(copMove(0x0102, 0x0000,  'BPLCON1'));
-            out.push(copMove(0x0104, 0x0000,  'BPLCON2'));
-            out.push(copMove(0x0108, bplmod,  'BPL1MOD (interleaved)'));
-            out.push(copMove(0x010A, bplmod,  'BPL2MOD (interleaved)'));
+
+            // ── One section per viewport ─────────────────────────────────────
+            for (const [vpIdx, vp] of this._viewports) {
+                // T6: WAIT before VP 1..N so the copper only applies the section
+                //     when the beam has reached that viewport's first line.
+                if (vpIdx > 0) {
+                    const display_line = vStart + vp.y1;
+                    if (display_line < 256) {
+                        out.push(`        dc.w    $${hex((display_line << 8) | 0x01)},$FF00` +
+                                 `             ; WAIT VP${vpIdx} y=${vp.y1} (beam line ${display_line})`);
+                    } else {
+                        // Lines ≥ 256 need the V8 trick: first WAIT to end-of-255,
+                        // then a second WAIT with the line relative to 256.
+                        out.push(`        dc.w    $FFDF,$FFFE` +
+                                 `             ; WAIT end-of-line-255 (V8 flag trick)`);
+                        out.push(`        dc.w    $${hex(((display_line - 256) << 8) | 0x01)},$FF00` +
+                                 `             ; WAIT VP${vpIdx} y=${vp.y1} (beam line ${display_line})`);
+                    }
+                }
+                this._emitViewportCopSection(out, ab, vpIdx, D, bplmod, bplcon0, ddfstrt, ddfstop, colors);
+            }
+
+            // Raster — only available in legacy (single-VP) mode.
+            // D9: CopperColor is incompatible with explicit multi-viewport (warning issued in T3).
+            if (this._usesRaster && !this._hasExplicitViewports) {
+                const maxLines = Math.min(H, 256 - vStart);
+                out.push(`        XDEF    _gfx_raster_${ab}`);
+                out.push(`_gfx_raster_${ab}:`);
+                for (let y = 0; y < maxLines; y++) {
+                    const vpos = vStart + y;
+                    out.push(`        dc.w    $${hex((vpos << 8) | 0x01)},$FF00`);
+                    out.push(`        dc.w    $0180,$0000`);
+                }
+            }
+
+            out.push(`        dc.w    $FFFF,$FFFE             ; END of copper list ${ab.toUpperCase()}`);
+            out.push('');
         };
 
-        // Chip-RAM DATA — copper list A (bitplane pointers → buffer A)
         out.push('        SECTION gfx_copper,DATA_C');
-        out.push('_gfx_copper_a:');
-        emitCopHeader();
-        out.push('_gfx_cop_a_bpl_table:');
-        for (let i = 0; i < D; i++) {
-            const [pth, ptl] = BPL_PTR_REGS[i];
-            out.push(copMove(pth, 0, `BPL${i+1}PTH`));
-            out.push(copMove(ptl, 0, `BPL${i+1}PTL`));
-        }
-        if (this._usesRaster) {
-            const maxLines = Math.min(H, 256 - vStart);
-            out.push('        XDEF    _gfx_raster_a');
-            out.push('_gfx_raster_a:');
-            for (let y = 0; y < maxLines; y++) {
-                const vpos = vStart + y;
-                out.push(`        dc.w    $${hex((vpos << 8) | 0x01)},$FF00`);
-                out.push(`        dc.w    $0180,$0000`);
-            }
-        }
-        out.push('        dc.w    $FFFF,$FFFE             ; END of copper list A');
-        out.push('');
-
-        // Chip-RAM DATA — copper list B (bitplane pointers → buffer B)
-        out.push('_gfx_copper_b:');
-        emitCopHeader();
-        out.push('_gfx_cop_b_bpl_table:');
-        for (let i = 0; i < D; i++) {
-            const [pth, ptl] = BPL_PTR_REGS[i];
-            out.push(copMove(pth, 0, `BPL${i+1}PTH`));
-            out.push(copMove(ptl, 0, `BPL${i+1}PTL`));
-        }
-        if (this._usesRaster) {
-            const maxLines = Math.min(H, 256 - vStart);
-            out.push('        XDEF    _gfx_raster_b');
-            out.push('_gfx_raster_b:');
-            for (let y = 0; y < maxLines; y++) {
-                const vpos = vStart + y;
-                out.push(`        dc.w    $${hex((vpos << 8) | 0x01)},$FF00`);
-                out.push(`        dc.w    $0180,$0000`);
-            }
-        }
-        out.push('        dc.w    $FFFF,$FFFE             ; END of copper list B');
-        out.push('');
+        emitList('a');
+        emitList('b');
     }
 
-    // ── T22: User variable BSS section ────────────────────────────────────────
+    // ── T5: Viewport Copper Section emitter ───────────────────────────────────
+    //
+    // Emits the register moves and tables for one viewport in one copper list.
+    //
+    // Layout (offsets relative to _vpN_cop_x: in multi-VP mode):
+    //   +0 /+2   DDFSTRT reg/val   ← VP_COP_DDFSTRT = 2
+    //   +4 /+6   DDFSTOP reg/val
+    //   +8 /+10  BPLCON0 reg/val
+    //   +12/+14  BPLCON1 reg/val   ← VP_COP_BPLCON1 = 14  (tilemap patches BPLCON1)
+    //   +16/+18  BPLCON2 reg/val
+    //   +20/+22  BPL1MOD reg/val   ← VP_COP_BPL1MOD = 22  (tilemap patches BPLxMOD)
+    //   +24/+26  BPL2MOD reg/val   ← VP_COP_BPL2MOD = 26
+    //   +28      BPLxPT table      ← VP_COP_BPL     = 28
+    //
+    // In legacy mode (implicit VP0, !_hasExplicitViewports):
+    //   _vp0_cop_x: is at the list start (before DIWSTRT, emitted by caller).
+    //   The section label is therefore NOT re-emitted here.
+    //   Legacy aliases (_gfx_cop_x_bpl_table:) are emitted alongside new labels.
+
+    _emitViewportCopSection(out, ab, vpIdx, D, bplmod, bplcon0, ddfstrt, ddfstop, colors) {
+        const sectionLabel = `_vp${vpIdx}_cop_${ab}`;
+        const bplLabel     = `_vp${vpIdx}_cop_${ab}_bpl`;
+        const palLabel     = `_vp${vpIdx}_cop_${ab}_pal`;
+
+        // In multi-VP mode: emit section-base label here (after global DIWSTRT/DIWSTOP).
+        // In legacy mode:   section-base was already emitted by _emitCopperLists (before DIWSTRT).
+        if (this._hasExplicitViewports) {
+            out.push(`        XDEF    ${sectionLabel}`);
+            out.push(`${sectionLabel}:`);
+        }
+
+        out.push(copMove(0x0092, ddfstrt, 'DDFSTRT'));
+        out.push(copMove(0x0094, ddfstop, 'DDFSTOP'));
+        out.push(copMove(0x0100, bplcon0, 'BPLCON0'));
+        out.push(copMove(0x0102, 0x0000,  'BPLCON1'));
+        out.push(copMove(0x0104, 0x0000,  'BPLCON2'));
+        out.push(copMove(0x0108, bplmod,  'BPL1MOD (interleaved)'));
+        out.push(copMove(0x010A, bplmod,  'BPL2MOD (interleaved)'));
+
+        // BPLxPT table — T7: legacy alias for VP0
+        if (vpIdx === 0 && !this._hasExplicitViewports) {
+            out.push(`        XDEF    _gfx_cop_${ab}_bpl_table`);
+            out.push(`_gfx_cop_${ab}_bpl_table:`);
+        }
+        out.push(`        XDEF    ${bplLabel}`);
+        out.push(`${bplLabel}:`);
+        for (let i = 0; i < D; i++) {
+            const [pth, ptl] = BPL_PTR_REGS[i];
+            out.push(copMove(pth, 0, `BPL${i+1}PTH`));
+            out.push(copMove(ptl, 0, `BPL${i+1}PTL`));
+        }
+
+        // Per-VP palette — only in explicit multi-VP mode.
+        // Legacy: colors are managed by CPU writes in color.s / palette.s (unchanged).
+        if (this._hasExplicitViewports) {
+            out.push(`        XDEF    ${palLabel}`);
+            out.push(`${palLabel}:`);
+            for (let c = 0; c < colors; c++) {
+                out.push(copMove(0x0180 + c * 2, 0x0000,
+                    c === 0 ? `COLOR00 (VP${vpIdx})` : null));
+            }
+        }
+    }
+
+    // ── T22 / T10: User variable BSS section ──────────────────────────────────
     _emitUserVarsBSS(out, varNames) {
-        if (varNames.size > 0 || this._arrays.size > 0 || this._typeInstances.size > 0 || this._usesData || this._usesTilemap) {
+        if (varNames.size > 0 || this._arrays.size > 0 || this._typeInstances.size > 0
+                || this._usesData || this._usesTilemap || this._viewports.size > 0) {
             out.push('        SECTION user_vars,BSS');
             for (const name of varNames) {
                 out.push(`_var_${name}:    ds.l    1`);
@@ -1133,6 +1320,28 @@ export class CodeGen {
             }
             if (this._usesBobs || this._usesTilemap) {
                 out.push('_active_fine_y:      ds.w    1');  // written by DrawTilemap, read by FlushBobs (0 = no scroll)
+            }
+            // T10: Per-viewport state variables
+            for (const [vpIdx] of this._viewports) {
+                const N = vpIdx;
+                out.push(`_vp${N}_back_ptr:     ds.l    1`);   // visible origin of back-buffer
+                out.push(`_vp${N}_cam_x:        ds.l    1`);   // camera X (world space)
+                out.push(`_vp${N}_cam_y:        ds.l    1`);   // camera Y (world space)
+                out.push(`_vp${N}_cop_a_base:   ds.l    1`);   // address of _vpN_cop_a section
+                out.push(`_vp${N}_cop_b_base:   ds.l    1`);   // address of _vpN_cop_b section
+                // Per-VP tilemap state (multi-VP mode only; legacy uses global _active_* vars)
+                if (this._hasExplicitViewports && this._usesTilemap) {
+                    out.push(`_vp${N}_tilemap_ptr: ds.l    1`);
+                    out.push(`_vp${N}_tileset_ptr: ds.l    1`);
+                    out.push(`_vp${N}_scroll_x:    ds.l    1`);
+                    out.push(`_vp${N}_scroll_y:    ds.l    1`);
+                }
+            }
+            // T10: Global active-state variables
+            out.push('_active_vp_idx:      ds.w    1');   // index of currently active viewport
+            out.push('_active_cop_base:    ds.l    1');   // copper section base of active VP (back-copper)
+            if (this._usesBobs) {
+                out.push('_active_bob_state:  ds.l    1');   // ptr to active VP Bob-State-Block (T26)
             }
             // Arrays: Dim arr(n) → n+1 longwords (indices 0..n, Blitz2D-compatible)
             // N-dimensional arrays: Dim arr(d0[, d1[, ...]]) → (d0+1)*…*(dn+1) longwords
@@ -1181,18 +1390,61 @@ export class CodeGen {
         }
     }
 
-    // ── T22: Chip RAM bitplane buffers (BSS_C) ─────────────────────────────
+    // ── T7/T9: Chip RAM bitplane buffers (BSS_C) ─────────────────────────────
+    //
+    // Legacy mode (implicit VP0, !_hasExplicitViewports):
+    //   Single buffer pair with T7 double-labels (_gfx_planes_data + _vp0_planes_a_data).
+    //   Buffer size uses the global GFXBUFSIZE / GFXBUFSIZE_VSCROLL EQUs.
+    //
+    // Multi-VP mode (_hasExplicitViewports):
+    //   One buffer pair per viewport, using per-VP VP_N_BUFSIZE EQUs (T8).
+    //   No legacy labels; startup.s updated in T12.
     _emitBufferBSS(out) {
-        const planeBufSize = (this._usesTilemap && this._tilesetAssets.size > 0)
-            ? 'GFXBUFSIZE_VSCROLL' : 'GFXBUFSIZE';
-        out.push('        SECTION gfx_planes_a,BSS_C');
-        out.push('_gfx_planes_data:');
-        out.push(`        ds.b    ${planeBufSize}`);
-        out.push('');
-        out.push('        SECTION gfx_planes_b,BSS_C');
-        out.push('_gfx_planes_b_data:');
-        out.push(`        ds.b    ${planeBufSize}`);
-        out.push('');
+        if (!this._hasExplicitViewports) {
+            // ── Legacy path (T7) ─────────────────────────────────────────────
+            const planeBufSize = (this._usesTilemap && this._tilesetAssets.size > 0)
+                ? 'GFXBUFSIZE_VSCROLL' : 'GFXBUFSIZE';
+            out.push('        SECTION gfx_planes_a,BSS_C');
+            out.push('        XDEF    _gfx_planes_data');
+            out.push('_gfx_planes_data:');
+            out.push('        XDEF    _vp0_planes_a_data');
+            out.push('_vp0_planes_a_data:');
+            out.push(`        ds.b    ${planeBufSize}`);
+            out.push('');
+            out.push('        SECTION gfx_planes_b,BSS_C');
+            out.push('        XDEF    _gfx_planes_b_data');
+            out.push('_gfx_planes_b_data:');
+            out.push('        XDEF    _vp0_planes_b_data');
+            out.push('_vp0_planes_b_data:');
+            out.push(`        ds.b    ${planeBufSize}`);
+            out.push('');
+        } else {
+            // ── T9: Per-viewport BSS_C buffer pair ───────────────────────────
+            for (const [vpIdx, vp] of this._viewports) {
+                const N       = vpIdx;
+                const bufSize = vp.scroll ? `VP_${N}_BUFSIZE_SCROLL` : `VP_${N}_BUFSIZE`;
+                out.push(`        SECTION vp_${N}_planes_a,BSS_C`);
+                out.push(`        XDEF    _vp${N}_planes_a_data`);
+                out.push(`_vp${N}_planes_a_data:`);
+                out.push(`        ds.b    ${bufSize}`);
+                out.push('');
+                out.push(`        SECTION vp_${N}_planes_b,BSS_C`);
+                out.push(`        XDEF    _vp${N}_planes_b_data`);
+                out.push(`_vp${N}_planes_b_data:`);
+                out.push(`        ds.b    ${bufSize}`);
+                out.push('');
+            }
+        }
+
+        // ── T26: Per-viewport Bob-State-Block (regular BSS, not chip RAM) ────
+        if (this._usesBobs) {
+            for (const [vpIdx] of this._viewports) {
+                out.push(`        SECTION vp_${vpIdx}_bob_state_sec,BSS`);
+                out.push(`        XDEF    _vp${vpIdx}_bob_state`);
+                out.push(`_vp${vpIdx}_bob_state:  ds.b    BOB_ST_SIZE`);
+                out.push('');
+            }
+        }
     }
 
     // ── T22: Asset data sections (audio, images, masks, tilesets, tilemaps, fonts) ──
@@ -1273,30 +1525,55 @@ export class CodeGen {
         }
     }
 
-    // ── T23: _setup_graphics subroutine ───────────────────────────────────────
+    // ── T11/T12/T23: _setup_graphics subroutine ───────────────────────────────
     _emitSetupGraphics(out) {
         out.push('        SECTION gfx_init,CODE');
         out.push('');
         out.push('_setup_graphics:');
-        out.push('        lea     _gfx_cop_a_bpl_table,a0');
-        out.push('        move.l  _gfx_planes,a1');
-        out.push('        add.l   #GFXPLANEOFS,a1');   // offset to visible origin
-        out.push('        moveq   #GFXDEPTH,d0');
-        out.push('        move.l  #GFXBPR,d1');
-        out.push('        jsr     _PatchBitplanePtrs');
-        out.push('        lea     _gfx_cop_b_bpl_table,a0');
-        out.push('        move.l  _gfx_planes_b,a1');
-        out.push('        add.l   #GFXPLANEOFS,a1');   // offset to visible origin
-        out.push('        moveq   #GFXDEPTH,d0');
-        out.push('        move.l  #GFXBPR,d1');
-        out.push('        jsr     _PatchBitplanePtrs');
+
+        // T11: BPLxPT patch + copper base cache — one pass per viewport (both modes).
+        // Uses VP-namespaced labels which exist in legacy mode too (T7 double-labels).
+        for (const [vpIdx] of this._viewports) {
+            const N = vpIdx;
+            // Copper A: wire BPLxPT table to planes_a visible origin
+            out.push(`        lea     _vp${N}_cop_a_bpl,a0`);
+            out.push(`        lea     _vp${N}_planes_a_data+GFXPLANEOFS,a1`);
+            out.push('        moveq   #GFXDEPTH,d0');
+            out.push('        move.l  #GFXBPR,d1');
+            out.push('        jsr     _PatchBitplanePtrs');
+            // Copper B: wire BPLxPT table to planes_b visible origin
+            out.push(`        lea     _vp${N}_cop_b_bpl,a0`);
+            out.push(`        lea     _vp${N}_planes_b_data+GFXPLANEOFS,a1`);
+            out.push('        moveq   #GFXDEPTH,d0');
+            out.push('        move.l  #GFXBPR,d1');
+            out.push('        jsr     _PatchBitplanePtrs');
+            // Cache copper section base addresses (used by Viewport command and DrawTilemap)
+            out.push(`        lea     _vp${N}_cop_a,a0`);
+            out.push(`        move.l  a0,_vp${N}_cop_a_base`);
+            out.push(`        lea     _vp${N}_cop_b,a0`);
+            out.push(`        move.l  a0,_vp${N}_cop_b_base`);
+        }
+
+        // Install front copper (A) and init palette
         out.push('        lea     _gfx_copper_a,a0');
         out.push('        jsr     _InstallCopper');
         out.push('        jsr     _InitPalette');
-        out.push('        move.l  _gfx_planes_b,a0');
-        out.push('        add.l   #GFXPLANEOFS,a0');   // _back_planes_ptr = visible origin
-        out.push('        move.l  a0,_back_planes_ptr');
+
+        // T12: initial back-buffer pointers — one per viewport.
+        // Front = Copper A (installed above), Back = Buffer-Set B.
+        for (const [vpIdx] of this._viewports) {
+            out.push(`        move.l  #_vp${vpIdx}_planes_b_data+GFXPLANEOFS,_vp${vpIdx}_back_ptr`);
+        }
+        // Default drawing target: VP0
+        out.push('        move.l  _vp0_back_ptr,_back_planes_ptr');
         out.push('        clr.b   _front_is_a');
+        // Legacy mode: initialise _active_cop_base to VP0 back-copper (B) section
+        out.push('        move.l  _vp0_cop_b_base,_active_cop_base');
+        // T26: initialise _active_bob_state to VP0
+        if (this._usesBobs) {
+            out.push('        lea     _vp0_bob_state,a0');
+            out.push('        move.l  a0,_active_bob_state');
+        }
         out.push('        rts');
         out.push('');
     }
@@ -1809,6 +2086,46 @@ export class CodeGen {
         lines.push(`        move.l  a0,_data_ptr`);
     }
 
+    // ── T13: Viewport N — switch drawing context to viewport N ───────────────
+    _genStmt_viewport(stmt, lines) {
+        const N = stmt.index;
+        if (!this._viewports.has(N)) {
+            throw new Error(`Viewport ${N}: not defined — use SetViewport first (line ${stmt.line})`);
+        }
+
+        // T15: update compile-time active viewport
+        this._activeViewportIdx = N;
+
+        // 1. Drawing-Target umschalten
+        lines.push(`        move.l  _vp${N}_back_ptr,_back_planes_ptr`);
+
+        // 2. Active-Copper-Base setzen (für DrawTilemap-Patches)
+        const copALbl = this._nextLabel();
+        const copDone = this._nextLabel();
+        lines.push('        tst.b   _front_is_a');
+        lines.push(`        bne.s   ${copALbl}`);
+        lines.push(`        lea     _vp${N}_cop_b,a0`);  // front=A → back=B
+        lines.push(`        bra.s   ${copDone}`);
+        lines.push(`${copALbl}:`);
+        lines.push(`        lea     _vp${N}_cop_a,a0`);  // front=B → back=A
+        lines.push(`${copDone}:`);
+        lines.push('        move.l  a0,_active_cop_base');
+
+        // 3. Active-VP-Index setzen
+        lines.push(`        move.w  #${N},_active_vp_idx`);
+    }
+
+    _genStmt_setCamera(stmt, lines) {
+        const N = this._activeViewportIdx;
+        this._cameraVPs.add(N);
+        // eval y → d0, store to _vpN_cam_y
+        this._genExpr(stmt.y, lines);
+        lines.push(`        move.l  d0,_vp${N}_cam_y`);
+        // eval x → d0, store to _vpN_cam_x
+        this._genExpr(stmt.x, lines);
+        lines.push(`        move.l  d0,_vp${N}_cam_x`);
+    }
+
     _genStmt_local(stmt, lines) {
         if (!this._funcCtx) throw new Error(`'Local' is only valid inside a Function (line ${stmt.line})`);
         const ref = this._varRef(stmt.name);
@@ -1890,6 +2207,9 @@ export class CodeGen {
             dim_typed_array:  noop,
             function_def:     noop,
             const_def:        noop,
+            set_viewport:     noop,       // handled in pre-pass (T3)
+            set_camera:       (s, l) => this._genStmt_setCamera(s, l),
+            viewport_cmd:     (s, l) => this._genStmt_viewport(s, l),
             data_stmt:        noop,
             read_stmt:        (s, l) => this._genStmt_read(s, l),
             restore_stmt:     (s, l) => this._genStmt_restore(s, l),
@@ -1950,6 +2270,9 @@ export class CodeGen {
     }
 
     _cmd_cls(stmt, lines) {
+        // T14: per-viewport BLTSIZE — visible height of active VP, per-plane
+        const vp = this._viewports.get(this._activeViewportIdx);
+        lines.push(`        move.w  #(${vp.height}<<6|(GFXBPR/2)),d0`);
         lines.push('        jsr     _Cls');
     }
 
@@ -1983,6 +2306,31 @@ export class CodeGen {
     _cmd_screenflip(stmt, lines) {
         if (this._usesBobs) lines.push('        jsr     _FlushBobs');
         lines.push('        jsr     _ScreenFlip');
+
+        // T16: inline VP-pointer swap — _ScreenFlip toggled _front_is_a,
+        // now update all per-VP back pointers accordingly.
+        const flipBLbl = this._nextLabel();
+        const flipDone = this._nextLabel();
+        lines.push('        tst.b   _front_is_a');
+        lines.push(`        bne.s   ${flipBLbl}`);
+
+        // front_is_a = 0 → Back is Buffer-Set B
+        for (const [vpIdx] of this._viewports) {
+            lines.push(`        move.l  #_vp${vpIdx}_planes_b_data+GFXPLANEOFS,_vp${vpIdx}_back_ptr`);
+        }
+        lines.push('        move.l  _vp0_cop_b_base,_active_cop_base');
+        lines.push(`        bra.s   ${flipDone}`);
+
+        // front_is_a = 1 → Back is Buffer-Set A
+        lines.push(`${flipBLbl}:`);
+        for (const [vpIdx] of this._viewports) {
+            lines.push(`        move.l  #_vp${vpIdx}_planes_a_data+GFXPLANEOFS,_vp${vpIdx}_back_ptr`);
+        }
+        lines.push('        move.l  _vp0_cop_a_base,_active_cop_base');
+
+        lines.push(`${flipDone}:`);
+        // Default drawing target: VP0
+        lines.push('        move.l  _vp0_back_ptr,_back_planes_ptr');
     }
 
     _cmd_plot(stmt, lines) {
@@ -2190,24 +2538,33 @@ export class CodeGen {
         if (frameArg && !imgEntry.isAnim)
             throw new Error(`DrawBob: frame argument requires LoadAnimImage (image ${idxArg.value} was loaded with LoadImage) — line ${stmt.line}`);
 
+        const N = this._activeViewportIdx;
+        const hasCam = this._cameraVPs.has(N);
+
         if (!frameArg || (frameArg.type === 'int' && frameArg.value === 0)) {
             this._genExpr(yExpr, lines);
+            if (hasCam) lines.push(`        sub.l   _vp${N}_cam_y,d0`);
             lines.push('        move.l  d0,-(sp)');
             this._genExpr(xExpr, lines);
+            if (hasCam) lines.push(`        sub.l   _vp${N}_cam_x,d0`);
             lines.push('        move.l  (sp)+,d1');
             lines.push('        moveq   #0,d2');
         } else if (frameArg.type === 'int') {
             this._genExpr(yExpr, lines);
+            if (hasCam) lines.push(`        sub.l   _vp${N}_cam_y,d0`);
             lines.push('        move.l  d0,-(sp)');
             this._genExpr(xExpr, lines);
+            if (hasCam) lines.push(`        sub.l   _vp${N}_cam_x,d0`);
             lines.push('        move.l  (sp)+,d1');
             lines.push(`        moveq   #${frameArg.value},d2`);
         } else {
             this._genExpr(frameArg, lines);
             lines.push('        move.l  d0,-(sp)');
             this._genExpr(yExpr, lines);
+            if (hasCam) lines.push(`        sub.l   _vp${N}_cam_y,d0`);
             lines.push('        move.l  d0,-(sp)');
             this._genExpr(xExpr, lines);
+            if (hasCam) lines.push(`        sub.l   _vp${N}_cam_x,d0`);
             lines.push('        move.l  (sp)+,d1');
             lines.push('        move.l  (sp)+,d2');
         }
@@ -2467,14 +2824,37 @@ export class CodeGen {
         if (!tsEntry)
             throw new Error(`DrawTilemap: tileset slot ${tsIdxArg.value} not loaded — use LoadTileset first (line ${stmt.line})`);
 
-        const scrollXExpr = stmt.args[2] ?? { type: 'int', value: 0 };
-        const scrollYExpr = stmt.args[3] ?? { type: 'int', value: 0 };
-        this._genExpr(scrollXExpr, lines);
-        lines.push('        move.l  d0,_active_scroll_x');
-        this._genExpr(scrollYExpr, lines);
-        lines.push('        move.l  d0,d1');
-        lines.push('        move.l  d0,_active_scroll_y');
-        lines.push('        move.l  _active_scroll_x,d0');
+        const argc = stmt.args.length;
+
+        const vpN = this._activeViewportIdx;
+        const multiVP = this._hasExplicitViewports;
+
+        if (argc === 2) {
+            // Camera-Modus: scrollX/Y aus aktiver Viewport-Kamera
+            if (!multiVP)
+                throw new Error(`DrawTilemap camera mode requires explicit viewports — use SetViewport first (line ${stmt.line})`);
+            if (!this._cameraVPs.has(vpN))
+                throw new Error(`DrawTilemap camera mode requires SetCamera in Viewport ${vpN} (line ${stmt.line})`);
+            lines.push(`        move.l  _vp${vpN}_cam_x,d0`);
+            lines.push('        move.l  d0,_active_scroll_x');
+            lines.push(`        move.l  _vp${vpN}_cam_y,d1`);
+            lines.push('        move.l  d1,_active_scroll_y');
+        } else {
+            // Explicit scroll: 3 args → scrollX only (scrollY=0), 4 args → both
+            const scrollXExpr = stmt.args[2];
+            const scrollYExpr = stmt.args[3] ?? { type: 'int', value: 0 };
+            this._genExpr(scrollXExpr, lines);
+            lines.push('        move.l  d0,_active_scroll_x');
+            this._genExpr(scrollYExpr, lines);
+            lines.push('        move.l  d0,d1');
+            lines.push('        move.l  d0,_active_scroll_y');
+            lines.push('        move.l  _active_scroll_x,d0');
+        }
+        // T23: mirror scroll state into per-VP variables for _bg_restore_tilemap
+        if (multiVP) {
+            lines.push(`        move.l  d0,_vp${vpN}_scroll_x`);
+            lines.push(`        move.l  d1,_vp${vpN}_scroll_y`);
+        }
         lines.push(`        lea     ${tmEntry.label},a0`);
         lines.push(`        lea     ${tsEntry.label},a1`);
         lines.push('        jsr     _DrawTilemap');
@@ -2498,8 +2878,14 @@ export class CodeGen {
         lines.push('        move.l  a0,_active_tilemap_ptr');
         lines.push(`        lea     ${tsEntry.label},a0`);
         lines.push('        move.l  a0,_active_tileset_ptr');
-        lines.push('        lea     _bg_restore_tilemap,a0');
-        lines.push('        move.l  a0,_bg_restore_fn');
+        if (this._hasExplicitViewports) {
+            const N = this._activeViewportIdx;
+            lines.push(`        move.l  _active_tilemap_ptr,_vp${N}_tilemap_ptr`);
+            lines.push(`        move.l  a0,_vp${N}_tileset_ptr`);
+        }
+        lines.push('        move.l  _active_bob_state,a0');
+        lines.push('        lea     _bg_restore_tilemap,a1');
+        lines.push('        move.l  a1,BOB_ST_RESTORE_FN(a0)');
     }
 
     // ── Built-in function handler table (Phase 3 refactoring) ───────────────

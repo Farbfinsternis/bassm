@@ -328,14 +328,44 @@
     },
     {
         "name": "DrawTilemap",
-        "description": "Render the visible portion of a tilemap into the back buffer. scrollX/scrollY are the camera position in pixels (0,0 = top-left). Tile dimensions and map size are read from the tilemap header at runtime.",
+        "description": "Render the visible portion of a tilemap into the back buffer. With scrollX/scrollY: explicit camera position in pixels. Without: uses the active viewport camera (SetCamera). Tile dimensions and map size are read from the tilemap header at runtime.",
         "type": "global",
         "return": "void",
         "args": [
             { "name": "tmSlot",  "type": "integer" },
             { "name": "tsSlot",  "type": "integer" },
-            { "name": "scrollX", "type": "integer" },
+            { "name": "scrollX", "type": "integer", "optional": true },
             { "name": "scrollY", "type": "integer", "optional": true }
+        ]
+    },
+    {
+        "name": "SetViewport",
+        "description": "Define viewport index covering screen lines y1..y2 (inclusive). Viewports must cover the full screen without gaps or overlaps. y1/y2 must be integer literals.",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "index", "type": "integer" },
+            { "name": "y1",    "type": "integer" },
+            { "name": "y2",    "type": "integer" }
+        ]
+    },
+    {
+        "name": "Viewport",
+        "description": "Switch the drawing context to viewport index. All subsequent drawing commands target this viewport. index must be an integer literal.",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "index", "type": "integer" }
+        ]
+    },
+    {
+        "name": "SetCamera",
+        "description": "Set the 2D camera position of the active viewport. DrawBob translates world-space positions by (x, y). DrawTilemap without explicit scroll args uses this position.",
+        "type": "global",
+        "return": "void",
+        "args": [
+            { "name": "x", "type": "integer" },
+            { "name": "y", "type": "integer" }
         ]
     },
     {

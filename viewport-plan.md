@@ -102,10 +102,19 @@ CopperColor (Raster-Effekte) wird in V1 **nicht** für Multi-Viewport unterstüt
 Compiler-Warnung wenn CopperColor zusammen mit SetViewport verwendet wird.
 Wird in einer späteren Phase nachgerüstet.
 
-### D10 — Backward Compatibility
-Ohne `SetViewport` bleibt das komplette bisherige Verhalten erhalten —
-gleiche Copper-Liste, gleiche Buffer, gleiche Offsets. Kein Performanceverlust
-für bestehende Programme.
+### D10 — Impliziter Viewport 0 ohne SetViewport
+
+Wird kein `SetViewport` verwendet, legt der Compiler automatisch **einen einzigen Viewport 0** an:
+- `y1 = 0`, `y2 = GFXHEIGHT − 1` (Höhe aus dem `Graphics`-Befehl)
+- Gleiche Copper-List-Struktur wie im Multi-Viewport-Modus (eine Section, kein WAIT)
+- Gleiche Buffer-Labels und Offsets — alle Zeichenbefehle funktionieren unverändert
+
+**Kamera:** Im impliziten Viewport 0 ist die Kamera **fix an den definierten Screen gebunden**
+(aktuell 320×256). Da kein Scroll-Buffer (GFXVPAD/GFXHPAD) angelegt wird, ist `SetCamera`
+wirkungslos — scrollX/scrollY bleiben 0. Für scrollende Programme ist `SetViewport` erforderlich.
+
+**Vorteil:** Einziger Code-Pfad in `codegen.js`; kein separater Legacy-Ast der beim Erweitern
+vergessen werden kann; bestehende Programme funktionieren ohne Änderung identisch.
 
 ---
 
@@ -270,7 +279,7 @@ analog zum bestehenden `_active_fine_y`-Konzept, erweitert um `fine_x`.
 
 ### Phase 0 — API & Parser
 
-#### T1 — commands-map.json: Neue Einträge
+#### T1 — commands-map.json: Neue Einträge ✓
 
 **Datei:** `app/src/commands-map.json`
 
@@ -280,7 +289,30 @@ analog zum bestehenden `_active_fine_y`-Konzept, erweitert um `fine_x`.
 
 Alle drei sind Commands (keine Funktionen/Expressions).
 
-#### T2 — Parser: Neue Keywords + Statement-Nodes
+**`DrawTilemap` erweitern** — scrollX/scrollY beide optional machen:
+
+```json
+{
+    "name": "DrawTilemap",
+    "args": [
+        { "name": "tmSlot",  "type": "integer" },
+        { "name": "tsSlot",  "type": "integer" },
+        { "name": "scrollX", "type": "integer", "optional": true },
+        { "name": "scrollY", "type": "integer", "optional": true }
+    ]
+}
+```
+
+Regel: scrollX und scrollY müssen **gemeinsam** angegeben werden oder **beide** fehlen.
+Nur scrollX ohne scrollY ist ein Compilerfehler (bisher war scrollY das optionale Argument —
+dieses Verhalten ändert sich).
+
+Bisheriger 3-Arg-Aufruf `DrawTilemap tm, ts, scrollX` war "scrollY optional = 0" und
+bleibt weiterhin gültig (scrollY default 0).
+
+Neue 2-Arg-Variante `DrawTilemap tm, ts` = Camera-Modus (→ T20).
+
+#### T2 — Parser: Neue Keywords + Statement-Nodes ✓
 
 **Dateien:** `app/src/keywords-map.json`, `app/src/parser.js`
 
@@ -292,29 +324,30 @@ Alle drei sind Commands (keine Funktionen/Expressions).
 - Validierung im Parser: `index`, `y1`, `y2` müssen Integer-Literale sein.
   `Viewport index` muss Integer-Literal sein (V1).
 
-#### T3 — CodeGen: Pre-Pass + Validierung
+#### T3 — CodeGen: Pre-Pass + Validierung ✓
 
 **Datei:** `app/src/codegen.js`
 
-- Neues Instanzfeld: `this._viewports = new Map()` — index → `{ y1, y2, height }`.
+- Neues Instanzfeld: `this._viewports = new Map()` — index → `{ y1, y2, height, scroll }`.
 - Im Pre-Pass (neben `_collectVars`):
   - Alle `set_viewport`-Nodes sammeln.
   - Sortierung nach y1 prüfen.
-  - Validierung:
+  - Validierung (Compilerfehler bei Verletzung):
     - Indizes 0..N lückenlos?
     - y1[0] = 0, y2[N] = GFXHEIGHT−1?
     - y1[i+1] = y2[i]+1 (lückenlos)?
     - 0 ≤ y1 < y2 ≤ GFXHEIGHT−1?
-  - Compilerfehler bei Verletzung.
-- Neues Flag: `this._usesViewports = this._viewports.size > 0`.
-- Wenn `_usesViewports && _usesRaster` → Compiler-Warnung / Fehler (D9).
+- Neues Flag: `this._hasExplicitViewports = this._viewports.size > 0`.
+  Wird **vor** der impliziten VP0-Injektion (T32) gesetzt und ändert sich danach nicht.
+  Steuert: Label-Aliasing (T7), Copper-Struktur (T5), Fragment-Pfade.
+- Wenn `_hasExplicitViewports && _usesRaster` → Compiler-Warnung / Fehler (D9).
 - Neues Feld: `this._activeViewportIdx = 0` (Compile-Time Viewport Tracker, für T15).
 
 ---
 
 ### Phase 1 — Copper-Liste pro Viewport
 
-#### T4 — Copper-Section Layout & EQU-Offsets
+#### T4 — Copper-Section Layout & EQU-Offsets ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -330,7 +363,7 @@ Alle drei sind Commands (keine Funktionen/Expressions).
 - tilemap.s und ggf. weitere Fragments nutzen diese Offsets statt Magic Numbers.
   (Wenn `_usesViewports` false, werden die EQUs nicht emittiert → Legacy-Offsets gelten.)
 
-#### T5 — Copper-Generation refaktorieren
+#### T5 — Copper-Generation refaktorieren ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -348,7 +381,7 @@ Alle drei sind Commands (keine Funktionen/Expressions).
   3. Für VP 1..N: WAIT + Section
   4. END: `$FFFF,$FFFE`
 
-#### T6 — WAIT-Instruktionen zwischen Viewports
+#### T6 — WAIT-Instruktionen zwischen Viewports ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -360,7 +393,7 @@ Alle drei sind Commands (keine Funktionen/Expressions).
     - `dc.w $FFDF,$FFFE` (WAIT for end of line 255)
     - `dc.w $${hex(((display_line - 256) << 8) | 0x01)},$FF00`
 
-#### T7 — XDEF / XREF Labels pro Section
+#### T7 — XDEF / XREF Labels pro Section + Alias-Strategie ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -368,17 +401,42 @@ Alle drei sind Commands (keine Funktionen/Expressions).
   - `_vp${idx}_cop_${ab}` — Section Base
   - `_vp${idx}_cop_${ab}_bpl` — BPLxPT-Tabelle
   - `_vp${idx}_cop_${ab}_pal` — Palette-Start
-- Legacy-Labels für Backward-Compat beibehalten wenn `!_usesViewports`:
-  - `_gfx_copper_a/b`, `_gfx_cop_a/b_bpl_table` (wie bisher).
-- Wenn `_usesViewports`:
-  - `_gfx_copper_a` zeigt auf den Copper-List-Anfang (vor VP0).
-  - Alte `_gfx_cop_a_bpl_table` wird zu `_vp0_cop_a_bpl` (Alias oder entfällt).
+
+**Alias-Strategie für Legacy-Kompatibilität (`!_hasExplicitViewports`):**
+
+Wenn kein `SetViewport` verwendet wird (impliziter VP0), emittiert codegen.js an jeder
+relevanten Stelle **beide Label gleichzeitig** — vasm unterstützt mehrere Labels
+an derselben Adresse:
+
+```asm
+; Copper-Liste A:
+_gfx_copper_a:          ; Legacy-Alias
+_vp0_cop_a:             ; neues Label — beide zeigen auf denselben Punkt
+        dc.w    $008E,...  ; DIWSTRT
+
+_gfx_cop_a_bpl_table:   ; Legacy-Alias
+_vp0_cop_a_bpl:
+        dc.w    $00E0,0    ; BPL1PTH ...
+
+; Buffer BSS:
+_gfx_planes_data:       ; Legacy-Alias
+_vp0_planes_a_data:
+        ds.b    GFXBUFSIZE
+
+_gfx_planes_b_data:     ; Legacy-Alias
+_vp0_planes_b_data:
+        ds.b    GFXBUFSIZE
+```
+
+Wenn `_hasExplicitViewports === true` (User schrieb `SetViewport`): **nur** die neuen
+`_vpN_*`-Labels emittieren; keine Legacy-Labels. Alle Fragments (tilemap.s, bobs.s, …)
+müssen in diesem Modus ausschließlich die neuen Labels oder `_active_*`-Variablen nutzen.
 
 ---
 
 ### Phase 2 — Buffer & State-Allokation
 
-#### T8 — Per-Viewport EQUs
+#### T8 — Per-Viewport EQUs ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -401,7 +459,7 @@ VP_N_BUFSIZE_SCROLL EQU ((VP_N_VHEIGHT+GFXVPAD)*GFXBPR*GFXDEPTH)
 
 Zusätzlich: `VP_COUNT EQU <Anzahl Viewports>`.
 
-#### T9 — Per-Viewport BSS_C Buffer
+#### T9 — Per-Viewport BSS_C Buffer ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -419,7 +477,7 @@ _vpN_planes_b_data:  ds.b    VP_N_BUFSIZE
 - `startup.s` muss die Pointer `_gfx_planes` / `_gfx_planes_b` nicht mehr setzen —
   stattdessen setzt `_setup_graphics` die VP-Pointer direkt (→ T11).
 
-#### T10 — Per-Viewport BSS State-Variablen
+#### T10 — Per-Viewport BSS State-Variablen ✓
 
 **Datei:** `app/src/codegen.js` (emittiert in `SECTION user_vars,BSS`)
 
@@ -453,7 +511,7 @@ _vpN_scroll_y:       ds.l    1
 
 ### Phase 3 — Initialisierung
 
-#### T11 — _setup_graphics: Per-Viewport BPLxPT-Patch
+#### T11 — _setup_graphics: Per-Viewport BPLxPT-Patch ✓
 
 **Datei:** `app/src/codegen.js` (generierter Code in `_setup_graphics`)
 
@@ -488,7 +546,7 @@ Copper-Adressen in BSS cachen:
         move.l  a0,_vpN_cop_b_base
 ```
 
-#### T12 — Initial-Pointer
+#### T12 — Initial-Pointer ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -515,7 +573,7 @@ Nach dem Patch aller BPLxPT:
 
 ### Phase 4 — Viewport-Kontext
 
-#### T13 — Viewport N Command
+#### T13 — Viewport N Command ✓
 
 **Datei:** `app/src/codegen.js` (in `_genStatement`, neuer Case `viewport_cmd`)
 
@@ -546,7 +604,7 @@ Nach dem Patch aller BPLxPT:
 - `_active_bob_state` wird von `_AddBob` gelesen (→ T27).
 - `_active_cop_base` wird von `_DrawTilemap` für Copper-Patches gelesen (→ T21).
 
-#### T14 — Cls per Viewport
+#### T14 — Cls per Viewport ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -560,7 +618,7 @@ Nach dem Patch aller BPLxPT:
   Minimale Änderung: `move.w d0,BLTSIZE(a5)` statt `move.w #...,BLTSIZE(a5)`.
 - ClsColor analog: d0 = BLTSIZE, d1 = Color-Index (bereits so oder trivial erweiterbar).
 
-#### T15 — Compile-Time Viewport-Tracking
+#### T15 — Compile-Time Viewport-Tracking ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -575,7 +633,7 @@ Nach dem Patch aller BPLxPT:
 
 ### Phase 5 — ScreenFlip
 
-#### T16 — Viewport-Pointer-Swap nach Flip
+#### T16 — Viewport-Pointer-Swap nach Flip ✓
 
 **Datei:** `app/src/codegen.js` (Injection bei `ScreenFlip`-Command)
 
@@ -607,7 +665,7 @@ Nach `jsr _ScreenFlip` emittiert der Codegen inline:
 Dieser Code wird inline emittiert (nicht in flip.s), weil VP-Count und Labels
 compile-time-spezifisch sind.
 
-#### T17 — _ScreenFlip unverändert lassen
+#### T17 — _ScreenFlip unverändert lassen ✓
 
 **Datei:** `app/src/m68k/fragments/flip.s`
 
@@ -621,7 +679,7 @@ compile-time-spezifisch sind.
 
 ### Phase 6 — Camera-System
 
-#### T18 — SetCamera Command
+#### T18 — SetCamera Command ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -638,7 +696,7 @@ compile-time-spezifisch sind.
   die Kamera bleibt bis zum nächsten `SetCamera`-Aufruf bestehen.
 - Ohne `SetCamera`: `_vpN_cam_x/y = 0` (BSS Zero-Init) → keine Translation.
 
-#### T19 — DrawBob: Camera-Translation
+#### T19 — DrawBob: Camera-Translation ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -657,7 +715,7 @@ diesen VP aufgerufen), wird bei `DrawBob imgIdx, wx, wy` folgendes emittiert:
 - Die fine_x/fine_y-Kompensation erfolgt NICHT hier, sondern in `_FlushBobs` (→ T30).
 - Wenn keine Kamera → kein `sub.l` emittiert (kein Overhead für kameralose VPs).
 
-#### T20 — DrawTilemap: Camera-Modus
+#### T20 — DrawTilemap: Camera-Modus ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -665,22 +723,30 @@ Bisherig: `DrawTilemap tmSlot, tsSlot, scrollX, scrollY`
 
 Neu (alternative Syntax): `DrawTilemap tmSlot, tsSlot` (ohne Scroll-Args)
 
-- Wenn nur 2 Args: scrollX/scrollY werden aus der Kamera-Position geladen:
-  ```asm
-          move.l  _vpN_cam_x,d0      ; scrollX = camera_x
-          move.l  _vpN_cam_y,d1      ; scrollY = camera_y
-          lea     _tilemap_M,a0
-          lea     _tileset_K,a1
-          jsr     _DrawTilemap
-  ```
-- Wenn 4 Args: bisheriges Verhalten (explizite Scroll-Werte), abwärtskompatibel.
-- Compiler-Fehler wenn 2 Args und keine Kamera im aktiven Viewport.
+**Parsing:** `_genDrawTilemap(stmt)` prüft `stmt.args.length`:
+- `args.length === 2` → Camera-Modus
+- `args.length === 3` → explizit scrollX, scrollY = 0 (Backward-Compat, wie bisher)
+- `args.length === 4` → explizit scrollX + scrollY
+
+**Camera-Modus (2 Args) — emittierter Code:**
+```asm
+        move.l  _vp0_cam_x,d0      ; scrollX = camera_x des aktiven VP
+        move.l  _vp0_cam_y,d1      ; scrollY = camera_y des aktiven VP
+        lea     _tilemap_M,a0
+        lea     _tileset_K,a1
+        jsr     _DrawTilemap
+```
+
+- Compilerfehler wenn 2 Args und `_hasExplicitViewports === false` (impliziter VP0 hat keinen
+  Scroll-Puffer — SetCamera wäre No-Op, Camera-Modus macht keinen Sinn).
+- Compilerfehler wenn 2 Args und kein vorhergehender `SetCamera`-Aufruf im aktiven Viewport
+  (würde mit Camera (0,0) scrollen — wahrscheinlich ein Bug im Programm).
 
 ---
 
 ### Phase 7 — Tilemap per Viewport
 
-#### T21 — tilemap.s: Viewport-Copper patchen
+#### T21 — tilemap.s: Viewport-Copper patchen ✓
 
 **Datei:** `app/src/m68k/fragments/tilemap.s`
 
@@ -716,7 +782,7 @@ move.l  _back_planes_ptr,a1
 - Die Logik zum Auswählen von Copper A vs B (via `_front_is_a`) entfällt —
   `_active_cop_base` zeigt bereits auf die richtige (Back-)Copper-Section.
 
-#### T22 — Codegen: Copper-Bases an tilemap.s kommunizieren
+#### T22 — Codegen: Copper-Bases an tilemap.s kommunizieren ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -725,7 +791,7 @@ move.l  _back_planes_ptr,a1
 - BPL-Tabelle: `_active_cop_bpl` = `_active_cop_base + VP_COP_BPL` (inline berechnet).
 - Kein neuer BSS-Slot nötig — `_active_cop_base` reicht aus.
 
-#### T23 — Per-Viewport Tilemap-State
+#### T23 — Per-Viewport Tilemap-State ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -742,7 +808,7 @@ move.l  _back_planes_ptr,a1
 - `DrawTilemap` schreibt `_vpN_scroll_x/y` statt der globalen Variablen.
 - `_bg_restore_tilemap` liest VP-spezifische Variablen (→ T24).
 
-#### T24 — _bg_restore_tilemap: Viewport-aware
+#### T24 — _bg_restore_tilemap: Viewport-aware ✓
 
 **Datei:** `app/src/m68k/fragments/tilemap.s`
 
@@ -760,26 +826,37 @@ move.l  _back_planes_ptr,a1
 
 ### Phase 8 — Bob-System pro Viewport
 
-#### T25 — Bob-State-Block Definition
+#### T25 — Bob-State-Block Definition ✓
 
 **Dateien:** `app/src/m68k/fragments/bobs.s`, `app/src/codegen.js`
 
-- Neues EQU-Set:
+- Neues EQU-Set (in `bobs.s` definiert, via XDEF exportiert):
   ```
-  BOB_ST_NEW_CNT    EQU 0
-  BOB_ST_OLD_CNT_A  EQU 2
-  BOB_ST_OLD_CNT_B  EQU 4
-  BOB_ST_RESTORE_FN EQU 6
-  BOB_ST_BG_BPL_PTR EQU 10
-  BOB_ST_FINE_X     EQU 14
-  BOB_ST_FINE_Y     EQU 16
-  BOB_ST_NEW        EQU 20
+  BOB_ST_NEW_CNT    EQU 0       ; .w — bobs queued this frame
+  BOB_ST_OLD_CNT_A  EQU 2       ; .w — old bob count for buffer A
+  BOB_ST_OLD_CNT_B  EQU 4       ; .w — old bob count for buffer B
+  ; EQU 6: .w padding — erzwingt Longword-Ausrichtung für die folgenden .l-Felder
+  BOB_ST_RESTORE_FN EQU 8       ; .l — fn ptr (_bg_restore_static / _bg_restore_tilemap / 0)
+  BOB_ST_BG_BPL_PTR EQU 12      ; .l — ptr to bg image bitplane-0 data
+  BOB_ST_FINE_X     EQU 16      ; .w — horizontal fine-scroll offset (Tilemap, 0..tileW-1)
+  BOB_ST_FINE_Y     EQU 18      ; .w — vertical fine-scroll offset (Tilemap, 0..tileH-1)
+  BOB_ST_NEW        EQU 20      ; Bob-Queue new  (BOBS_MAX × 16 Bytes)
   BOB_ST_OLD_A      EQU (20+BOBS_MAX*16)
   BOB_ST_OLD_B      EQU (20+BOBS_MAX*2*16)
   BOB_ST_SIZE       EQU (20+BOBS_MAX*3*16)
   ```
 
-#### T26 — BSS für Bob-State-Blocks
+**Alignment-Begründung:** Die drei `.w`-Felder (Offset 0–5) belegen 6 Bytes. Ein `.w`-Padding
+bei Offset 6 bringt `BOB_ST_RESTORE_FN` auf Offset 8 (= Longword-Grenze). Alle `.l`-Felder
+danach (`BOB_ST_RESTORE_FN`, `BOB_ST_BG_BPL_PTR`) liegen auf Longword-Grenzen — auf dem
+68000 zwingend erforderlich, sonst Bus Error.
+
+**Migration von bobs.s:** Das bestehende BSS-Layout in `bobs.s` (globale Labels
+`_bg_restore_fn`, `_bg_bpl_ptr`, `_bobs_new_cnt`, `_bobs_new`, `_bobs_old_a/b`)
+wird **komplett entfernt**. Der State-Block ersetzt diese Variablen vollständig.
+Codegen emittiert den Block per Viewport (T26). `bobs.s` enthält danach nur noch CODE.
+
+#### T26 — BSS für Bob-State-Blocks ✓
 
 **Datei:** `app/src/codegen.js`
 
@@ -801,7 +878,7 @@ _active_bob_state:   ds.l    1       ; Ptr auf aktiven VP Bob-State-Block
 - Legacy (ohne Viewports): ein einzelner State-Block `_vp0_bob_state`,
   `_active_bob_state` initial darauf gesetzt.
 
-#### T27 — _AddBob: State-Block-Pointer
+#### T27 — _AddBob: State-Block-Pointer ✓
 
 **Datei:** `app/src/m68k/fragments/bobs.s`
 
@@ -943,21 +1020,30 @@ Im Erase-Pass (Restore): gleiche Kompensation für die alten Positionen.
 
 ### Phase 10 — Rückwärtskompatibilität & Abschluss
 
-#### T32 — Legacy-Pfad ohne SetViewport
+#### T32 — Impliziter Viewport 0 ohne SetViewport
 
 **Datei:** `app/src/codegen.js`
 
-Wenn `_usesViewports === false`:
-- Copper-Liste wird **exakt** wie bisher generiert (inkl. alter Offsets 22, 10, 30, 34).
-- Buffer: `_gfx_planes_data` / `_gfx_planes_b_data` wie bisher.
-- `_back_planes_ptr` wie bisher.
-- `_FlushBobs` nutzt einzelnen globalen Bob-State-Block (= `_vp0_bob_state`,
-  aber mit den alten Label-Namen → Zero-Change).
-- tilemap.s-Offsets: alte hardcoded Werte (kein VP_COP_*-EQU emittiert).
-- **Kein Performance-Impact, kein Code-Unterschied** für bestehende Programme.
+Ablauf in `generate()`, direkt nach dem Pre-Pass, vor der Code-Generierung:
 
-Umsetzung: `if (this._usesViewports) { ... neuer Pfad ... } else { ... alter Pfad ... }`
-an allen relevanten Stellen in `generate()`.
+```js
+// _hasExplicitViewports wurde bereits im Pre-Pass gesetzt (T3)
+if (!this._hasExplicitViewports) {
+    this._viewports.set(0, { y1: 0, y2: this._gfxHeight - 1, scroll: false });
+}
+```
+
+- `scroll: false` → kein GFXVPAD/GFXHPAD; Buffer-Größe = sichtbare Fläche (= aktuelle Größe)
+- `SetCamera` im impliziten VP0 → Compiler-Warnung: "SetCamera requires SetViewport (no scroll buffer)"
+- Danach läuft **exakt derselbe Code-Pfad** — kein `if/else`, kein separater Ast
+
+**Label-Ergebnis:** Da `!_hasExplicitViewports`, emittiert T7 sowohl Legacy-Labels als auch
+`_vp0_*`-Labels (Doppel-Label-Strategie). Alle bestehenden Fragments die Legacy-Label-Namen
+referenzieren (`_gfx_copper_a`, `_gfx_cop_a_bpl_table`, `_gfx_planes_data` …) funktionieren
+weiterhin ohne Änderung.
+
+**`SetCamera` im impliziten VP0** ist eine Camera ohne Scroll-Puffer — definiertes Verhalten:
+die Warnung erscheint, kein Code wird emittiert, Koordinaten bleiben 0.
 
 #### T33 — editor-init.js: Syntax & Autocomplete
 
@@ -976,8 +1062,9 @@ an allen relevanten Stellen in `generate()`.
 
 Drei Test-Programme erstellen:
 
-1. **test_single_viewport.bassm** — Bestehendes Programm OHNE SetViewport.
-   Muss identisch funktionieren wie vorher (Regressions-Check).
+1. **test_single_viewport.bassm** — Programm OHNE SetViewport (impliziter Viewport 0).
+   Muss identisch funktionieren wie bisher (Regressions-Check). Prüft außerdem dass
+   `SetCamera` im impliziten Viewport keine Wirkung hat (Scroll-Parameter bleiben 0).
 
 2. **test_dual_viewport.bassm** — Zwei Viewports (Game 200px + HUD 56px).
    VP0: Cls + farbiger Box-Hintergrund + DrawBob.

@@ -391,6 +391,329 @@ body.state-welcome #budget-strip  { display: none; }
     min-height: 0;
 }
 
+/* ── Node Editor ── */
+#node-editor-panel {
+    display: none;
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+    background: #111;
+}
+
+body.state-node-editor #editor { display: none; }
+body.state-node-editor #node-editor-panel { display: flex; }
+body.state-node-editor #btn-toggle-editor { color: #7ac5ff; background: #1a2a4a; border-color: #3a5a8a; }
+
+/* ── Node Editor Viewport ── */
+#bnc-world-container {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    cursor: grab;
+    z-index: 10;
+}
+#bnc-world-container:active {
+    cursor: grabbing;
+}
+
+#bnc-world {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    transform-origin: 0 0;
+    will-change: transform;
+}
+
+#bnc-grid {
+    position: absolute;
+    inset: -50000px;
+    background-color: #111;
+    background-image: 
+        linear-gradient(to right, #2a2a2a 1px, transparent 1px),
+        linear-gradient(to bottom, #2a2a2a 1px, transparent 1px),
+        linear-gradient(to right, #1a1a1a 1px, transparent 1px),
+        linear-gradient(to bottom, #1a1a1a 1px, transparent 1px);
+    background-size: 100px 100px, 100px 100px, 20px 20px, 20px 20px;
+    background-position: 0 0;
+    z-index: 0;
+}
+
+#bnc-noodles {
+    position: absolute;
+    overflow: visible;
+    width: 1px;
+    height: 1px;
+    top: 0;
+    left: 0;
+    z-index: 1;
+    pointer-events: none;
+}
+
+#bnc-nodes {
+    position: absolute;
+    top: 0;
+    left: 0;
+    z-index: 2;
+}
+
+#bnc-ui {
+    position: absolute;
+    inset: 0;
+    z-index: 100;
+    pointer-events: none;
+}
+.bnc-ui-element {
+    pointer-events: auto;
+}
+
+/* ── Node Cards ── */
+.bnc-node {
+    position: absolute;
+    min-width: 160px;
+    background: #1e1e2a;
+    border: 1px solid #333;
+    border-radius: 6px;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.55);
+    cursor: default;
+    user-select: none;
+    transition: box-shadow 0.15s ease;
+}
+.bnc-node:hover {
+    box-shadow: 0 6px 24px rgba(0,0,0,0.7);
+}
+.bnc-node-dragging {
+    box-shadow: 0 8px 30px rgba(80,140,255,0.3);
+    z-index: 999;
+}
+
+.bnc-node-header {
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    color: #eee;
+    background: #2a3a5a;
+    border-radius: 5px 5px 0 0;
+    cursor: grab;
+    white-space: nowrap;
+}
+.bnc-node-header:active { cursor: grabbing; }
+
+/* Category header colors */
+.bnc-cat-event    { background: linear-gradient(135deg, #8b2020 0%, #5a1a1a 100%); }
+.bnc-cat-graphics { background: linear-gradient(135deg, #2a5a3a 0%, #1a3a2a 100%); }
+.bnc-cat-audio    { background: linear-gradient(135deg, #4a3a6a 0%, #2a2040 100%); }
+.bnc-cat-input    { background: linear-gradient(135deg, #5a4a2a 0%, #3a3018 100%); }
+.bnc-cat-flow     { background: linear-gradient(135deg, #2a4a6a 0%, #1a2a40 100%); }
+.bnc-cat-math     { background: linear-gradient(135deg, #3a5a5a 0%, #1a3a3a 100%); }
+
+.bnc-node-body {
+    padding: 6px 0;
+}
+
+/* ── Pins ── */
+.bnc-pin-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    font-size: 11px;
+    color: #aaa;
+}
+.bnc-pin-input {
+    flex-direction: row;
+}
+.bnc-pin-output {
+    flex-direction: row;
+    justify-content: flex-end;
+}
+
+.bnc-pin-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    border: 1.5px solid rgba(255,255,255,0.2);
+    cursor: crosshair;
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+    position: relative;
+}
+/* Invisible enlarged hit area for easier wiring */
+.bnc-pin-dot::after {
+    content: '';
+    position: absolute;
+    inset: -8px;
+    border-radius: 50%;
+}
+.bnc-pin-dot:hover {
+    transform: scale(1.4);
+    box-shadow: 0 0 6px currentColor;
+}
+
+/* Exec pins: triangle/diamond instead of circle */
+.bnc-pin-exec {
+    border-radius: 2px;
+    width: 10px;
+    height: 10px;
+    clip-path: polygon(0% 0%, 100% 50%, 0% 100%);
+    border: none;
+}
+.bnc-pin-output .bnc-pin-exec {
+    clip-path: polygon(0% 0%, 100% 50%, 0% 100%);
+}
+.bnc-pin-input .bnc-pin-exec {
+    clip-path: polygon(100% 0%, 0% 50%, 100% 100%);
+}
+
+.bnc-pin-label {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Inline value inputs on data pins */
+.bnc-pin-value {
+    background: #0c0e1a;
+    border: 1px solid #2a2d45;
+    border-radius: 3px;
+    color: #8af;
+    font-family: monospace;
+    font-size: 11px;
+    padding: 1px 5px;
+    width: 52px;
+    outline: none;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+.bnc-pin-value:focus {
+    border-color: #5b9bd5;
+    background: #101428;
+}
+.bnc-pin-value[type="checkbox"] {
+    width: auto;
+    margin-left: auto;
+}
+
+/* ── PLAY node special ── */
+.bnc-node-play {
+    border-color: #8b2020;
+}
+.bnc-node-play .bnc-node-header {
+    font-size: 13px;
+    letter-spacing: 0.08em;
+}
+
+/* ── Node Selection ── */
+.bnc-node-selected {
+    border-color: #5b9bd5;
+    box-shadow: 0 0 12px rgba(91,155,213,0.4), 0 4px 18px rgba(0,0,0,0.55);
+}
+
+/* ── Rubber-band Selection Box ── */
+.bnc-selection-box {
+    position: absolute;
+    border: 1px solid rgba(91,155,213,0.7);
+    background: rgba(91,155,213,0.08);
+    pointer-events: none;
+    z-index: 50;
+}
+
+/* ── Node Picker ── */
+.bnc-picker {
+    position: absolute;
+    width: 220px;
+    max-height: 340px;
+    background: #16192aee;
+    border: 1px solid #2a2d50;
+    border-radius: 6px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.7);
+    display: flex;
+    flex-direction: column;
+    z-index: 200;
+    pointer-events: auto;
+    overflow: hidden;
+}
+.bnc-picker-search {
+    background: #0e1020;
+    border: none;
+    color: #ccc;
+    font-family: monospace;
+    font-size: 12px;
+    padding: 8px 10px;
+    outline: none;
+    flex: 1;
+    min-width: 0;
+}
+.bnc-picker-search::placeholder { color: #445; }
+.bnc-picker-search:focus { background: #111530; }
+
+.bnc-picker-header {
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid #2a2d50;
+    flex-shrink: 0;
+}
+.bnc-picker-close {
+    background: none;
+    border: none;
+    color: #556;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 6px 8px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+.bnc-picker-close:hover { color: #c55; }
+
+.bnc-picker-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 0;
+}
+.bnc-picker-cat {
+    padding: 5px 10px;
+    font-size: 10px;
+    color: #667;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.bnc-picker-cat::before {
+    content: '▾';
+    font-size: 8px;
+    transition: transform 0.15s;
+}
+.bnc-picker-cat.collapsed::before {
+    transform: rotate(-90deg);
+}
+.bnc-picker-cat:hover { color: #99a; }
+
+.bnc-picker-item {
+    padding: 4px 10px 4px 20px;
+    font-size: 12px;
+    color: #aab;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.bnc-picker-item:hover {
+    background: #1e2540;
+    color: #6af;
+}
+.bnc-picker-empty {
+    padding: 12px 10px;
+    font-size: 11px;
+    color: #445;
+    text-align: center;
+}
+
 /* ── Emulator bar ── */
 #emulator-bar {
     display: flex;
