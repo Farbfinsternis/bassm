@@ -1,0 +1,49 @@
+; T34 — Test 1: Single Viewport (impliziter VP0)
+;
+; Regression-Test: Programm OHNE SetViewport.
+; Muss identisch funktionieren wie vor dem Viewport-Umbau.
+; SetCamera wird aufgerufen — soll Warnung erzeugen und keine Wirkung haben.
+
+Graphics 320, 256, 3
+
+; SetCamera im impliziten VP0 — sollte ignoriert werden (kein Scroll-Buffer)
+SetCamera 100, 50
+
+PaletteColor 1, 15, 15, 15
+PaletteColor 2, 0,  10, 15
+PaletteColor 3, 15,  5,  0
+PaletteColor 4, 0,  15,  0
+
+bx = 80
+by = 80
+bdx = 2
+bdy = 1
+
+While 1
+  If KeyDown(69) Then End
+
+  Cls
+
+  ; Farbige Boxen — sicherstellen dass Drawing normal funktioniert
+  Color 2
+  Box 10, 10, 100, 40
+
+  Color 3
+  Box 210, 10, 100, 40
+
+  ; Bewegter Ball — Double-Buffering Regression
+  bx = bx + bdx
+  by = by + bdy
+  If bx < 0 Then bx = 0 : bdx = -bdx
+  If bx > 308 Then bx = 308 : bdx = -bdx
+  If by < 60 Then by = 60 : bdy = -bdy
+  If by > 244 Then by = 244 : bdy = -bdy
+
+  Color 4
+  Box bx, by, 12, 12
+
+  Color 1
+  Text 10, 230, "IMPLICIT VP0 — NO SETVIEWPORT"
+
+  ScreenFlip
+Wend

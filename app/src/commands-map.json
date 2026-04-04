@@ -5,17 +5,28 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "width",  "type": "integer" },
-            { "name": "height", "type": "integer" },
-            { "name": "depth",  "type": "integer" }
-        ]
+            {
+                "name": "width",
+                "type": "integer"
+            },
+            {
+                "name": "height",
+                "type": "integer"
+            },
+            {
+                "name": "depth",
+                "type": "integer"
+            }
+        ],
+        "zone": "setup"
     },
     {
         "name": "Cls",
         "description": "Clear the back buffer using the blitter. Fill colour is set by ClsColor.",
         "type": "global",
         "return": "void",
-        "args": []
+        "args": [],
+        "zone": "any"
     },
     {
         "name": "ClsColor",
@@ -23,8 +34,12 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "color", "type": "integer" }
-        ]
+            {
+                "name": "color",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "Color",
@@ -32,8 +47,12 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "index", "type": "integer" }
-        ]
+            {
+                "name": "index",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "PaletteColor",
@@ -41,18 +60,32 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "n", "type": "integer" },
-            { "name": "r", "type": "integer" },
-            { "name": "g", "type": "integer" },
-            { "name": "b", "type": "integer" }
-        ]
+            {
+                "name": "n",
+                "type": "integer"
+            },
+            {
+                "name": "r",
+                "type": "integer"
+            },
+            {
+                "name": "g",
+                "type": "integer"
+            },
+            {
+                "name": "b",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "WaitVbl",
         "description": "Wait for the next vertical blank without flipping buffers. Useful for timing-only synchronisation.",
         "type": "global",
         "return": "void",
-        "args": []
+        "args": [],
+        "zone": "any"
     },
     {
         "name": "Text",
@@ -60,17 +93,28 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "x",      "type": "integer" },
-            { "name": "y",      "type": "integer" },
-            { "name": "string", "type": "string"  }
-        ]
+            {
+                "name": "x",
+                "type": "integer"
+            },
+            {
+                "name": "y",
+                "type": "integer"
+            },
+            {
+                "name": "string",
+                "type": "string"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "End",
         "description": "Exit the program immediately and restore the OS.",
         "type": "global",
         "return": "void",
-        "args": []
+        "args": [],
+        "zone": "any"
     },
     {
         "name": "Delay",
@@ -78,8 +122,12 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "frames", "type": "integer" }
-        ]
+            {
+                "name": "frames",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "Plot",
@@ -87,9 +135,16 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "x", "type": "integer" },
-            { "name": "y", "type": "integer" }
-        ]
+            {
+                "name": "x",
+                "type": "integer"
+            },
+            {
+                "name": "y",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "Line",
@@ -97,11 +152,24 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "x1", "type": "integer" },
-            { "name": "y1", "type": "integer" },
-            { "name": "x2", "type": "integer" },
-            { "name": "y2", "type": "integer" }
-        ]
+            {
+                "name": "x1",
+                "type": "integer"
+            },
+            {
+                "name": "y1",
+                "type": "integer"
+            },
+            {
+                "name": "x2",
+                "type": "integer"
+            },
+            {
+                "name": "y2",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "Rect",
@@ -109,11 +177,24 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "x", "type": "integer" },
-            { "name": "y", "type": "integer" },
-            { "name": "w", "type": "integer" },
-            { "name": "h", "type": "integer" }
-        ]
+            {
+                "name": "x",
+                "type": "integer"
+            },
+            {
+                "name": "y",
+                "type": "integer"
+            },
+            {
+                "name": "w",
+                "type": "integer"
+            },
+            {
+                "name": "h",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "Box",
@@ -121,25 +202,40 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "x", "type": "integer" },
-            { "name": "y", "type": "integer" },
-            { "name": "w", "type": "integer" },
-            { "name": "h", "type": "integer" }
-        ]
+            {
+                "name": "x",
+                "type": "integer"
+            },
+            {
+                "name": "y",
+                "type": "integer"
+            },
+            {
+                "name": "w",
+                "type": "integer"
+            },
+            {
+                "name": "h",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "WaitKey",
         "description": "Halt execution until a key is pressed. Uses interrupt-driven CIA-A keyboard input.",
         "type": "global",
         "return": "void",
-        "args": []
+        "args": [],
+        "zone": "any"
     },
     {
         "name": "ScreenFlip",
         "description": "Swap front and back buffers. Call once per frame after all drawing is done. Also triggers the copper-list swap.",
         "type": "global",
         "return": "void",
-        "args": []
+        "args": [],
+        "zone": "frame"
     },
     {
         "name": "CopperColor",
@@ -147,11 +243,24 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "y", "type": "integer" },
-            { "name": "r", "type": "integer" },
-            { "name": "g", "type": "integer" },
-            { "name": "b", "type": "integer" }
-        ]
+            {
+                "name": "y",
+                "type": "integer"
+            },
+            {
+                "name": "r",
+                "type": "integer"
+            },
+            {
+                "name": "g",
+                "type": "integer"
+            },
+            {
+                "name": "b",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "LoadSample",
@@ -159,9 +268,16 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "index", "type": "integer" },
-            { "name": "file",  "type": "string"  }
-        ]
+            {
+                "name": "index",
+                "type": "integer"
+            },
+            {
+                "name": "file",
+                "type": "string"
+            }
+        ],
+        "zone": "setup"
     },
     {
         "name": "PlaySample",
@@ -169,11 +285,24 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "index",   "type": "integer" },
-            { "name": "channel", "type": "integer" },
-            { "name": "period",  "type": "integer" },
-            { "name": "volume",  "type": "integer" }
-        ]
+            {
+                "name": "index",
+                "type": "integer"
+            },
+            {
+                "name": "channel",
+                "type": "integer"
+            },
+            {
+                "name": "period",
+                "type": "integer"
+            },
+            {
+                "name": "volume",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "PlaySampleOnce",
@@ -181,11 +310,24 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "index",   "type": "integer" },
-            { "name": "channel", "type": "integer" },
-            { "name": "period",  "type": "integer" },
-            { "name": "volume",  "type": "integer" }
-        ]
+            {
+                "name": "index",
+                "type": "integer"
+            },
+            {
+                "name": "channel",
+                "type": "integer"
+            },
+            {
+                "name": "period",
+                "type": "integer"
+            },
+            {
+                "name": "volume",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "StopSample",
@@ -193,19 +335,34 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "channel", "type": "integer" }
-        ]
+            {
+                "name": "channel",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "LoadImage",
-        "description": "Load a raw planar image from disk into chip RAM. width/height must match the actual image dimensions.",
+        "description": "Load a raw planar image from disk into chip RAM. width/height are parsed automatically.",
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "index",  "type": "integer" },
-            { "name": "file",   "type": "string"  },
-            { "name": "width",  "type": "integer" },
-            { "name": "height", "type": "integer" }
+            {
+                "name": "index",
+                "type": "integer"
+            },
+            {
+                "name": "file",
+                "type": "string"
+            }
+        ],
+        "zone": "setup",
+        "outputs": [
+            {
+                "name": "index",
+                "type": "integer"
+            }
         ]
     },
     {
@@ -214,11 +371,25 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "index", "type": "integer" },
-            { "name": "x",     "type": "integer" },
-            { "name": "y",     "type": "integer" },
-            { "name": "frame", "type": "integer", "optional": true }
-        ]
+            {
+                "name": "index",
+                "type": "integer"
+            },
+            {
+                "name": "x",
+                "type": "integer"
+            },
+            {
+                "name": "y",
+                "type": "integer"
+            },
+            {
+                "name": "frame",
+                "type": "integer",
+                "optional": true
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "PokeB",
@@ -226,9 +397,16 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "addr", "type": "integer" },
-            { "name": "val",  "type": "integer" }
-        ]
+            {
+                "name": "addr",
+                "type": "integer"
+            },
+            {
+                "name": "val",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "PokeW",
@@ -236,9 +414,16 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "addr", "type": "integer" },
-            { "name": "val",  "type": "integer" }
-        ]
+            {
+                "name": "addr",
+                "type": "integer"
+            },
+            {
+                "name": "val",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "PokeL",
@@ -246,9 +431,16 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "addr", "type": "integer" },
-            { "name": "val",  "type": "integer" }
-        ]
+            {
+                "name": "addr",
+                "type": "integer"
+            },
+            {
+                "name": "val",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "Poke",
@@ -256,9 +448,16 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "addr", "type": "integer" },
-            { "name": "val",  "type": "integer" }
-        ]
+            {
+                "name": "addr",
+                "type": "integer"
+            },
+            {
+                "name": "val",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "SetBackground",
@@ -266,8 +465,12 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "index", "type": "integer" }
-        ]
+            {
+                "name": "index",
+                "type": "integer"
+            }
+        ],
+        "zone": "setup"
     },
     {
         "name": "LoadMask",
@@ -275,9 +478,16 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "index", "type": "integer" },
-            { "name": "file",  "type": "string"  }
-        ]
+            {
+                "name": "index",
+                "type": "integer"
+            },
+            {
+                "name": "file",
+                "type": "string"
+            }
+        ],
+        "zone": "setup"
     },
     {
         "name": "DrawBob",
@@ -285,11 +495,25 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "index", "type": "integer" },
-            { "name": "x",     "type": "integer" },
-            { "name": "y",     "type": "integer" },
-            { "name": "frame", "type": "integer", "optional": true }
-        ]
+            {
+                "name": "index",
+                "type": "integer"
+            },
+            {
+                "name": "x",
+                "type": "integer"
+            },
+            {
+                "name": "y",
+                "type": "integer"
+            },
+            {
+                "name": "frame",
+                "type": "integer",
+                "optional": true
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "LoadAnimImage",
@@ -297,24 +521,45 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "index",  "type": "integer" },
-            { "name": "file",   "type": "string"  },
-            { "name": "width",  "type": "integer" },
-            { "name": "height", "type": "integer" },
-            { "name": "count",  "type": "integer" }
-        ]
+            {
+                "name": "index",
+                "type": "integer"
+            },
+            {
+                "name": "file",
+                "type": "string"
+            },
+            {
+                "name": "width",
+                "type": "integer"
+            },
+            {
+                "name": "height",
+                "type": "integer"
+            },
+            {
+                "name": "count",
+                "type": "integer"
+            }
+        ],
+        "zone": "setup"
     },
     {
         "name": "LoadTileset",
-        "description": "Load an interleaved tileset (.iraw). tileW/tileH define the size of a single tile in pixels. The file contains all tiles stacked vertically (tile 0 at top). tile count = file_height / tileH.",
+        "description": "Load a tileset from a .tset file. The file header contains tile size, tile count, depth and palette. Slot 0 sets the display palette.",
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "slot",  "type": "integer" },
-            { "name": "file",  "type": "string"  },
-            { "name": "tileW", "type": "integer" },
-            { "name": "tileH", "type": "integer" }
-        ]
+            {
+                "name": "slot",
+                "type": "integer"
+            },
+            {
+                "name": "file",
+                "type": "string"
+            }
+        ],
+        "zone": "setup"
     },
     {
         "name": "LoadTilemap",
@@ -322,9 +567,16 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "slot", "type": "integer" },
-            { "name": "file", "type": "string"  }
-        ]
+            {
+                "name": "slot",
+                "type": "integer"
+            },
+            {
+                "name": "file",
+                "type": "string"
+            }
+        ],
+        "zone": "setup"
     },
     {
         "name": "DrawTilemap",
@@ -332,11 +584,26 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "tmSlot",  "type": "integer" },
-            { "name": "tsSlot",  "type": "integer" },
-            { "name": "scrollX", "type": "integer", "optional": true },
-            { "name": "scrollY", "type": "integer", "optional": true }
-        ]
+            {
+                "name": "tmSlot",
+                "type": "integer"
+            },
+            {
+                "name": "tsSlot",
+                "type": "integer"
+            },
+            {
+                "name": "scrollX",
+                "type": "integer",
+                "optional": true
+            },
+            {
+                "name": "scrollY",
+                "type": "integer",
+                "optional": true
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "SetViewport",
@@ -344,10 +611,20 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "index", "type": "integer" },
-            { "name": "y1",    "type": "integer" },
-            { "name": "y2",    "type": "integer" }
-        ]
+            {
+                "name": "index",
+                "type": "integer"
+            },
+            {
+                "name": "y1",
+                "type": "integer"
+            },
+            {
+                "name": "y2",
+                "type": "integer"
+            }
+        ],
+        "zone": "setup"
     },
     {
         "name": "Viewport",
@@ -355,8 +632,12 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "index", "type": "integer" }
-        ]
+            {
+                "name": "index",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "SetCamera",
@@ -364,9 +645,16 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "x", "type": "integer" },
-            { "name": "y", "type": "integer" }
-        ]
+            {
+                "name": "x",
+                "type": "integer"
+            },
+            {
+                "name": "y",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
     },
     {
         "name": "SetTilemap",
@@ -374,9 +662,16 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "tmSlot", "type": "integer" },
-            { "name": "tsSlot", "type": "integer" }
-        ]
+            {
+                "name": "tmSlot",
+                "type": "integer"
+            },
+            {
+                "name": "tsSlot",
+                "type": "integer"
+            }
+        ],
+        "zone": "setup"
     },
     {
         "name": "LoadFont",
@@ -384,12 +679,28 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "index",  "type": "integer" },
-            { "name": "chars",  "type": "string"  },
-            { "name": "file",   "type": "string"  },
-            { "name": "charW",  "type": "integer" },
-            { "name": "charH",  "type": "integer" }
-        ]
+            {
+                "name": "index",
+                "type": "integer"
+            },
+            {
+                "name": "chars",
+                "type": "string"
+            },
+            {
+                "name": "file",
+                "type": "string"
+            },
+            {
+                "name": "charW",
+                "type": "integer"
+            },
+            {
+                "name": "charH",
+                "type": "integer"
+            }
+        ],
+        "zone": "setup"
     },
     {
         "name": "UseFont",
@@ -397,7 +708,12 @@
         "type": "global",
         "return": "void",
         "args": [
-            { "name": "index",  "type": "integer", "optional": true }
-        ]
+            {
+                "name": "index",
+                "type": "integer",
+                "optional": true
+            }
+        ],
+        "zone": "any"
     }
 ]

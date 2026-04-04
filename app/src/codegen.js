@@ -48,6 +48,11 @@ const BPL_PTR_REGS = [
 
 export class CodeGen {
 
+    /** Inject a sync reader for binary asset headers (.tset).
+     *  fn(filename, bytes) → { ok, data: number[] } | { ok: false, error }
+     */
+    setAssetHeaderReader(fn) { this._readAssetHeader = fn ?? null; }
+
     /**
      * Generate a complete m68k assembly source from a BASSM AST.
      *
@@ -78,12 +83,14 @@ export class CodeGen {
         this._usesData      = false;      // true if any Data/Read/Restore present
         this._dataStmts     = [];         // ordered data_stmt nodes (values → dc.l in DATA section)
         this._usesTilemap   = false;      // true if any LoadTileset/LoadTilemap/DrawTilemap/SetTilemap present
-        this._tilesetAssets = new Map();  // slot (int) → { filename, label, tileW, tileH, rowbytes }
+        this._tilesetAssets = new Map();  // slot (int) → { filename, label, tileW, tileH, rowbytes, tileCount, depth, flags, paletteSize, imageSize, palOffset, imgOffset }
         this._tilemapAssets = new Map();  // slot (int) → { filename, label }
         this._viewports            = new Map();   // index → { y1, y2, height, scroll } (T3)
         this._hasExplicitViewports = false;        // true iff user wrote at least one SetViewport (T3)
         this._activeViewportIdx    = 0;            // compile-time active viewport (T15)
         this._cameraVPs            = new Set();    // VP indices that use SetCamera (T19)
+        this._bobVPs               = new Set();    // VP indices that use DrawBob/SetBackground (T29)
+        this._tilemapVPs           = new Set();    // VP indices that use SetTilemap/DrawTilemap (T29)
         this._gfxHeight            = 0;            // set after Graphics validation; used by T32
 
         this._initStatementHandlers();
@@ -1259,7 +1266,6 @@ export class CodeGen {
     _emitViewportCopSection(out, ab, vpIdx, D, bplmod, bplcon0, ddfstrt, ddfstop, colors) {
         const sectionLabel = `_vp${vpIdx}_cop_${ab}`;
         const bplLabel     = `_vp${vpIdx}_cop_${ab}_bpl`;
-        const palLabel     = `_vp${vpIdx}_cop_${ab}_pal`;
 
         // In multi-VP mode: emit section-base label here (after global DIWSTRT/DIWSTOP).
         // In legacy mode:   section-base was already emitted by _emitCopperLists (before DIWSTRT).
@@ -1289,16 +1295,10 @@ export class CodeGen {
             out.push(copMove(ptl, 0, `BPL${i+1}PTL`));
         }
 
-        // Per-VP palette — only in explicit multi-VP mode.
-        // Legacy: colors are managed by CPU writes in color.s / palette.s (unchanged).
-        if (this._hasExplicitViewports) {
-            out.push(`        XDEF    ${palLabel}`);
-            out.push(`${palLabel}:`);
-            for (let c = 0; c < colors; c++) {
-                out.push(copMove(0x0180 + c * 2, 0x0000,
-                    c === 0 ? `COLOR00 (VP${vpIdx})` : null));
-            }
-        }
+        // Per-VP palette is NOT emitted in the copper — all VPs share the
+        // hardware palette set by PaletteColor / _InitPalette.
+        // If per-VP palettes are needed later, copper MOVEs must be initialised
+        // from _gfx_palette (not zeros) and PaletteColor must patch them.
     }
 
     // ── T22 / T10: User variable BSS section ──────────────────────────────────
@@ -1319,7 +1319,8 @@ export class CodeGen {
                 out.push('_active_scroll_y:    ds.l    1');
             }
             if (this._usesBobs || this._usesTilemap) {
-                out.push('_active_fine_y:      ds.w    1');  // written by DrawTilemap, read by FlushBobs (0 = no scroll)
+                out.push('_active_fine_x:      ds.w    1');  // written by DrawTilemap (T31), read by FlushBobs via state block
+                out.push('_active_fine_y:      ds.w    1');  // written by DrawTilemap, read by FlushBobs via state block
             }
             // T10: Per-viewport state variables
             for (const [vpIdx] of this._viewports) {
@@ -1398,7 +1399,8 @@ export class CodeGen {
     //
     // Multi-VP mode (_hasExplicitViewports):
     //   One buffer pair per viewport, using per-VP VP_N_BUFSIZE EQUs (T8).
-    //   No legacy labels; startup.s updated in T12.
+    //   VP0 gets legacy alias labels (_gfx_planes_data/_gfx_planes_b_data)
+    //   so startup.s links without changes.
     _emitBufferBSS(out) {
         if (!this._hasExplicitViewports) {
             // ── Legacy path (T7) ─────────────────────────────────────────────
@@ -1424,11 +1426,20 @@ export class CodeGen {
                 const N       = vpIdx;
                 const bufSize = vp.scroll ? `VP_${N}_BUFSIZE_SCROLL` : `VP_${N}_BUFSIZE`;
                 out.push(`        SECTION vp_${N}_planes_a,BSS_C`);
+                // VP0 gets legacy alias labels so startup.s links without changes
+                if (N === 0) {
+                    out.push('        XDEF    _gfx_planes_data');
+                    out.push('_gfx_planes_data:');
+                }
                 out.push(`        XDEF    _vp${N}_planes_a_data`);
                 out.push(`_vp${N}_planes_a_data:`);
                 out.push(`        ds.b    ${bufSize}`);
                 out.push('');
                 out.push(`        SECTION vp_${N}_planes_b,BSS_C`);
+                if (N === 0) {
+                    out.push('        XDEF    _gfx_planes_b_data');
+                    out.push('_gfx_planes_b_data:');
+                }
                 out.push(`        XDEF    _vp${N}_planes_b_data`);
                 out.push(`_vp${N}_planes_b_data:`);
                 out.push(`        ds.b    ${bufSize}`);
@@ -1484,12 +1495,13 @@ export class CodeGen {
         }
 
         // Tileset data (chip RAM — Blitter source for DrawTilemap / _bg_restore_tilemap)
-        for (const [, { filename, label: lbl, tileW, tileH, rowbytes }] of this._tilesetAssets) {
+        for (const [, { filename, label: lbl, tileW, tileH, rowbytes, depth: tsDepth, paletteSize, imageSize, palOffset, imgOffset }] of this._tilesetAssets) {
             out.push(`        SECTION ${lbl}_sec,DATA_C`);
             out.push(`        XDEF    ${lbl}`);
             out.push(`${lbl}:`);
-            out.push(`        dc.w    ${tileW},${tileH},GFXDEPTH+$8000,${rowbytes}`);
-            out.push(`        INCBIN  "${filename}"`);
+            out.push(`        dc.w    ${tileW},${tileH},${tsDepth}+$8000,${rowbytes}`);
+            out.push(`        INCBIN  "${filename}",${palOffset},${paletteSize}`);
+            out.push(`        INCBIN  "${filename}",${imgOffset},${imageSize}`);
             out.push(`        EVEN`);
             out.push('');
         }
@@ -2117,6 +2129,11 @@ export class CodeGen {
 
     _genStmt_setCamera(stmt, lines) {
         const N = this._activeViewportIdx;
+        const vp = this._viewports.get(N);
+        if (vp && !vp.scroll) {
+            console.warn(`[CodeGen] SetCamera in Viewport ${N} has no effect (no scroll buffer) — line ${stmt.line}`);
+            return;
+        }
         this._cameraVPs.add(N);
         // eval y → d0, store to _vpN_cam_y
         this._genExpr(stmt.y, lines);
@@ -2304,7 +2321,23 @@ export class CodeGen {
     }
 
     _cmd_screenflip(stmt, lines) {
-        if (this._usesBobs) lines.push('        jsr     _FlushBobs');
+        // T29: Per-viewport FlushBobs injection — flush each VP that uses bobs
+        if (this._usesBobs) {
+            for (const [vpIdx] of this._viewports) {
+                if (!this._bobVPs.has(vpIdx)) continue;
+                lines.push(`        ; ── Flush VP ${vpIdx} ──`);
+                lines.push(`        move.l  _vp${vpIdx}_back_ptr,_back_planes_ptr`);
+                // Tilemap shadowcopy (Option A, T24)
+                if (this._tilemapVPs.has(vpIdx) && this._hasExplicitViewports) {
+                    lines.push(`        move.l  _vp${vpIdx}_tilemap_ptr,_active_tilemap_ptr`);
+                    lines.push(`        move.l  _vp${vpIdx}_tileset_ptr,_active_tileset_ptr`);
+                    lines.push(`        move.l  _vp${vpIdx}_scroll_x,_active_scroll_x`);
+                    lines.push(`        move.l  _vp${vpIdx}_scroll_y,_active_scroll_y`);
+                }
+                lines.push(`        lea     _vp${vpIdx}_bob_state,a4`);
+                lines.push('        jsr     _FlushBobs');
+            }
+        }
         lines.push('        jsr     _ScreenFlip');
 
         // T16: inline VP-pointer swap — _ScreenFlip toggled _front_is_a,
@@ -2523,6 +2556,7 @@ export class CodeGen {
 
     _cmd_drawbob(stmt, lines) {
         // DrawBob index, x, y [, frame]
+        this._bobVPs.add(this._activeViewportIdx); // T29
         const idxArg = stmt.args[0];
         if (!idxArg || idxArg.type !== 'int')
             throw new Error(`DrawBob: index must be an integer literal (line ${stmt.line})`);
@@ -2579,6 +2613,7 @@ export class CodeGen {
 
     _cmd_setbackground(stmt, lines) {
         // SetBackground index — register a full-screen image as the background.
+        this._bobVPs.add(this._activeViewportIdx); // T29
         const idxArg = stmt.args[0];
         if (!idxArg || idxArg.type !== 'int')
             throw new Error(`SetBackground: index must be an integer literal (line ${stmt.line})`);
@@ -2811,6 +2846,7 @@ export class CodeGen {
     }
 
     _cmd_drawtilemap(stmt, lines) {
+        this._tilemapVPs.add(this._activeViewportIdx); // T29
         const tmIdxArg = stmt.args[0];
         const tsIdxArg = stmt.args[1];
         if (!tmIdxArg || tmIdxArg.type !== 'int')
@@ -2861,6 +2897,8 @@ export class CodeGen {
     }
 
     _cmd_settilemap(stmt, lines) {
+        this._tilemapVPs.add(this._activeViewportIdx); // T29
+        this._bobVPs.add(this._activeViewportIdx);     // T29: SetTilemap installs _bg_restore_tilemap in bob state
         const tmIdxArg = stmt.args[0];
         const tsIdxArg = stmt.args[1];
         if (!tmIdxArg || tmIdxArg.type !== 'int')
@@ -3029,20 +3067,49 @@ export class CodeGen {
                 this._usesImage   = true;
                 const idxArg  = stmt.args[0];
                 const fileArg = stmt.args[1];
-                const wArg    = stmt.args[2];
-                const hArg    = stmt.args[3];
                 if (idxArg?.type !== 'int')
                     throw new Error(`LoadTileset: slot muss ein Integer-Literal sein — Zeile ${stmt.line}`);
                 if (fileArg?.type !== 'string')
                     throw new Error(`LoadTileset: Dateiname muss ein String-Literal sein — Zeile ${stmt.line}`);
-                if (wArg?.type !== 'int' || hArg?.type !== 'int')
-                    throw new Error(`LoadTileset: tileW und tileH müssen Integer-Literale sein — Zeile ${stmt.line}`);
                 if (!this._tilesetAssets.has(idxArg.value)) {
-                    const lbl      = `_tileset_${this._tilesetAssets.size}`;
-                    const tileW    = wArg.value;
-                    const tileH    = hArg.value;
-                    const rowbytes = Math.ceil(Math.ceil(tileW / 8) / 2) * 2;
-                    this._tilesetAssets.set(idxArg.value, { filename: fileArg.value, label: lbl, tileW, tileH, rowbytes });
+                    // Read .tset header (12 bytes) at compile time
+                    if (!this._readAssetHeader)
+                        throw new Error(`LoadTileset: kein Projekt-Verzeichnis — .tset-Header nicht lesbar (Zeile ${stmt.line})`);
+                    const result = this._readAssetHeader(fileArg.value, 12);
+                    if (!result.ok)
+                        throw new Error(`LoadTileset: "${fileArg.value}" nicht lesbar — ${result.error} (Zeile ${stmt.line})`);
+                    const hdr = result.data;
+
+                    // Parse header fields
+                    if (hdr[0] !== 0x54 || hdr[1] !== 0x53 || hdr[2] !== 0x45 || hdr[3] !== 0x54)
+                        throw new Error(`LoadTileset: "${fileArg.value}" ist keine gültige .tset-Datei (Zeile ${stmt.line})`);
+                    const version   = hdr[4];
+                    const tileSize  = hdr[5];
+                    const tileCount = (hdr[6] << 8) | hdr[7];
+                    const depth     = hdr[8];
+                    const flags     = hdr[9];
+                    if (version !== 1)
+                        throw new Error(`LoadTileset: "${fileArg.value}" Version ${version} nicht unterstützt (Zeile ${stmt.line})`);
+                    if (![8, 16, 32].includes(tileSize))
+                        throw new Error(`LoadTileset: tile_size ${tileSize} ungültig — 8/16/32 erlaubt (Zeile ${stmt.line})`);
+                    if (depth < 1 || depth > 5)
+                        throw new Error(`LoadTileset: depth ${depth} ungültig — 1–5 erlaubt (Zeile ${stmt.line})`);
+                    if (tileCount < 1)
+                        throw new Error(`LoadTileset: tile_count muss > 0 sein (Zeile ${stmt.line})`);
+
+                    const lbl         = `_tileset_${this._tilesetAssets.size}`;
+                    const rowbytes    = Math.ceil(tileSize / 16) * 2;
+                    const paletteSize = (1 << depth) * 2;
+                    const imageSize   = tileCount * tileSize * rowbytes * depth;
+                    const palOffset   = 12;
+                    const imgOffset   = 12 + paletteSize;
+
+                    this._tilesetAssets.set(idxArg.value, {
+                        filename: fileArg.value, label: lbl,
+                        tileW: tileSize, tileH: tileSize, rowbytes,
+                        tileCount, depth, flags,
+                        paletteSize, imageSize, palOffset, imgOffset,
+                    });
                 }
             },
 

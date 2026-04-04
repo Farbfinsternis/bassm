@@ -1,0 +1,65 @@
+; T34 — Test 2: Dual Viewport (Game 200px + HUD 56px)
+;
+; VP0 (0..199): Spielfeld mit bewegtem Ball und farbigen Boxen.
+; VP1 (200..255): Statisches HUD mit Text.
+; Erwartung: HUD bleibt stabil, Ball nur in VP0 sichtbar.
+
+Graphics 320, 256, 3
+
+SetViewport 0, 0, 199
+SetViewport 1, 200, 255
+
+; ── Palette ──────────────────────────────────────────────────────────────────
+PaletteColor 1, 15, 15, 15
+PaletteColor 2, 0,  10, 15
+PaletteColor 3, 15,  5,  0
+PaletteColor 4, 0,  15,  0
+PaletteColor 5, 10,  0, 15
+
+; ── Draw initial HUD into both buffers ───────────────────────────────────────
+For buffer = 1 To 2
+  Viewport 1
+  Cls
+  Color 2
+  Box 0, 0, 320, 56
+  Color 1
+  Text 10, 4, "HUD — VIEWPORT 1"
+  Text 10, 20, "SCORE: 0000"
+  ScreenFlip
+Next buffer
+
+; ── Game state ───────────────────────────────────────────────────────────────
+bx = 80
+by = 60
+bdx = 3
+bdy = 2
+
+While 1
+  If KeyDown(69) Then End
+
+  ; ── VP0: Game area ─────────────────────────────────────────────────────────
+  Viewport 0
+  Cls
+
+  ; Static decorations
+  Color 5
+  Box 20, 10, 60, 30
+  Box 240, 10, 60, 30
+
+  ; Moving ball
+  bx = bx + bdx
+  by = by + bdy
+  If bx < 0 Then bx = 0 : bdx = -bdx
+  If bx > 308 Then bx = 308 : bdx = -bdx
+  If by < 0 Then by = 0 : bdy = -bdy
+  If by > 188 Then by = 188 : bdy = -bdy
+
+  Color 3
+  Box bx, by, 12, 12
+
+  Color 4
+  Text 100, 90, "VP0 — GAME"
+
+  ; VP1 HUD is not redrawn — must stay stable from init
+  ScreenFlip
+Wend

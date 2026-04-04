@@ -42,12 +42,18 @@ export function analyzeBudget(source) {
 
     // LoadImage assets (planar DATA_C in chip RAM)
     const imageMap = {};
-    const imgRE = /^\s*LoadImage\s+(\d+)\s*,\s*"[^"]*"\s*,\s*(\d+)\s*,\s*(\d+)/img;
+    const imgRE = /^\s*LoadImage\s+(\d+)\s*,\s*"[^"]*"(?:\s*,\s*(\d+)\s*,\s*(\d+))?/img;
     let m;
     while ((m = imgRE.exec(source)) !== null) {
-        const idx = parseInt(m[1]), w = parseInt(m[2]), h = parseInt(m[3]);
-        imageMap[idx] = { w, h };
-        chipRam += Math.ceil(w / 8) * h * planes;
+        const idx = parseInt(m[1]);
+        const w = m[2] ? parseInt(m[2]) : 0;
+        const h = m[3] ? parseInt(m[3]) : 0;
+        imageMap[idx] = { w: w || 32, h: h || 32 };
+        if (w && h) {
+            chipRam += Math.ceil(w / 8) * h * planes;
+        } else {
+            chipRamPlus = true;
+        }
     }
 
     // LoadSample — file size unknown at parse time

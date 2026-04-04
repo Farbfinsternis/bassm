@@ -194,20 +194,22 @@ _AddBob:
 ; ── _FlushBobs ────────────────────────────────────────────────────────────────
 ;
 ; Auto-injected by codegen immediately before every _ScreenFlip call.
+; Called once per viewport that uses bobs (T29).
 ;
 ; Step 1 — Restore background under old bobs (erases last frame's sprites).
 ;          Uses the back-buffer-specific old queue to get 2-frame history right.
-;          Skipped if no background image has been registered (_bg_restore_fn=0).
+;          Skipped if no restore fn registered (BOB_ST_RESTORE_FN=0).
 ;
-; Step 2 — Draw all new bobs from _bobs_new into the current back buffer.
+; Step 2 — Draw all new bobs from the state block's new queue.
 ;          Uses masked blit when maskptr != 0, direct copy otherwise.
 ;
-; Step 3 — Copy _bobs_new → old queue for this back buffer.
+; Step 3 — Copy new → old queue for this back buffer.
 ;          These positions will be erased next time this buffer is back.
 ;
-; Step 4 — Reset _bobs_new_cnt = 0 (ready for the next frame).
+; Step 4 — Reset BOB_ST_NEW_CNT = 0 (ready for the next frame).
 ;
-; Args:   none
+; Args:   a4 = VP Bob-State-Block (set by codegen)
+;         _back_planes_ptr must be set to the active VP's back buffer before call
 ; Trashes: nothing (saves/restores d0-d7/a0-a6)
 
         XDEF    _FlushBobs
@@ -215,59 +217,65 @@ _FlushBobs:
         movem.l d0-d7/a0-a6,-(sp)
 
         ; ── Select old queue for the current back buffer ──────────────────────
-        ; _front_is_a = 0: front=A, back=B → use _bobs_old_b / _bobs_old_cnt_b
-        ; _front_is_a = 1: front=B, back=A → use _bobs_old_a / _bobs_old_cnt_a
+        ; _front_is_a = 0: front=A, back=B → use BOB_ST_OLD_B / BOB_ST_OLD_CNT_B
+        ; _front_is_a = 1: front=B, back=A → use BOB_ST_OLD_A / BOB_ST_OLD_CNT_A
         tst.b   _front_is_a
         bne.s   .back_is_a
 
-        lea     _bobs_old_b,a2          ; a2 = old queue base
-        lea     _bobs_old_cnt_b,a3      ; a3 = ptr to old count word
+        lea     BOB_ST_OLD_B(a4),a2     ; a2 = old queue base
+        lea     BOB_ST_OLD_CNT_B(a4),a3 ; a3 = ptr to old count word
         bra.s   .do_flush
 
 .back_is_a:
-        lea     _bobs_old_a,a2
-        lea     _bobs_old_cnt_a,a3
+        lea     BOB_ST_OLD_A(a4),a2
+        lea     BOB_ST_OLD_CNT_A(a4),a3
 
 .do_flush:
         ; ── Step 1: Restore background at old bob positions ───────────────────
-        move.l  _bg_restore_fn,d6
+        move.l  BOB_ST_RESTORE_FN(a4),d6
         beq.s   .skip_restore           ; no restore fn — skip
 
         move.w  (a3),d7
         beq.s   .skip_restore           ; no old bobs — nothing to erase
 
+        ; Shadowcopy bg_bpl_ptr → global (read by _bg_restore_static)
+        move.l  BOB_ST_BG_BPL_PTR(a4),_bg_bpl_ptr
+
         subq.w  #1,d7
-        move.l  a2,a4                   ; a4 = current old slot pointer
-        move.l  d6,a6                   ; a6 = _bg_restore_static fn ptr
+        move.l  a2,a6                   ; a6 = current old slot pointer
 
 .restore_loop:
-        move.l  (a4),a0                 ; a0 = bob imgptr
+        move.l  (a6),a0                 ; a0 = bob imgptr
         clr.l   d0
-        move.w  8(a4),d0               ; d0.l = x (zero-extended)
+        move.w  8(a6),d0               ; d0.l = x (zero-extended)
         clr.l   d1
-        move.w  10(a4),d1              ; d1.l = visual_y (zero-extended)
-        add.w   _active_fine_y,d1      ; d1 = buf_y = visual_y + fine_y (0 when no tilemap scroll)
-        jsr     (a6)                    ; _bg_restore_fn(a0=imgptr, d0=x, d1=buf_y)
-        lea     16(a4),a4               ; advance to next slot (BOBS_SLOT_SZ = 16)
+        move.w  10(a6),d1              ; d1.l = visual_y (zero-extended)
+        add.w   BOB_ST_FINE_X(a4),d0  ; buf_x = visual_x + fine_x (0 when no scroll)
+        add.w   BOB_ST_FINE_Y(a4),d1  ; buf_y = visual_y + fine_y (0 when no scroll)
+        move.l  d6,a1
+        jsr     (a1)                    ; _bg_restore_fn(a0=imgptr, d0=x, d1=buf_y)
+        lea     16(a6),a6              ; advance to next slot (BOBS_SLOT_SZ = 16)
         dbra    d7,.restore_loop
 
 .skip_restore:
         ; ── Step 2: Draw new bobs ─────────────────────────────────────────────
-        move.w  _bobs_new_cnt,d7
+        move.w  BOB_ST_NEW_CNT(a4),d7
         beq.s   .skip_draw
 
         subq.w  #1,d7
-        lea     _bobs_new,a4            ; a4 = current new slot pointer
+        lea     BOB_ST_NEW(a4),a6       ; a6 = current new slot pointer
 
 .draw_loop:
-        move.l  (a4),a0                 ; a0 = imgptr
-        move.l  4(a4),a1                ; a1 = maskptr (0 = no mask)
+        move.l  (a6),a0                 ; a0 = imgptr
+        move.l  4(a6),a1                ; a1 = maskptr (0 = no mask)
         clr.l   d0
-        move.w  8(a4),d0               ; d0.l = x
+        move.w  8(a6),d0               ; d0.l = x
         clr.l   d1
-        move.w  10(a4),d1              ; d1.l = y
+        move.w  10(a6),d1              ; d1.l = y
+        add.w   BOB_ST_FINE_X(a4),d0  ; buf_x = visual_x + fine_x (0 when no scroll)
+        add.w   BOB_ST_FINE_Y(a4),d1  ; buf_y = visual_y + fine_y (0 when no scroll)
         clr.l   d2
-        move.w  12(a4),d2              ; d2.l = frame index (0 = first / non-animated)
+        move.w  12(a6),d2              ; d2.l = frame index (0 = first / non-animated)
         cmpa.l  #0,a1                   ; tst.l An not valid on 68000
         beq.s   .draw_direct
 
@@ -278,19 +286,19 @@ _FlushBobs:
         jsr     _DrawImageFrame         ; direct copy: a0=imgptr, d0=x, d1=y, d2=frame
 
 .draw_next:
-        lea     16(a4),a4               ; advance to next slot (BOBS_SLOT_SZ = 16)
+        lea     16(a6),a6              ; advance to next slot (BOBS_SLOT_SZ = 16)
         dbra    d7,.draw_loop
 
 .skip_draw:
         ; ── Step 3: Copy new queue → old queue for this back buffer ──────────
-        move.w  _bobs_new_cnt,d7
+        move.w  BOB_ST_NEW_CNT(a4),d7
         move.w  d7,(a3)                 ; update old count for this buffer
         beq.s   .skip_copy
 
         ; Copy d7 slots × 4 longwords/slot = d7*4 longword moves
         mulu.w  #4,d7                   ; slots × 4  (16 bytes = 4 longwords each)
         subq.w  #1,d7
-        lea     _bobs_new,a0
+        lea     BOB_ST_NEW(a4),a0
         move.l  a2,a1
 .copy_loop:
         move.l  (a0)+,(a1)+
@@ -298,7 +306,7 @@ _FlushBobs:
 
 .skip_copy:
         ; ── Step 4: Reset new queue ───────────────────────────────────────────
-        clr.w   _bobs_new_cnt
+        clr.w   BOB_ST_NEW_CNT(a4)
 
         movem.l (sp)+,d0-d7/a0-a6
         rts

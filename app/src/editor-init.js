@@ -56,7 +56,7 @@ require(['vs/editor/editor.main'], function () {
         { label: 'UseFont',        insertText: 'UseFont ${1:0}',                                                            detail: '[index]  — omit to reset to built-in',
           doc: 'Switch to a previously loaded font. Omit index to revert to the built-in 8×8 font.' },
         // Images & Animation
-        { label: 'LoadImage',      insertText: 'LoadImage ${1:0}, "${2:image.raw}", ${3:32}, ${4:32}',                      detail: 'index, file, width, height',
+        { label: 'LoadImage',      insertText: 'LoadImage ${1:0}, "${2:image.raw}"',                      detail: 'index, file',
           doc: 'Load a raw planar image from disk into chip RAM. width/height must match the actual image dimensions.' },
         { label: 'DrawImage',      insertText: 'DrawImage ${1:0}, ${2:x}, ${3:y}',                                          detail: 'index, x, y [, frame]',
           doc: 'Draw a loaded image at *(x, y)*. Optional **frame** selects a frame from an animation strip (0-based).' },
@@ -78,6 +78,13 @@ require(['vs/editor/editor.main'], function () {
           doc: 'Render the visible portion of the tilemap into the back buffer. scrollX/scrollY are camera position in pixels. Fine X via BPLCON1, fine Y via BPLxPT offset.' },
         { label: 'SetTilemap',     insertText: 'SetTilemap ${1:0}, ${2:0}',                                detail: 'tmSlot, tsSlot',
           doc: 'Register the tilemap as the Bob background. Installs _bg_restore_tilemap so DrawBob correctly redraws tiles behind bobs.' },
+        // Viewports
+        { label: 'SetViewport',    insertText: 'SetViewport ${1:0}, ${2:0}, ${3:199}',                    detail: 'index, y1, y2',
+          doc: 'Define a viewport spanning scanlines **y1** to **y2**. Each viewport has its own copper section, buffer pair, and bob queue. Must be called before any drawing.' },
+        { label: 'Viewport',       insertText: 'Viewport ${1:0}',                                         detail: 'index',
+          doc: 'Switch the active viewport context. Subsequent drawing commands (Cls, DrawBob, etc.) target this viewport.' },
+        { label: 'SetCamera',      insertText: 'SetCamera ${1:x}, ${2:y}',                                detail: 'x, y  (world coords)',
+          doc: 'Set the camera position for the active viewport. DrawBob coordinates are automatically translated from world space to screen space. Requires a viewport with scroll buffer.' },
         // Sound
         { label: 'LoadSample',     insertText: 'LoadSample ${1:0}, "${2:sound.raw}"',                                       detail: 'index, file',
           doc: 'Register a raw PCM audio sample. File must be 8-bit unsigned, mono. Only declares the asset — no chip RAM is used until PlaySample.' },

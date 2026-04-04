@@ -18,7 +18,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Returns { main: number[], ext: number[] }
   loadRom: () => ipcRenderer.invoke('bassm:rom'),
   // Create a new project folder via Save dialog; returns { projectDir, projectName, source } or null
-  newProject: () => ipcRenderer.invoke('bassm:new-project'),
+  newProject: (payload) => ipcRenderer.invoke('bassm:new-project', payload),
   // Open a project folder; returns { projectDir, projectName, source } or null
   openProject: () => ipcRenderer.invoke('bassm:open-project'),
   // Open a project by path (recent list); returns { projectDir, projectName, source } or null
@@ -27,6 +27,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveSource: (payload) => ipcRenderer.invoke('bassm:save-source', payload),
   // Read an included source file from the project directory (for Include "file.bassm")
   readFile: (payload) => ipcRenderer.invoke('bassm:read-file', payload),
+  // Read first N bytes of a binary asset (sync, for .tset header parsing at compile time)
+  readBinaryHeader: (payload) => ipcRenderer.sendSync('bassm:read-binary-header', payload),
+  // Show OS save dialog and write binary file. { defaultPath, filters, data: number[] } → { saved, filePath? }
+  saveAssetWithDialog: (payload) => ipcRenderer.invoke('bassm:save-asset-dialog', payload),
   // List all .bassm files in the project directory; returns string[]
   listFiles: (payload) => ipcRenderer.invoke('bassm:list-files', payload),
   // Open (or focus) the Asset Manager window, optionally passing the current projectDir

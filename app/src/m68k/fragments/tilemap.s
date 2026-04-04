@@ -64,13 +64,17 @@
 ;   image.s    — _DrawImageFrame (blits one tile per call).
 ;   codegen.js — GFXWIDTH, GFXHEIGHT, GFXDEPTH, GFXBPR, GFXBPLMOD, GFXIBPR.
 ;   bobs.s     — _bg_restore_fn, _active_tilemap_ptr, _active_tileset_ptr,
-;                _active_scroll_x, _active_scroll_y, _active_fine_y
-;                (BSS, emitted by codegen into user_vars).
+;                _active_scroll_x, _active_scroll_y, _active_fine_x, _active_fine_y,
+;                _active_bob_state (BSS, emitted by codegen into user_vars).
 ;
 ; ── REGISTER CONVENTION ─────────────────────────────────────────────────────
 ;   a5 = $DFF000  (established by startup.s — must not be changed)
 ; ============================================================================
 
+
+; ── Bob-State-Block fine-scroll offsets (must match bobs.s BOB_ST_FINE_X/Y) ──
+BOB_ST_FINE_X     EQU 16
+BOB_ST_FINE_Y     EQU 18
 
         SECTION tilemap_code,CODE
 
@@ -89,7 +93,7 @@
 ;         d0.l = scrollX (pixels, 0 .. map_width*tile_w - 1)
 ;         d1.l = scrollY (pixels, 0 .. map_height*tile_h - 1)
 ; Trashes: nothing (saves/restores d0-d7/a0-a4)
-; Side-effects: writes _active_fine_y (BSS) for use by _FlushBobs.
+; Side-effects: writes _active_fine_x/y (BSS) + BOB_ST_FINE_X/Y in active VP state block.
 ;
 ; ── COPPER LIST LAYOUT (offsets from _active_cop_base) ──────────────────────
 ;   Uses VP_COP_* EQUs (emitted by codegen.js for multi-viewport support):
@@ -128,7 +132,13 @@ _DrawTilemap:
         move.w  d1,d7           ; d7.w = first_row (survives copper patch — d7 not touched)
         swap    d1              ; d1.w = fine_y
         and.l   #$0000FFFF,d1   ; clear garbage upper word
-        move.w  d1,_active_fine_y  ; save for _FlushBobs
+        move.w  d0,_active_fine_x  ; save fine_x to global (T31)
+        move.w  d1,_active_fine_y  ; save fine_y to global
+
+        ; ── Write fine offsets to VP Bob-State-Block (T31) ──
+        move.l  _active_bob_state,a4
+        move.w  d0,BOB_ST_FINE_X(a4)   ; fine_x → per-VP state
+        move.w  d1,BOB_ST_FINE_Y(a4)   ; fine_y → per-VP state
 
         ; ── Patch back copper list (via _active_cop_base, set by Viewport N) ──
         move.l  _active_cop_base,a0
@@ -270,14 +280,14 @@ _DrawTilemap:
 ; _bg_restore_fn by the SetTilemap command; called from _FlushBobs.
 ;
 ; Args:   a0   = bob imgptr (header: +0 width.w, +2 height.w, +6 rowbytes.w)
-;         d0.w = bob screen_x (pixels, relative to visible area)
-;         d1.w = bob buf_y (buffer Y = visual_y + _active_fine_y, added by _FlushBobs T13)
+;         d0.w = bob buf_x (buffer X = visual_x + fine_x, added by _FlushBobs)
+;         d1.w = bob buf_y (buffer Y = visual_y + fine_y, added by _FlushBobs)
 ; Trashes: nothing (saves/restores d0-d7/a0-a4)
 ;
 ; ── TILE COORDINATE MAPPING ──────────────────────────────────────────────────
 ;   _DrawTilemap blits map row R to buffer Y = (R - first_row) * tile_h,
 ;   where first_row = _active_scroll_y / tile_h.
-;   d1.w (buf_y) includes fine_y (added by _FlushBobs after T13 is applied).
+;   d1.w (buf_y) includes fine_y (added by _FlushBobs via BOB_ST_FINE_Y).
 ;   row_top_abs = first_row + buf_y / tile_h
 ;   row_bot_abs = first_row + (buf_y + bob_h - 1) / tile_h  [clamped to first_row+map_h-1]
 ;   map_row     = row_abs % map_h  (vertical wraparound via DIVU each outer iteration)

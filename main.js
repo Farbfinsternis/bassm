@@ -370,7 +370,7 @@ ipcMain.handle('bassm:rom', () => {
 });
 
 // Renderer → main: open project folder dialog
-// Returns { projectDir, projectName, source } or null if cancelled
+// Returns { projectDir, projectName, source, isVBE } or null if cancelled
 ipcMain.handle('bassm:open-project', async (_event) => {
   const result = await dialog.showOpenDialog({
     title: 'Open BASSM Project Folder',
@@ -379,19 +379,26 @@ ipcMain.handle('bassm:open-project', async (_event) => {
   if (result.canceled || result.filePaths.length === 0) return null;
   const projectDir  = result.filePaths[0];
   const projectName = path.basename(projectDir);
-  const sourceFile  = path.join(projectDir, 'main.bassm');
+  
   let source = '';
-  try { source = fs.readFileSync(sourceFile, 'utf8'); } catch (_) { /* new project — empty editor */ }
+  let isVBE  = false;
+  if (fs.existsSync(path.join(projectDir, 'main.bnode'))) {
+    source = fs.readFileSync(path.join(projectDir, 'main.bnode'), 'utf8');
+    isVBE = true;
+  } else {
+    try { source = fs.readFileSync(path.join(projectDir, 'main.bassm'), 'utf8'); } catch (_) {}
+  }
+  
   startProjectWatcher(projectDir);
-  return { projectDir, projectName, source };
+  return { projectDir, projectName, source, isVBE };
 });
 
 // Renderer → main: create a new project folder and open it.
-// Uses a Save-style dialog so the user picks both location and name in one step.
-// Returns { projectDir, projectName, source: '' } or null if cancelled.
-ipcMain.handle('bassm:new-project', async (_event) => {
+// Accepts { type: 'code' | 'vbe' }
+// Returns { projectDir, projectName, source: '', isVBE } or null if cancelled.
+ipcMain.handle('bassm:new-project', async (_event, { type }) => {
   const result = await dialog.showSaveDialog({
-    title: 'Create New BASSM Project',
+    title: 'Choose Folder for New BASSM Project',
     buttonLabel: 'Create Project',
     defaultPath: 'my-game',
     properties: ['createDirectory', 'showOverwriteConfirmation'],
@@ -400,20 +407,34 @@ ipcMain.handle('bassm:new-project', async (_event) => {
   const projectDir  = result.filePath;
   const projectName = path.basename(projectDir);
   fs.mkdirSync(projectDir, { recursive: true });
+  
+  const isVBE = type === 'vbe';
+  const entryFile = isVBE ? 'main.bnode' : 'main.bassm';
+  const initialContent = isVBE ? JSON.stringify({nodes: [], edges: []}) : '';
+  fs.writeFileSync(path.join(projectDir, entryFile), initialContent, 'utf8');
+  
   startProjectWatcher(projectDir);
-  return { projectDir, projectName, source: '' };
+  return { projectDir, projectName, source: initialContent, isVBE };
 });
 
 // Renderer → main: open a project by directory path (used by recent projects list)
-// Returns { projectDir, projectName, source } or null if directory not found
+// Returns { projectDir, projectName, source, isVBE } or null if directory not found
 ipcMain.handle('bassm:open-project-dir', async (_event, { dir }) => {
   if (!fs.existsSync(dir)) return null;
   const projectDir  = dir;
   const projectName = path.basename(projectDir);
+  
   let source = '';
-  try { source = fs.readFileSync(path.join(projectDir, 'main.bassm'), 'utf8'); } catch (_) {}
+  let isVBE  = false;
+  if (fs.existsSync(path.join(projectDir, 'main.bnode'))) {
+    source = fs.readFileSync(path.join(projectDir, 'main.bnode'), 'utf8');
+    isVBE = true;
+  } else {
+    try { source = fs.readFileSync(path.join(projectDir, 'main.bassm'), 'utf8'); } catch (_) {}
+  }
+
   startProjectWatcher(projectDir);
-  return { projectDir, projectName, source };
+  return { projectDir, projectName, source, isVBE };
 });
 
 // Renderer → main: read an included source file from projectDir
@@ -427,6 +448,27 @@ ipcMain.handle('bassm:read-file', (_event, { projectDir, filename }) => {
     throw new Error(`Include path escapes project directory: "${filename}"`);
   }
   return fs.readFileSync(resolved, 'utf8');
+});
+
+// Renderer → main: read first N bytes of a binary asset (sync IPC).
+// Used by codegen to parse .tset headers at compile time.
+// Accepts { projectDir: string, filename: string, bytes: number }
+// Returns { ok: true, data: number[] } | { ok: false, error: string }
+ipcMain.on('bassm:read-binary-header', (event, { projectDir, filename, bytes }) => {
+  try {
+    const base     = path.resolve(projectDir);
+    const resolved = path.resolve(projectDir, filename);
+    if (!resolved.startsWith(base + path.sep)) {
+      throw new Error(`Asset path escapes project directory: "${filename}"`);
+    }
+    const fd  = fs.openSync(resolved, 'r');
+    const buf = Buffer.alloc(bytes);
+    fs.readSync(fd, buf, 0, bytes, 0);
+    fs.closeSync(fd);
+    event.returnValue = { ok: true, data: Array.from(buf) };
+  } catch (err) {
+    event.returnValue = { ok: false, error: err.message };
+  }
 });
 
 // Renderer → main: save source file back to project

@@ -18,6 +18,7 @@
 			<button id="btn-run"           title="Run — compile + run  (F5)"><i class="codicon codicon-play"></i></button>
 			<button id="btn-assets"        title="Asset Manager"><i class="codicon codicon-package"></i></button>
 			<button id="btn-toggle-editor" title="Toggle Blueprint Editor"><i class="codicon codicon-circuit-board"></i></button>
+			<button id="btn-tileset-editor" title="Tileset Editor"><i class="codicon codicon-symbol-color"></i></button>
 			<button id="btn-emulator-exit" title="Exit fullscreen  (F11 / ESC)"><i class="codicon codicon-screen-normal"></i></button>
 			<span id="project-name"></span>
 			<span id="status">Initialising...</span>
@@ -70,6 +71,55 @@
 					</div>
 					<div id="bnc-ui"></div>
 				</div>
+
+				<!-- Tileset Editor -->
+				<div id="tileset-editor-panel">
+					<div id="tse-toolbar">
+						<button id="tse-btn-import" title="Import PNG"><i class="codicon codicon-file-media"></i> Import PNG</button>
+						<button id="tse-btn-load" title="Open .tset"><i class="codicon codicon-folder-opened"></i> Open</button>
+						<button id="tse-btn-save" title="Save .tset"><i class="codicon codicon-save"></i> Save</button>
+						<span class="toolbar-sep"></span>
+						<label>Tile Size
+							<select id="tse-sel-tilesize">
+								<option value="8">8</option>
+								<option value="16" selected>16</option>
+								<option value="32">32</option>
+							</select>
+						</label>
+						<label>Depth
+							<select id="tse-sel-depth">
+								<option value="1">1</option>
+								<option value="2">2</option>
+								<option value="3" selected>3</option>
+								<option value="4">4</option>
+								<option value="5">5</option>
+							</select>
+						</label>
+						<span id="tse-status"></span>
+					</div>
+					<div id="tse-body">
+						<div id="tse-canvas-area">
+							<canvas id="tse-canvas"></canvas>
+						</div>
+						<div id="tse-sidebar">
+							<div class="tse-section">
+								<div class="tse-section-title">Properties</div>
+								<div id="tse-props">
+									<div class="tse-prop-row"><span>Tile</span><span id="tse-prop-index">—</span></div>
+									<div class="tse-prop-row"><span>Tiles</span><span id="tse-prop-count">—</span></div>
+									<div class="tse-prop-row"><span>Image</span><span id="tse-prop-imgsize">—</span></div>
+								</div>
+							</div>
+							<div class="tse-section">
+								<div class="tse-section-title">Budget</div>
+								<div id="tse-budget">
+									<div class="tse-prop-row"><span>Chip RAM</span><span id="tse-budget-chip">—</span></div>
+									<div class="tse-prop-row"><span>% of 512 KB</span><span id="tse-budget-pct">—</span></div>
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
 				<div id="budget-strip">
 					<div class="budget-item">
 						<span class="budget-label">CPU</span>
@@ -111,8 +161,32 @@
 
 		</div>
 
+		<div id="modal-overlay" style="display: none;">
+			<div id="modal-new-project" class="bassm-modal">
+				<div class="modal-header">
+					<h2>New Project</h2>
+					<button id="btn-modal-cancel" title="Cancel"><i class="codicon codicon-close"></i></button>
+				</div>
+				<p>Wähle den Typ des neuen BASSM Projekts:</p>
+				<div class="modal-options">
+					<div class="modal-option" id="btn-create-code">
+						<i class="codicon codicon-code"></i>
+						<h3>Text Code</h3>
+						<span>Klassisches .bassm Skripting</span>
+					</div>
+					<div class="modal-option" id="btn-create-vbe">
+						<i class="codicon codicon-circuit-board"></i>
+						<h3>Visual Blueprint</h3>
+						<span>Node-basierter Editor (.bnode)</span>
+					</div>
+				</div>
+			</div>
+		</div>
+
 		<script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
 		<script src="src/editor-init.js"></script>
+		<script src="src/image-quantizer.js"></script>
+		<script src="src/tileset-editor.js"></script>
 		<script type="module" src="src/node-editor.js"></script>
 		<script type="module" src="src/bassm.js"></script>
 	</body>

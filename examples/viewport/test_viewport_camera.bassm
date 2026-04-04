@@ -1,0 +1,77 @@
+; T34 — Test 3: Viewport + Camera + Tilemap + Bobs
+;
+; VP0 (0..199): Tilemap-Welt mit Kamera-Scroll (Pfeiltasten) + Bob.
+; VP1 (200..255): Statisches HUD.
+; Erwartung: Smooth Scrolling in VP0, stabiles HUD in VP1,
+;            Bob folgt World-Position korrekt.
+;
+; ASSETS BENÖTIGT (vor dem Testen erstellen):
+;   images/tiles.tset  — 16×16 Tileset (.tset, 3 Planes)
+;   images/world.bmap  — Tilemap (z.B. 40×30 Tiles)
+;   images/player.raw  — 16×16 Bob-Sprite, 3 Planes
+;   images/player.mask — 16×16 1bpp Maske
+
+Graphics 320, 256, 3
+
+SetViewport 0, 0, 199
+SetViewport 1, 200, 255
+
+; ── Assets ───────────────────────────────────────────────────────────────────
+LoadTileset  0, "images/tiles.tset"
+LoadTilemap  0, "images/world.bmap"
+SetTilemap   0, 0
+
+LoadImage    1, "images/player.raw"
+LoadMask     1, "images/player.mask"
+
+; ── Palette (aus Tileset übernommen via LoadImage 0 / manuell) ───────────────
+PaletteColor 1, 15, 15, 15
+PaletteColor 2, 0,  10,  5
+PaletteColor 3, 10,  5,  0
+PaletteColor 4, 0,   8, 15
+
+; ── HUD in beide Buffer ──────────────────────────────────────────────────────
+For buffer = 1 To 2
+  Viewport 1
+  Cls
+  Color 4
+  Box 0, 0, 320, 56
+  Color 1
+  Text 10, 4, "CAMERA TEST — ARROWS TO SCROLL"
+  ScreenFlip
+Next buffer
+
+; ── Game state ───────────────────────────────────────────────────────────────
+camX = 0
+camY = 0
+playerX = 160
+playerY = 100
+speed = 2
+
+; ── Main loop ────────────────────────────────────────────────────────────────
+While 1
+  If KeyDown(69) Then End
+
+  ; Arrow keys move camera
+  If JoyLeft(0)  Then camX = camX - speed
+  If JoyRight(0) Then camX = camX + speed
+  If JoyUp(0)    Then camY = camY - speed
+  If JoyDown(0)  Then camY = camY + speed
+
+  ; Clamp camera to tilemap bounds (40×16px wide = 640px, minus 320px screen)
+  If camX < 0 Then camX = 0
+  If camX > 320 Then camX = 320
+  If camY < 0 Then camY = 0
+  If camY > 280 Then camY = 280
+
+  ; ── VP0: Tilemap + Bob ─────────────────────────────────────────────────────
+  Viewport 0
+  SetCamera camX, camY
+  DrawTilemap 0, 0, camX, camY
+
+  ; Bob in World-Space — Kamera-Translation automatisch durch SetCamera
+  DrawBob 1, playerX, playerY
+
+  ; HUD not redrawn — stays stable
+  ScreenFlip
+Wend

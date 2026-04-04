@@ -74,7 +74,12 @@ class BASSM {
             : null;
         const expanded = await this._preProcessor.expandIncludes(source, { readFile });
 
-        // 1. Blitz2D → m68k assembly
+        // 1. Inject binary header reader so codegen can parse .tset files
+        this._codegen.setAssetHeaderReader(projectDir
+            ? (filename, bytes) => window.electronAPI.readBinaryHeader({ projectDir, filename, bytes })
+            : null);
+
+        // 2. Blitz2D → m68k assembly
         const asm        = this.compile(expanded);
         const assetFiles = this._codegen.getAssetRefs();
         const fontAssets = this._codegen.getFontAssets();
@@ -844,6 +849,11 @@ document.addEventListener('keydown', async e => {
     // Ctrl+S / Cmd+S — Save current file
     if ((e.ctrlKey || e.metaKey) && e.key === 's' && !e.altKey) {
         e.preventDefault();
+        if (_isVBEProject) {
+            logLine('VBE Serialization (Nodes Speichern) ist noch in Arbeit.', 'warn');
+            return;
+        }
+        
         const ed = window._monacoEditor;
         if (!ed || !_projectDir) return;
         try {
@@ -961,19 +971,36 @@ bassm.init()
         status.textContent = 'Ready';
 
         // ── Welcome panel ──────────────────────────────────────────────────────
+        let _nodeEditor = null;
+        let _isVBEProject = false;
+
         async function _openProjectResult(result) {
             _projectDir  = result.projectDir;
-            _currentFile = 'main.bassm';
+            _isVBEProject = result.isVBE || false;
+            _currentFile = _isVBEProject ? 'main.bnode' : 'main.bassm';
             _loadTreeState();
             _addRecent(result.projectName, result.projectDir);
             projectName.textContent = result.projectName;
             document.title = `${result.projectName} — BASSM ${_version}`;
-            window._monacoEditor.setValue(result.source ?? '');
+            
             status.textContent = 'Ready';
             console_.innerHTML = '';
             _projectFiles = await window.electronAPI.listFiles({ projectDir: _projectDir });
             renderProjectTree();
-            renderOutline(buildOutline(result.source ?? ''));
+            
+            const btnToggle = document.getElementById('btn-toggle-editor');
+            if (_isVBEProject) {
+                document.body.classList.add('state-node-editor');
+                btnToggle.style.display = 'none'; // Hard Block: Keine Code UI
+                if (!_nodeEditor) _nodeEditor = new BASSMNodeEditor();
+                // TODO in future iteration: deserialize result.source JSON into _nodeEditor
+            } else {
+                document.body.classList.remove('state-node-editor');
+                btnToggle.style.display = 'none'; // Aktuell ist Hybrid nicht gewollt ("Code oder VBE?")
+                window._monacoEditor.setValue(result.source ?? '');
+                renderOutline(buildOutline(result.source ?? ''));
+            }
+            
             _showEditor();
         }
 
@@ -992,12 +1019,9 @@ bassm.init()
             window.electronAPI.openAssetManager({ projectDir: _projectDir });
         });
 
-        let _nodeEditor = null;
         document.getElementById('btn-toggle-editor').addEventListener('click', () => {
-            if (!_projectDir) {
-                alert('Bitte öffne zuerst ein Projekt, um den Blueprint-Editor zu nutzen.');
-                return;
-            }
+            // Deprecated flow for manual toggling, hidden UI-seitig
+            if (!_projectDir) return;
             document.body.classList.toggle('state-node-editor');
             if (document.body.classList.contains('state-node-editor') && !_nodeEditor) {
                 _nodeEditor = new BASSMNodeEditor();
@@ -1045,10 +1069,25 @@ bassm.init()
             await _moveItem(src, '');
         });
 
-        document.getElementById('btn-new').addEventListener('click', async () => {
-            const result = await window.electronAPI.newProject();
+        const modalOverlay = document.getElementById('modal-overlay');
+        const showNewProjectModal = () => { modalOverlay.style.display = 'flex'; };
+        const hideNewProjectModal = () => { modalOverlay.style.display = 'none'; };
+
+        document.getElementById('btn-new').addEventListener('click', showNewProjectModal);
+        document.getElementById('btn-modal-cancel').addEventListener('click', hideNewProjectModal);
+
+        document.getElementById('btn-create-code').addEventListener('click', async () => {
+            hideNewProjectModal();
+            const result = await window.electronAPI.newProject({ type: 'code' });
             if (!result) return;
-            await _openProjectResult({ ...result, source: '' });
+            await _openProjectResult(result);
+        });
+
+        document.getElementById('btn-create-vbe').addEventListener('click', async () => {
+            hideNewProjectModal();
+            const result = await window.electronAPI.newProject({ type: 'vbe' });
+            if (!result) return;
+            await _openProjectResult(result);
         });
 
         btnOpen.addEventListener('click', async () => {
@@ -1064,6 +1103,10 @@ bassm.init()
         });
 
         btnRun.addEventListener('click', async () => {
+            if (_isVBEProject) {
+                alert('VBE Compilation zu BASSM ist im aktuellen Build noch nicht implementiert.');
+                return;
+            }
             const source = window._monacoEditor.getValue();
             console_.innerHTML = '';
             _clearMarkers();
@@ -1114,3 +1157,7 @@ bassm.init()
         const s = document.getElementById('status');
         if (s) s.textContent = 'Init failed';
     });
+
+// API-Export für andere Module (z.B. node-editor)
+window.logLine = logLine;
+window.showContextMenu = showContextMenu;

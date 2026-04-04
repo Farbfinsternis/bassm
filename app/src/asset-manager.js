@@ -402,7 +402,7 @@ function onCopyImageCode() {
     const interleaved = document.getElementById('chk-interleaved').checked;
     const ext      = interleaved ? 'iraw' : 'raw';
     const filename = _imageFilename.replace(/\.[^.]+$/, '') + '.' + ext;
-    const code     = `LoadImage 0, "${filename}", ${_imageWidth}, ${_imageHeight}`;
+    const code     = `LoadImage 0, "${filename}"`;
     navigator.clipboard.writeText(code).catch(() => {});
     const btn = document.getElementById('btn-copy-image-code');
     btn.textContent = 'Copied!';
@@ -549,7 +549,7 @@ async function onTilesetDropped(file) {
         _tsImageData = imageData;
         _tsWidth     = width;
         _tsHeight    = height;
-        _tsFilename  = file.name.replace(/\.[^.]+$/, '') + '.iraw';
+        _tsFilename  = file.name.replace(/\.[^.]+$/, '') + '.tset';
 
         if (!_paletteIsSet) {
             const depth      = parseInt(document.getElementById('sel-ts-depth').value);
@@ -569,6 +569,76 @@ async function onTilesetDropped(file) {
     }
 }
 
+/**
+ * Build a .tset binary (V1).
+ * Phase 1: Header + PALETTE + IMAGE only (flags=0, no metadata sections).
+ *
+ * @param {number[]} palette    – OCS color words ($0RGB), length ≥ 2^depth
+ * @param {Uint8Array} planes   – interleaved bitplane data from toPlanarBitmapInterleaved()
+ * @param {number} tileSize     – tile edge length in pixels (8, 16 or 32)
+ * @param {number} tileCount    – number of tiles
+ * @param {number} depth        – bitplane count (1–5)
+ * @returns {Uint8Array}        – complete .tset file content
+ */
+function buildTsetBinary(palette, planes, tileSize, tileCount, depth) {
+    const colorCount   = 1 << depth;
+    const paletteSize  = colorCount * 2;
+    const imageSize    = planes.length;
+    const totalSize    = 12 + paletteSize + imageSize;
+
+    const buf  = new Uint8Array(totalSize);
+    const view = new DataView(buf.buffer);
+
+    // ── Header (12 bytes) ────────────────────────────────────────────────────
+    buf[0] = 0x54; buf[1] = 0x53; buf[2] = 0x45; buf[3] = 0x54; // "TSET"
+    buf[4] = 1;                         // version
+    buf[5] = tileSize;                  // tile_size
+    view.setUint16(6, tileCount, false); // tile_count (BE)
+    buf[8] = depth;                     // depth
+    buf[9] = 0;                         // flags (Phase 1: no optional sections)
+    view.setUint16(10, 0, false);       // reserved
+
+    // ── PALETTE ──────────────────────────────────────────────────────────────
+    for (let i = 0; i < colorCount; i++) {
+        view.setUint16(12 + i * 2, palette[i] & 0x0FFF, false);
+    }
+
+    // ── IMAGE (interleaved bitplanes) ────────────────────────────────────────
+    buf.set(planes, 12 + paletteSize);
+
+    return buf;
+}
+
+/**
+ * Convert an existing .iraw buffer to .tset format.
+ * .iraw layout: palette (2^depth × 2 bytes, BE) + interleaved bitplane data.
+ *
+ * @param {Uint8Array} irawBuf  – raw .iraw file content
+ * @param {number} tileSize     – tile edge length (8, 16 or 32)
+ * @param {number} depth        – bitplane count (1–5)
+ * @returns {Uint8Array}        – complete .tset file content
+ */
+function irawToTset(irawBuf, tileSize, depth) {
+    const colorCount  = 1 << depth;
+    const paletteSize = colorCount * 2;
+    const rowbytes    = Math.ceil(tileSize / 16) * 2;
+    const imageSize   = irawBuf.length - paletteSize;
+    const tileBytes   = tileSize * rowbytes * depth;
+    const tileCount   = Math.floor(imageSize / tileBytes);
+
+    // Extract palette as OCS word array
+    const palette = new Array(colorCount);
+    const view    = new DataView(irawBuf.buffer, irawBuf.byteOffset, irawBuf.byteLength);
+    for (let i = 0; i < colorCount; i++) {
+        palette[i] = view.getUint16(i * 2, false);
+    }
+
+    // Image data starts after palette
+    const planes = irawBuf.slice(paletteSize, paletteSize + tileCount * tileBytes);
+
+    return buildTsetBinary(palette, planes, tileSize, tileCount, depth);
+}
+
 async function onConvertAndSaveTileset() {
     if (!_tsImageData || !_tsLastIndices) return;
     const btn   = document.getElementById('btn-convert-tileset');
@@ -578,20 +648,12 @@ async function onConvertAndSaveTileset() {
     btn.textContent = 'Saving\u2026';
 
     try {
-        const depth      = _tsLastDepth;
-        const colorCount = 1 << depth;
+        const depth = _tsLastDepth;
 
-        const { stacked, totalH } = sliceAndStackTiles(
+        const { stacked, nTiles, totalH } = sliceAndStackTiles(
             _tsLastIndices, _tsWidth, _tsHeight, tileW, tileH);
         const planes = toPlanarBitmapInterleaved(stacked, tileW, totalH, depth);
-
-        // Prepend OCS palette — identical layout to regular .iraw files
-        const raw = new Uint8Array(colorCount * 2 + planes.length);
-        for (let i = 0; i < colorCount; i++) {
-            raw[i * 2]     = (_palette[i] >> 8) & 0xFF;
-            raw[i * 2 + 1] =  _palette[i]       & 0xFF;
-        }
-        raw.set(planes, colorCount * 2);
+        const raw    = buildTsetBinary(_palette, planes, tileW, nTiles, depth);
 
         const defaultPath = [
             _projectDir ? _projectDir.replace(/\\/g, '/') : null,
@@ -600,7 +662,7 @@ async function onConvertAndSaveTileset() {
 
         const result = await window.assetAPI.saveAssetWithDialog({
             defaultPath,
-            filters: [{ name: 'Amiga Interleaved Tileset', extensions: ['iraw'] }],
+            filters: [{ name: 'BASSM Tileset', extensions: ['tset'] }],
             data: Array.from(raw),
         });
         if (!result.saved) { btn.disabled = false; btn.textContent = 'Convert & Save'; return; }
@@ -617,9 +679,7 @@ async function onConvertAndSaveTileset() {
 
 function onCopyTilesetCode() {
     if (!_tsImageData) return;
-    const tileW = parseInt(document.getElementById('inp-ts-tw').value) || 16;
-    const tileH = parseInt(document.getElementById('inp-ts-th').value) || 16;
-    const code  = `LoadTileset 0, "${_tsFilename}", ${tileW}, ${tileH}`;
+    const code  = `LoadTileset 0, "${_tsFilename}"`;
     navigator.clipboard.writeText(code).catch(() => {});
     const btn = document.getElementById('btn-copy-tileset-code');
     btn.textContent = 'Copied!';
