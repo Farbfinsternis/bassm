@@ -33,8 +33,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveAssetWithDialog: (payload) => ipcRenderer.invoke('bassm:save-asset-dialog', payload),
   // List all .bassm files in the project directory; returns string[]
   listFiles: (payload) => ipcRenderer.invoke('bassm:list-files', payload),
-  // Open (or focus) the Asset Manager window, optionally passing the current projectDir
-  openAssetManager: (payload) => ipcRenderer.send('bassm:open-asset-manager', payload || {}),
+  // Read a binary asset file from the project directory. Returns number[] (byte array).
+  readAsset: (payload) => ipcRenderer.invoke('bassm:read-asset', payload),
+  // Write a file to an absolute path without showing a dialog. { path, data: number[] }
+  saveAsset: (payload) => ipcRenderer.invoke('bassm:save-asset-path', payload),
   // File-system operations for the project tree
   createFile: (payload) => ipcRenderer.invoke('bassm:create-file', payload),
   createDir:  (payload) => ipcRenderer.invoke('bassm:create-dir',  payload),

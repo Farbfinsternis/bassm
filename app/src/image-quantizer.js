@@ -125,13 +125,25 @@ function _createVBox(pixels) {
  * @param {ImageData} imageData
  * @param {number}    colorCount  palette size including slot 0 (max 32)
  * @param {number}    threshold   0–100: merge aggressiveness (default 50)
+ * @param {Float32Array} [weights]  optional per-pixel weight (0.0–1.0), same
+ *        length as pixel count (w×h). Weighted pixels are inserted multiple
+ *        times to bias the palette toward masked regions.
  */
-function medianCutPalette(imageData, colorCount, threshold = 50) {
+function medianCutPalette(imageData, colorCount, threshold = 50, weights) {
     const d = imageData.data;
     const pixels = [];
+    const multiplier = 6; // weight amplification factor
     for (let i = 0; i < d.length; i += 4) {
         if (d[i+3] < 128) continue;
-        pixels.push([_snap4(d[i]), _snap4(d[i+1]), _snap4(d[i+2])]);
+        const col = [_snap4(d[i]), _snap4(d[i+1]), _snap4(d[i+2])];
+        pixels.push(col);
+        if (weights) {
+            const pi = i >> 2; // pixel index = byte offset / 4
+            if (pi < weights.length && weights[pi] > 0) {
+                const extra = Math.floor(weights[pi] * multiplier);
+                for (let e = 0; e < extra; e++) pixels.push(col);
+            }
+        }
     }
     if (pixels.length === 0) return new Array(colorCount).fill(0);
 

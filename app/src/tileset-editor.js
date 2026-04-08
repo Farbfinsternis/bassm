@@ -359,13 +359,9 @@ async function _tseLoad() {
 
 // ── Event wiring ─────────────────────────────────────────────────────────────
 
-document.getElementById('btn-tileset-editor').addEventListener('click', () => {
-    document.body.classList.toggle('state-tileset-editor');
-    // Ensure other editor modes are off
-    if (document.body.classList.contains('state-tileset-editor')) {
-        document.body.classList.remove('state-node-editor');
-    }
-});
+// Tileset editor is opened via double-click on .tset in the project tree
+// (dispatched by _openFile → switchView('tileset-editor')).
+// No dedicated toolbar button — will become a sub-view of the Tilemap Editor in Phase 4.
 
 document.getElementById('tse-btn-import').addEventListener('click', _tseImportPng);
 document.getElementById('tse-btn-load').addEventListener('click', _tseLoad);

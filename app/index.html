@@ -2,8 +2,8 @@
 <html>
 	<head>
 		<meta charset="UTF-8" />
-		<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; worker-src 'self' file: blob:" />
-		<meta http-equiv="X-Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; worker-src 'self' file: blob:" />
+		<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' blob: data:; worker-src 'self' file: blob:" />
+		<meta http-equiv="X-Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' blob: data:; worker-src 'self' file: blob:" />
 		<title>BASSM</title>
 		<link rel="stylesheet" href="style.css" />
 		<link rel="stylesheet" href="../node_modules/@fontsource/fira-code/latin-400.css" />
@@ -12,14 +12,17 @@
 	</head>
 	<body class="state-welcome">
 		<div id="toolbar">
-			<button id="btn-new"           title="New Project"><i class="codicon codicon-new-folder"></i></button>
-			<button id="btn-open"          title="Open Project"><i class="codicon codicon-folder-opened"></i></button>
+			<button id="btn-new"            title="New Project"><i class="codicon codicon-new-folder"></i></button>
+			<button id="btn-open"           title="Open Project"><i class="codicon codicon-folder-opened"></i></button>
+			<button id="btn-save"           title="Save  (Ctrl+S)"><i class="codicon codicon-save"></i></button>
 			<span class="toolbar-sep"></span>
-			<button id="btn-run"           title="Run — compile + run  (F5)"><i class="codicon codicon-play"></i></button>
-			<button id="btn-assets"        title="Asset Manager"><i class="codicon codicon-package"></i></button>
-			<button id="btn-toggle-editor" title="Toggle Blueprint Editor"><i class="codicon codicon-circuit-board"></i></button>
-			<button id="btn-tileset-editor" title="Tileset Editor"><i class="codicon codicon-symbol-color"></i></button>
-			<button id="btn-emulator-exit" title="Exit fullscreen  (F11 / ESC)"><i class="codicon codicon-screen-normal"></i></button>
+			<button id="btn-run"            title="Run — compile + run  (F5)"><i class="codicon codicon-play"></i></button>
+			<button id="btn-build"          title="Build only  (F7)"><i class="codicon codicon-tools"></i></button>
+			<button id="btn-create-adf"     title="Create ADF" disabled><i class="codicon codicon-archive"></i></button>
+			<span class="toolbar-sep"></span>
+			<button id="btn-toggle-editor"  title="Node Editor"><i class="codicon codicon-circuit-board"></i></button>
+			<button id="btn-tilemap-editor" title="Tilemap Editor"><i class="codicon codicon-layout"></i></button>
+			<button id="btn-emulator-exit"  title="Exit fullscreen  (F11 / ESC)"><i class="codicon codicon-screen-normal"></i></button>
 			<span id="project-name"></span>
 			<span id="status">Initialising...</span>
 		</div>
@@ -120,6 +123,284 @@
 						</div>
 					</div>
 				</div>
+
+				<!-- Image Editor (Phase 1) -->
+				<div id="image-editor-panel">
+					<div class="view-toolbar">
+						<span class="view-title">Image Editor</span>
+						<label>Depth
+							<select id="img-sel-depth">
+								<option value="1">1</option>
+								<option value="2">2</option>
+								<option value="3" selected>3</option>
+								<option value="4">4</option>
+								<option value="5">5</option>
+							</select>
+						</label>
+						<label>Dither
+							<select id="img-sel-dither">
+								<option value="none">None</option>
+								<option value="floyd-steinberg" selected>Floyd-Steinberg</option>
+								<option value="atkinson">Atkinson</option>
+								<option value="bayer">Bayer</option>
+							</select>
+						</label>
+						<label title="Auto-generate .imask (transparent = palette index 0)">
+							<input type="checkbox" id="img-chk-genmask"> + .imask
+						</label>
+						<button id="img-btn-actual" title="Toggle 1:1 pixel view">1:1</button>
+						<button id="img-btn-poi" title="Point of Interest masking">POI</button>
+						<button id="img-btn-poi-clear" class="img-poi-only" title="Clear POI mask">Clear Mask</button>
+						<span class="view-status" id="img-status">No image loaded</span>
+					</div>
+					<div id="img-body">
+						<div id="img-content">
+							<div class="view-placeholder" id="img-placeholder">Double-click a PNG in the Project Tree to open it here.</div>
+
+							<div id="img-workspace" style="display:none">
+								<div id="img-palette-bar">
+									<!-- 32 palette swatches, filled by JS -->
+								</div>
+								<div id="img-canvas-area">
+									<div class="img-pane">
+										<div class="img-pane-label">Original</div>
+										<div class="img-canvas-wrap">
+											<canvas id="img-canvas-original"></canvas>
+											<canvas id="img-canvas-mask-overlay"></canvas>
+										</div>
+									</div>
+									<div class="img-pane">
+										<div class="img-pane-label">OCS Preview</div>
+										<button id="img-btn-fullscreen" class="img-pane-fs-btn" title="Fullscreen OCS preview"><i class="codicon codicon-screen-full"></i></button>
+										<canvas id="img-canvas-converted"></canvas>
+									</div>
+								</div>
+							</div>
+						</div>
+						<div id="img-sidebar">
+							<div class="view-section">
+								<div class="view-section-title">Properties</div>
+								<div class="view-prop-row"><span>File</span><span id="img-prop-file">—</span></div>
+								<div class="view-prop-row"><span>Size</span><span id="img-prop-size">—</span></div>
+								<div class="view-prop-row"><span>Match</span><span id="img-prop-match">—</span></div>
+							</div>
+							<div class="view-section" id="img-dimensions-section">
+								<div class="view-section-title">Dimensions</div>
+								<div class="img-dim-row">
+									<label for="img-dim-w">Width</label>
+									<input type="number" id="img-dim-w" min="1" max="9999" value="320">
+								</div>
+								<div class="img-dim-lock-row">
+									<button id="img-dim-lock" class="img-dim-lock-btn active" title="Lock aspect ratio">
+										<i class="codicon codicon-link"></i>
+									</button>
+								</div>
+								<div class="img-dim-row">
+									<label for="img-dim-h">Height</label>
+									<input type="number" id="img-dim-h" min="1" max="9999" value="256">
+								</div>
+								<button id="img-btn-resize" class="img-dim-action" disabled>Resize</button>
+								<div class="view-section-title" style="margin-top:10px">Crop</div>
+								<div class="img-dim-row"><label>Origin</label></div>
+								<div class="img-origin-grid">
+									<button data-origin="tl" title="Top-Left">&#8598;</button>
+									<button data-origin="tc" title="Top-Center">&#8593;</button>
+									<button data-origin="tr" title="Top-Right">&#8599;</button>
+									<button data-origin="ml" title="Middle-Left">&#8592;</button>
+									<button data-origin="mc" class="active" title="Center">&#183;</button>
+									<button data-origin="mr" title="Middle-Right">&#8594;</button>
+									<button data-origin="bl" title="Bottom-Left">&#8601;</button>
+									<button data-origin="bc" title="Bottom-Center">&#8595;</button>
+									<button data-origin="br" title="Bottom-Right">&#8600;</button>
+								</div>
+								<button id="img-btn-crop" class="img-dim-action" disabled>Crop</button>
+							</div>
+							<div class="view-section">
+								<div class="view-section-title">Budget</div>
+								<div class="view-prop-row"><span>Chip RAM</span><span id="img-prop-chip">—</span></div>
+								<div class="view-prop-row"><span>% of 512 KB</span><span id="img-prop-pct">—</span></div>
+							</div>
+							<div class="view-section img-poi-section img-poi-only">
+								<div class="view-section-title">Point of Interest</div>
+								<div class="img-poi-control">
+									<label>Brush Size</label>
+									<input type="range" id="img-poi-brush-range" min="1" max="100" value="30">
+									<input type="number" id="img-poi-brush-num" min="1" max="100" value="30">
+								</div>
+								<div class="img-poi-control">
+									<label>Feather</label>
+									<input type="range" id="img-poi-feather-range" min="0" max="255" value="0">
+									<input type="number" id="img-poi-feather-num" min="0" max="255" value="0">
+								</div>
+								<button id="img-poi-sidebar-clear" class="img-dim-action">Clear Mask</button>
+							</div>
+							<div class="view-section img-actions">
+								<button id="img-btn-convert" disabled>Convert &amp; Save</button>
+								<button id="img-btn-export-iff" disabled>Export IFF</button>
+							</div>
+						</div>
+					</div>
+				</div>
+
+				<!-- Image Editor Fullscreen OCS Preview (T1b.4) -->
+				<div id="img-fullscreen-overlay" style="display:none">
+					<div class="img-fs-bar">
+						<span class="img-fs-title">OCS Preview</span>
+						<label>Depth
+							<select id="img-fs-depth">
+								<option value="1">1 bpp</option>
+								<option value="2">2 bpp</option>
+								<option value="3" selected>3 bpp</option>
+								<option value="4">4 bpp</option>
+								<option value="5">5 bpp</option>
+							</select>
+						</label>
+						<label>Dither
+							<select id="img-fs-dither">
+								<option value="none">None</option>
+								<option value="floyd-steinberg" selected>Floyd-Steinberg</option>
+								<option value="atkinson">Atkinson</option>
+								<option value="bayer">Bayer</option>
+							</select>
+						</label>
+						<button id="img-fs-close" title="Close (Escape)"><i class="codicon codicon-close"></i></button>
+					</div>
+					<div class="img-fs-canvas-wrap">
+						<canvas id="img-fs-canvas"></canvas>
+					</div>
+				</div>
+
+				<!-- Font Editor (Phase 6) -->
+				<div id="font-editor-panel">
+					<div class="view-toolbar">
+						<span class="view-title">Font Editor</span>
+						<label>Char W
+							<select id="fnt-sel-charw">
+								<option value="8" selected>8</option>
+								<option value="16">16</option>
+							</select>
+						</label>
+						<label>Char H
+							<select id="fnt-sel-charh">
+								<option value="8" selected>8</option>
+								<option value="16">16</option>
+							</select>
+						</label>
+						<label>Depth
+							<select id="fnt-sel-depth">
+								<option value="1" selected>1</option>
+								<option value="2">2</option>
+								<option value="3">3</option>
+								<option value="4">4</option>
+								<option value="5">5</option>
+							</select>
+						</label>
+						<label>Charset
+							<select id="fnt-sel-charset">
+								<option value="ascii" selected>ASCII (32–127)</option>
+								<option value="full">Full (0–255)</option>
+							</select>
+						</label>
+						<span class="view-status" id="fnt-status">No font loaded</span>
+					</div>
+					<div id="fnt-body">
+						<div id="fnt-content">
+							<div class="view-placeholder" id="fnt-placeholder">Right-click a PNG in the Project Tree → "Open as Font" to load a font sheet here.</div>
+
+							<div id="fnt-workspace" style="display:none">
+								<div id="fnt-canvas-area">
+									<div class="fnt-pane">
+										<div class="fnt-pane-label">Font Sheet</div>
+										<canvas id="fnt-canvas-sheet"></canvas>
+									</div>
+									<div class="fnt-pane">
+										<div class="fnt-pane-label">Character Preview</div>
+										<canvas id="fnt-canvas-char"></canvas>
+									</div>
+								</div>
+								<div id="fnt-palette-bar">
+									<!-- palette swatches, filled by JS -->
+								</div>
+							</div>
+						</div>
+						<div id="fnt-sidebar">
+							<div class="view-section">
+								<div class="view-section-title">Properties</div>
+								<div class="view-prop-row"><span>File</span><span id="fnt-prop-file">—</span></div>
+								<div class="view-prop-row"><span>Sheet</span><span id="fnt-prop-sheet">—</span></div>
+								<div class="view-prop-row"><span>Char Size</span><span id="fnt-prop-charsize">—</span></div>
+								<div class="view-prop-row"><span>Characters</span><span id="fnt-prop-chars">—</span></div>
+							</div>
+							<div class="view-section">
+								<div class="view-section-title">Budget</div>
+								<div class="view-prop-row"><span>Chip RAM</span><span id="fnt-prop-chip">—</span></div>
+								<div class="view-prop-row"><span>% of 512 KB</span><span id="fnt-prop-pct">—</span></div>
+							</div>
+							<div class="view-section fnt-actions">
+								<button id="fnt-btn-convert" disabled>Convert &amp; Save</button>
+								<button id="fnt-btn-copy-code" disabled>Copy Code</button>
+							</div>
+						</div>
+					</div>
+				</div>
+
+				<!-- Sound Editor (Phase 2) -->
+				<div id="sound-editor-panel">
+					<div class="view-toolbar">
+						<span class="view-title">Sound Editor</span>
+						<label class="snd-period-label">Period
+							<input type="range" id="snd-rng-period" min="124" max="1024" value="428">
+							<span id="snd-period-display">428 &asymp; 8287 Hz</span>
+						</label>
+						<span class="view-status" id="snd-status">No sound loaded</span>
+					</div>
+					<div id="snd-body">
+						<div id="snd-content">
+							<div class="view-placeholder" id="snd-placeholder">Double-click a WAV or MP3 in the Project Tree to open it here.</div>
+							<div id="snd-workspace" style="display:none">
+								<div id="snd-waveform-area">
+									<div class="snd-pane-label">Waveform</div>
+									<canvas id="snd-canvas-waveform"></canvas>
+								</div>
+								<div id="snd-info-area">
+									<div class="snd-pane-label">Converted (8-bit signed PCM)</div>
+									<canvas id="snd-canvas-converted"></canvas>
+								</div>
+							</div>
+						</div>
+						<div id="snd-sidebar">
+							<div class="view-section">
+								<div class="view-section-title">Properties</div>
+								<div class="view-prop-row"><span>File</span><span id="snd-prop-file">&mdash;</span></div>
+								<div class="view-prop-row"><span>Duration</span><span id="snd-prop-duration">&mdash;</span></div>
+								<div class="view-prop-row"><span>Source Rate</span><span id="snd-prop-rate">&mdash;</span></div>
+								<div class="view-prop-row"><span>Channels</span><span id="snd-prop-channels">&mdash;</span></div>
+								<div class="view-prop-row"><span>Samples</span><span id="snd-prop-samples">&mdash;</span></div>
+							</div>
+							<div class="view-section">
+								<div class="view-section-title">Budget</div>
+								<div class="view-prop-row"><span>Chip RAM</span><span id="snd-prop-chip">&mdash;</span></div>
+								<div class="view-prop-row"><span>% of 512 KB</span><span id="snd-prop-pct">&mdash;</span></div>
+							</div>
+							<div class="view-section snd-actions">
+								<button id="snd-btn-convert" disabled>Convert &amp; Save</button>
+								<button id="snd-btn-copy-code" disabled>Copy Code</button>
+							</div>
+						</div>
+					</div>
+				</div>
+
+				<!-- Tilemap Editor (Phase 4) -->
+				<div id="tilemap-editor-panel">
+					<div class="view-toolbar">
+						<span class="view-title">Tilemap Editor</span>
+						<span class="view-status" id="tmap-status">No tilemap loaded</span>
+					</div>
+					<div class="view-content">
+						<div class="view-placeholder">Create a new tilemap or open an existing .bmap file.</div>
+					</div>
+				</div>
+
 				<div id="budget-strip">
 					<div class="budget-item">
 						<span class="budget-label">CPU</span>
@@ -186,6 +467,10 @@
 		<script src="../node_modules/monaco-editor/min/vs/loader.js"></script>
 		<script src="src/editor-init.js"></script>
 		<script src="src/image-quantizer.js"></script>
+		<script src="src/iff-writer.js"></script>
+		<script src="src/image-editor.js"></script>
+		<script src="src/font-editor.js"></script>
+		<script src="src/sound-editor.js"></script>
 		<script src="src/tileset-editor.js"></script>
 		<script type="module" src="src/node-editor.js"></script>
 		<script type="module" src="src/bassm.js"></script>

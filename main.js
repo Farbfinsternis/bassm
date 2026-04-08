@@ -16,8 +16,8 @@ const BIN_EXT   = IS_WIN ? '.exe' : '';
 const VASM      = path.join(__dirname, 'bin', `vasmm68k_mot${BIN_EXT}`);
 
 // ── Project file watcher ────────────────────────────────────────────────────
-// Watches the open project directory (recursive) and notifies both the main
-// editor window and the Asset Manager when files are added, changed, or
+// Watches the open project directory (recursive) and notifies the main
+// editor window when files are added, changed, or
 // removed externally. Debounced so burst-saves don't flood the renderers.
 let _projectWatcher  = null;
 let _watchDebounce   = null;
@@ -35,13 +35,9 @@ function startProjectWatcher(projectDir) {
         _watchDebounce = null;
         // Notify main editor window(s)
         for (const win of BrowserWindow.getAllWindows()) {
-          if (win !== assetManagerWindow && !win.isDestroyed()) {
+          if (!win.isDestroyed()) {
             win.webContents.send('project:files-changed', { filename });
           }
-        }
-        // Notify Asset Manager window
-        if (assetManagerWindow && !assetManagerWindow.isDestroyed()) {
-          assetManagerWindow.webContents.send('assets:files-changed', { filename });
         }
       }, WATCH_DEBOUNCE);
     });
@@ -76,84 +72,8 @@ app.whenReady().then(() => {
   });
 });
 
-// ── Asset Manager Window ───────────────────────────────────────────────────
-let assetManagerWindow = null;
-
-function createAssetManagerWindow(projectDir, preloadFile) {
-  if (assetManagerWindow && !assetManagerWindow.isDestroyed()) {
-    assetManagerWindow.focus();
-    if (projectDir)  assetManagerWindow.webContents.send('assets:set-project',  { projectDir });
-    if (preloadFile) assetManagerWindow.webContents.send('assets:preload-file', { projectDir, preloadFile });
-    return;
-  }
-
-  assetManagerWindow = new BrowserWindow({
-    width:  960,
-    height: 680,
-    minWidth:  700,
-    minHeight: 480,
-    title: 'BASSM – Asset Manager',
-    backgroundColor: '#0a0a0a',
-    webPreferences: {
-      preload: path.join(__dirname, 'app', 'preload-assets.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
-
-  assetManagerWindow.loadFile('app/asset-manager.html');
-
-  // Prevent Electron from navigating to dropped file:// URLs
-  assetManagerWindow.webContents.on('will-navigate', e => e.preventDefault());
-
-  if (projectDir || preloadFile) {
-    assetManagerWindow.webContents.once('did-finish-load', () => {
-      if (projectDir)  assetManagerWindow.webContents.send('assets:set-project',  { projectDir });
-      if (preloadFile) assetManagerWindow.webContents.send('assets:preload-file', { projectDir, preloadFile });
-    });
-  }
-
-  assetManagerWindow.on('closed', () => { assetManagerWindow = null; });
-}
-
 // Renderer → main: synchronous version query (used in preload.js)
 ipcMain.on('bassm:get-version', (event) => { event.returnValue = app.getVersion(); });
-
-// Renderer (editor) → main: open or focus the Asset Manager window
-ipcMain.on('bassm:open-asset-manager', (_event, { projectDir, preloadFile } = {}) => {
-  createAssetManagerWindow(projectDir || null, preloadFile || null);
-});
-
-// Renderer (asset manager) → main: list assets in project directory
-// Returns { palettes: [{name,path}], images: [{name,path}], sounds: [{name,path}] }
-ipcMain.handle('bassm:list-assets', (_event, { projectDir }) => {
-  if (!projectDir) return { palettes: [], images: [], sounds: [] };
-
-  function listDir(subdir, exts) {
-    const dir = path.join(projectDir, subdir);
-    try {
-      return fs.readdirSync(dir)
-        .filter(f => !f.startsWith('.') && exts.some(e => f.toLowerCase().endsWith(e)))
-        .sort()
-        .map(name => ({ name, path: subdir + '/' + name }));
-    } catch (_) { return []; }
-  }
-
-  // Palettes: root-level JSON files whose names start with "palette"
-  let palettes = [];
-  try {
-    palettes = fs.readdirSync(projectDir)
-      .filter(f => f.toLowerCase().startsWith('palette') && f.toLowerCase().endsWith('.json'))
-      .sort()
-      .map(name => ({ name, path: name }));
-  } catch (_) {}
-
-  return {
-    palettes,
-    images: listDir('images', ['.raw', '.bmp', '.iff', '.png', '.jpg']),
-    sounds: listDir('sounds', ['.raw', '.wav', '.mp3', '.ogg', '.aiff']),
-  };
-});
 
 // ── Emulator WebContentsView ───────────────────────────────────────────────
 let emulatorView = null;
@@ -270,7 +190,7 @@ ipcMain.handle('bassm:assemble', (_event, payload) => {
 
     // Convert font .raw files from OCS spritesheet format to glyph-major format.
     //
-    // The Asset Manager produces OCS planar .raw files:
+    // Legacy OCS planar .raw files have this layout:
     //   [palette: (1<<depth)*2 bytes] [plane0: rows×rowbytes] [plane1: ...] ...
     // text.s expects glyph-major packed data (no palette, 1 byte/row per glyph):
     //   [glyph0_row0, glyph0_row1, ..., glyph0_rowH-1, glyph1_row0, ...]
@@ -486,8 +406,7 @@ ipcMain.handle('bassm:save-source', (_event, { projectDir, filename = 'main.bass
 // Renderer → main: read a binary asset file from the project directory.
 // Returns the file contents as a plain number[] (Array.from(Buffer)) so it
 // can be transferred over the context-isolated IPC bridge.
-// Used by the Asset Manager to load source images (PNG/JPG) directly from
-// the left-panel file list without requiring drag & drop.
+// Used by editors (Image, Font, Sound) to load assets from the project directory.
 ipcMain.handle('bassm:read-asset', (_event, { projectDir, path: relPath }) => {
   const base     = path.resolve(projectDir);
   const resolved = path.resolve(projectDir, relPath);
@@ -497,29 +416,15 @@ ipcMain.handle('bassm:read-asset', (_event, { projectDir, path: relPath }) => {
   return Array.from(fs.readFileSync(resolved));
 });
 
-// Renderer (asset manager) → main: write a converted asset into the project
-// Accepts { projectDir, subdir, filename, data: number[] }
-ipcMain.handle('bassm:write-asset', (_event, { projectDir, subdir, filename, data }) => {
-  const base    = path.resolve(projectDir);
-  const outDir  = path.join(projectDir, subdir);
-  const outFile = path.join(outDir, filename);
-  if (!path.resolve(outFile).startsWith(base + path.sep)) {
-    throw new Error(`Path escapes project directory: "${filename}"`);
-  }
-  fs.mkdirSync(outDir, { recursive: true });
-  fs.writeFileSync(outFile, Buffer.from(data));
-});
-
-// Renderer (asset manager) → main: write to an absolute path without a dialog.
+// Renderer → main: write to an absolute path without a dialog.
 // Accepts { filePath: string, data: number[] }
-// Used to auto-save companion files (e.g. .imask alongside .iraw) once the user
-// has already confirmed the primary save path via the dialog.
+// Used to auto-save companion files (e.g. .pal/.imask alongside .iraw).
 ipcMain.handle('bassm:save-asset-path', (_event, { filePath, data }) => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, Buffer.from(data));
 });
 
-// Renderer (asset manager) → main: show OS save dialog, then write the file.
+// Renderer → main: show OS save dialog, then write the file.
 // Accepts { defaultPath: string, filters: Array<{name,extensions}>, data: number[] }
 // Returns { saved: true, filePath: string } | { saved: false }
 ipcMain.handle('bassm:save-asset-dialog', async (_event, { defaultPath, filters = [], data }) => {
@@ -640,11 +545,7 @@ function createWindow() {
   createEmulatorView(win);
   win.loadFile('app/index.html');
 
-  win.on('closed', () => {
-    if (assetManagerWindow && !assetManagerWindow.isDestroyed()) {
-      assetManagerWindow.close();
-    }
-  });
+  win.on('closed', () => {});
 
   // DevTools for both views — remove or guard with isDev check for production
   win.webContents.openDevTools({ mode: 'detach' });

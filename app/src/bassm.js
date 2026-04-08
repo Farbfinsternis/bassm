@@ -67,7 +67,7 @@ class BASSM {
      * @returns {{ asm: string }}   The generated assembly (for display)
      * @throws  {Error}             On compile or assemble error
      */
-    async run(source, projectDir) {
+    async run(source, projectDir, { skipEmulator = false } = {}) {
         // 0. Expand Include directives (requires an open project folder)
         const readFile = projectDir
             ? (filename) => window.electronAPI.readFile({ projectDir, filename })
@@ -89,8 +89,10 @@ class BASSM {
         if (!result.ok) throw new Error(result.error);
         for (const w of (result.warnings || [])) logLine(`Warnung: ${w}`, 'warn');
 
-        // 3. Send HUNK binary to emulator — triggers reset + boot from virtual disk
-        window.electronAPI.emulator.send({ type: 'load-exe', data: result.data });
+        // 3. Send HUNK binary to emulator (unless build-only)
+        if (!skipEmulator) {
+            window.electronAPI.emulator.send({ type: 'load-exe', data: result.data });
+        }
 
         return { asm, binary: result.data };
     }
@@ -104,6 +106,40 @@ let _projectDir   = null;
 let _currentFile  = 'main.bassm';
 let _projectFiles = [];
 let _lastBinary   = null;   // cached from last successful build — used by F6
+
+// ── View System ──────────────────────────────────────────────────────────────
+// All valid view names. Each corresponds to a CSS class `state-<name>` on <body>.
+const _VIEW_NAMES = ['code', 'node-editor', 'tileset-editor', 'image-editor', 'font-editor', 'sound-editor', 'tilemap-editor'];
+let _currentView = 'code';
+
+/**
+ * Switch the main panel to the given view.
+ * Removes all `state-*` view classes from <body> and sets `state-<viewName>`.
+ * 'code' is the default — shows Monaco editor (no state class needed,
+ * it's visible by default when no other state is set).
+ */
+function switchView(viewName) {
+    if (!_VIEW_NAMES.includes(viewName)) {
+        console.warn(`[BASSM] Unknown view: ${viewName}`);
+        return;
+    }
+    // Remove all view state classes
+    for (const v of _VIEW_NAMES) {
+        document.body.classList.remove('state-' + v);
+    }
+    // Set the requested view (code needs no class — editor is visible by default)
+    if (viewName !== 'code') {
+        document.body.classList.add('state-' + viewName);
+    }
+    _currentView = viewName;
+    // Re-layout Monaco when switching back to code
+    if (viewName === 'code') {
+        setTimeout(() => window._monacoEditor?.layout(), 0);
+    }
+}
+
+// Export for other modules (tileset-editor.js, etc.)
+window.switchView = switchView;
 
 // ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -231,6 +267,7 @@ function renderOutline(items) {
         item.addEventListener('click', () => {
             const ed = window._monacoEditor;
             if (!ed) return;
+            switchView('code');
             ed.revealLineInCenter(line);
             ed.setPosition({ lineNumber: line, column: 1 });
             ed.focus();
@@ -507,17 +544,25 @@ function renderTreeNodes(nodes, container, depth, parentPath) {
         } else {
             const ext     = node.name.split('.').pop().toLowerCase();
             const isBassm = ext === 'bassm';
-            const isPng   = ext === 'png';
-            const isAudio = ['raw', 'iff', 'wav', 'aiff', '8svx'].includes(ext);
-            const isMask  = ext === 'mask';
+            const isImage = ['png', 'jpg', 'jpeg', 'bmp'].includes(ext);
+            const isSound = ['wav', 'mp3', 'ogg', 'aiff', '8svx'].includes(ext);
+            const isAsset = ['raw', 'iraw', 'iff', 'sraw'].includes(ext);
+            const isMask  = ext === 'imask';
+            const isTset  = ext === 'tset';
+            const isBmap  = ext === 'bmap';
+            const isBfnt  = ext === 'bfnt';
             const isEntry = node.name === 'main.bassm';
 
             let typeClass = 'tree-item-other';
             let iconClass = 'codicon-file';
             if (isBassm)      { typeClass = 'tree-item-bassm';  iconClass = isEntry ? 'codicon-home' : 'codicon-file-code'; }
-            else if (isPng)   { typeClass = 'tree-item-img';    iconClass = 'codicon-file-media'; }
-            else if (isAudio) { typeClass = 'tree-item-audio';  iconClass = 'codicon-music'; }
-            else if (isMask)  { typeClass = 'tree-item-mask';   iconClass = 'codicon-filter'; }
+            else if (isImage)  { typeClass = 'tree-item-img';    iconClass = 'codicon-file-media'; }
+            else if (isSound)  { typeClass = 'tree-item-audio';  iconClass = 'codicon-music'; }
+            else if (isTset)   { typeClass = 'tree-item-asset';  iconClass = 'codicon-symbol-color'; }
+            else if (isBmap)   { typeClass = 'tree-item-asset';  iconClass = 'codicon-layout'; }
+            else if (isBfnt)   { typeClass = 'tree-item-asset';  iconClass = 'codicon-text-size'; }
+            else if (isAsset)  { typeClass = 'tree-item-asset';  iconClass = 'codicon-package'; }
+            else if (isMask)   { typeClass = 'tree-item-mask';   iconClass = 'codicon-filter'; }
 
             const item = document.createElement('div');
             item.className = `tree-item ${typeClass}`
@@ -535,13 +580,16 @@ function renderTreeNodes(nodes, container, depth, parentPath) {
             item.appendChild(iconSpan);
             item.appendChild(nameSpan);
 
+            // Single click: .bassm loads into Monaco; others do nothing (dblclick opens)
             if (isBassm) {
                 item.addEventListener('click', () => loadProjectFile(node.path));
-                item.addEventListener('dblclick', e => {
-                    e.stopPropagation();
-                    if (!isEntry) _startInlineRename(item, nameSpan, node.path);
-                });
             }
+
+            // Double click: open file in appropriate editor (all types)
+            item.addEventListener('dblclick', e => {
+                e.stopPropagation();
+                _openFile(node.path);
+            });
 
             // ── Drag (source) ──────────────────────────────────────────────
             item.setAttribute('draggable', 'true');
@@ -554,8 +602,15 @@ function renderTreeNodes(nodes, container, depth, parentPath) {
             });
 
             const ctxItems = [];
-            if (isPng) {
-                ctxItems.push({ label: 'Convert', action: () => window.electronAPI.openAssetManager({ projectDir: _projectDir, preloadFile: node.path }) });
+            // "Open" for file types that have an editor
+            if (isImage || isSound || isTset || isBmap || isBfnt) {
+                ctxItems.push({ label: 'Open', action: () => _openFile(node.path) });
+                if (isImage) {
+                    ctxItems.push({ label: 'Open as Font', action: () => {
+                        switchView('font-editor');
+                        if (window.fntOpenFile) window.fntOpenFile(node.path, _projectDir);
+                    }});
+                }
                 ctxItems.push(null);
             }
             if (isBassm && !isEntry) {
@@ -691,6 +746,54 @@ async function loadProjectFile(filename) {
         renderOutline(buildOutline(source));
     } catch (err) {
         logLine(`Cannot open ${filename}: ${err.message}`, 'error');
+    }
+}
+
+// ── File Dispatcher ─────────────────────────────────���────────────────────────
+// Opens a project file in the appropriate editor based on its extension.
+
+const _EXT_VIEW_MAP = {
+    bassm: 'code',
+    bnode: 'node-editor',
+    png:   'image-editor',
+    jpg:   'image-editor',
+    jpeg:  'image-editor',
+    bmp:   'image-editor',
+    wav:   'sound-editor',
+    mp3:   'sound-editor',
+    ogg:   'sound-editor',
+    aiff:  'sound-editor',
+    '8svx':'sound-editor',
+    tset:  'tileset-editor',
+    bmap:  'tilemap-editor',
+    bfnt:  'font-editor',
+};
+
+async function _openFile(relativePath) {
+    if (!_projectDir || !relativePath) return;
+    const ext  = relativePath.split('.').pop().toLowerCase();
+    const view = _EXT_VIEW_MAP[ext];
+
+    if (!view) {
+        logLine(`No editor for .${ext} files`, 'warn');
+        return;
+    }
+
+    if (view === 'code') {
+        await loadProjectFile(relativePath);
+        switchView('code');
+        return;
+    }
+
+    switchView(view);
+
+    // Load file into the target editor
+    if (view === 'image-editor' && window.imgOpenFile) {
+        await window.imgOpenFile(relativePath, _projectDir);
+    } else if (view === 'font-editor' && window.fntOpenBfntFile) {
+        await window.fntOpenBfntFile(relativePath, _projectDir);
+    } else if (view === 'sound-editor' && window.sndOpenFile) {
+        await window.sndOpenFile(relativePath, _projectDir);
     }
 }
 
@@ -846,6 +949,13 @@ document.addEventListener('keydown', async e => {
         return;
     }
 
+    // F7 — Build only (no emulator)
+    if (e.key === 'F7' && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        document.getElementById('btn-build').click();
+        return;
+    }
+
     // Ctrl+S / Cmd+S — Save current file
     if ((e.ctrlKey || e.metaKey) && e.key === 's' && !e.altKey) {
         e.preventDefault();
@@ -988,15 +1098,12 @@ bassm.init()
             _projectFiles = await window.electronAPI.listFiles({ projectDir: _projectDir });
             renderProjectTree();
             
-            const btnToggle = document.getElementById('btn-toggle-editor');
             if (_isVBEProject) {
-                document.body.classList.add('state-node-editor');
-                btnToggle.style.display = 'none'; // Hard Block: Keine Code UI
+                switchView('node-editor');
                 if (!_nodeEditor) _nodeEditor = new BASSMNodeEditor();
                 // TODO in future iteration: deserialize result.source JSON into _nodeEditor
             } else {
-                document.body.classList.remove('state-node-editor');
-                btnToggle.style.display = 'none'; // Aktuell ist Hybrid nicht gewollt ("Code oder VBE?")
+                switchView('code');
                 window._monacoEditor.setValue(result.source ?? '');
                 renderOutline(buildOutline(result.source ?? ''));
             }
@@ -1015,17 +1122,28 @@ bassm.init()
         document.getElementById('welcome-btn-open').addEventListener('click',
             () => btnOpen.click());
 
-        document.getElementById('btn-assets').addEventListener('click', () => {
-            window.electronAPI.openAssetManager({ projectDir: _projectDir });
+        document.getElementById('btn-toggle-editor').addEventListener('click', () => {
+            if (!_projectDir) return;
+            if (_currentView === 'node-editor') {
+                switchView('code');
+            } else {
+                switchView('node-editor');
+                if (!_nodeEditor) _nodeEditor = new BASSMNodeEditor();
+            }
         });
 
-        document.getElementById('btn-toggle-editor').addEventListener('click', () => {
-            // Deprecated flow for manual toggling, hidden UI-seitig
+        document.getElementById('btn-tilemap-editor').addEventListener('click', () => {
             if (!_projectDir) return;
-            document.body.classList.toggle('state-node-editor');
-            if (document.body.classList.contains('state-node-editor') && !_nodeEditor) {
-                _nodeEditor = new BASSMNodeEditor();
+            if (_currentView === 'tilemap-editor') {
+                switchView('code');
+            } else {
+                switchView('tilemap-editor');
             }
+        });
+
+        document.getElementById('btn-save').addEventListener('click', () => {
+            // Trigger the existing Ctrl+S handler
+            document.dispatchEvent(new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }));
         });
 
         // Root-level context menu on the project panel header
@@ -1102,7 +1220,8 @@ bassm.init()
             renderProjectTree();
         });
 
-        btnRun.addEventListener('click', async () => {
+        // ── Shared build logic ─────────────────────────────────────────
+        async function _doBuild({ runEmulator = false } = {}) {
             if (_isVBEProject) {
                 alert('VBE Compilation zu BASSM ist im aktuellen Build noch nicht implementiert.');
                 return;
@@ -1111,6 +1230,7 @@ bassm.init()
             console_.innerHTML = '';
             _clearMarkers();
             btnRun.disabled = true;
+            document.getElementById('btn-build').disabled = true;
             status.textContent = 'Compiling…';
 
             // Auto-save current file before building
@@ -1123,7 +1243,7 @@ bassm.init()
             }
 
             try {
-                const { asm, binary } = await bassm.run(source, _projectDir);
+                const { asm, binary } = await bassm.run(source, _projectDir, { skipEmulator: !runEmulator });
                 _lastBinary = binary;
                 _clearMarkers();
 
@@ -1142,15 +1262,23 @@ bassm.init()
                     logLine(`Build OK — ${lineCount} lines`, 'info');
                 }
 
-                status.textContent = 'Running';
+                if (runEmulator) {
+                    status.textContent = 'Running';
+                } else {
+                    status.textContent = 'Build OK';
+                }
             } catch (err) {
                 _setErrorMarker(err.message);
                 logLine(err.message, 'error');
                 status.textContent = 'Error';
             } finally {
                 btnRun.disabled = false;
+                document.getElementById('btn-build').disabled = false;
             }
-        });
+        }
+
+        btnRun.addEventListener('click', () => _doBuild({ runEmulator: true }));
+        document.getElementById('btn-build').addEventListener('click', () => _doBuild({ runEmulator: false }));
     })
     .catch(err => {
         console.error('[BASSM] Init failed:', err);
