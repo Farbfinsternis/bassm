@@ -574,7 +574,7 @@ im markierten Bereich wird priorisiert.
 **Ziel:** Vollständiger Tilemap-Editor im Main Panel. Der Tileset-Editor wird
 darin eingebettet, da jede Tilemap genau ein Tileset hat.
 
-### T4.1: Tilemap Editor HTML
+### T4.1: Tilemap Editor HTML ✅
 - Panel `#tilemap-editor-panel` in `index.html`:
   - View-Toolbar: `[New Tilemap]` `[Open .bmap]` `[Save .bmap]` | Map-Settings (W×H, Tile W×H) | Status
   - Content: **Split-View**
@@ -584,7 +584,7 @@ darin eingebettet, da jede Tilemap genau ein Tileset hat.
   - Tileset-Zone oben links: Drop-Target + `[Load Tileset]` Button
   - "Edit Tileset" Button → wechselt in Tileset Sub-View
 
-### T4.2: Tileset als Sub-View
+### T4.2: Tileset als Sub-View ✅
 - Der bisherige Tileset Editor (`#tileset-editor-panel`) wird zur Sub-View
   des Tilemap-Editors.
 - Aufruf: Button "Edit Tileset" im Tilemap-Editor, oder Doppelklick auf `.tset`
@@ -601,24 +601,24 @@ darin eingebettet, da jede Tilemap genau ein Tileset hat.
   3. "Save & Use" → speichert `.tset`, kehrt zum Tilemap-Editor zurück,
      Tileset ist geladen
 
-### T4.4: Tilemap Editor JS
+### T4.4: Tilemap Editor JS ✅
 - Neues Modul `app/src/tilemap-editor.js`
 - Konvertierungslogik aus `asset-manager.js` extrahieren: `parseTilemapCSV()`,
   `csvToBmap()`.
 - Erweitern: visuelles Painting auf dem Grid (Click → Tile setzen).
 - `initTilemapEditor()`, `openTilemapFile(relativePath)`, `openNewTilemap()`.
 
-### T4.5: Tileset-Editor Refactor
+### T4.5: Tileset-Editor Refactor ✅
 - `tileset-editor.js` anpassen:
   - `openTsetFromTree(relativePath)` — lädt .tset direkt aus Projektverzeichnis
   - Kommunikation mit Tilemap-Editor: Callback `onTilesetReady(tsetData)`
   - "Back to Tilemap" Button nur sichtbar wenn aus Tilemap-Editor geöffnet.
 
-### T4.6: CSV-Import
+### T4.6: CSV-Import ✅
 - Tilemap-Editor: Button "Import CSV" → lädt CSV-Textdatei, parsed zu Grid.
 - Bisherige `parseTilemapCSV()` wiederverwenden.
 
-### T4.7: Tree-Integration
+### T4.7: Tree-Integration ✅
 - Doppelklick `.bmap` → `switchView('tilemap-editor')` + Datei laden.
 - Doppelklick `.tset` → `switchView('tileset-editor')` + Datei laden.
 - Toolbar-Button "Tilemap-Editor" → `switchView('tilemap-editor')` (leerer Editor).
@@ -629,12 +629,12 @@ darin eingebettet, da jede Tilemap genau ein Tileset hat.
 
 **Ziel:** Alle Editoren sehen identisch aus. Drag & Drop überall. Keyboard-Shortcuts.
 
-### T5.1: Einheitliche Editor-Toolbar CSS
+### T5.1: Einheitliche Editor-Toolbar CSS ✅
 - Gemeinsame CSS-Klasse `.view-toolbar` für alle View-Toolbars.
 - Gleiche Abstände, Button-Styles, Separator-Styles.
 - Gemeinsame `.view-content`, `.view-sidebar`, `.view-action-bar` Klassen.
 
-### T5.2: Globaler Drag & Drop Handler
+### T5.2: Globaler Drag & Drop Handler ✅
 - In `bassm.js`: Dateien aus dem Tree auf das Main Panel droppen.
 - Erkennt Dateityp und öffnet den passenden Editor.
 - Drop-Overlay mit Typ-spezifischem Hint-Text.
@@ -650,7 +650,7 @@ darin eingebettet, da jede Tilemap genau ein Tileset hat.
 - Beispiel: `Code > main.bassm` oder `Image Editor > gfx/player.png`
 - Klickbar → zurück zum Code Editor.
 
-### T5.5: Konsolen-Integration
+### T5.5: Konsolen-Integration ✅
 - Alle Editoren loggen Status-Meldungen in die BASSM-Konsole.
 - Konvertierungs-Erfolg: `"[Image] Converted player.png → player.iraw + player.pal (3.2 KB Chip RAM)"`
 - Fehler: `"[Image] Error: player.png — unsupported bit depth 48"` etc.
@@ -721,14 +721,14 @@ das Format das `LoadFont` erwartet.
 | 1 ✅ | Phase 0 | View-System steht, Toolbar umgebaut, Dispatcher funktioniert |
 | 2 ✅ | Phase 1 (T1.1–T1.5) | Image Editor im Main Panel, .iraw + .pal |
 | 3 ✅ | Phase 1 (T1.6–T1.9) | Fehler-Logging, Save-Dialog, IPC Cleanup |
-| 4 | Phase 1b (T1b.1 + T1b.5) | Neues Layout (vertikale Palette, gestapelt, 1:1-Toggle), Copy-Code weg |
-| 5 | Phase 1b (T1b.2 + T1b.3) | Resize/Crop mit Aspect-Lock und Origin-Grid, Auto-Reconvert |
-| 6 | Phase 1b (T1b.4) | Fullscreen OCS Preview mit interaktiven Controls |
-| 7 | Phase 1b (T1b.6) | Point of Interest Editor (Pinsel, Feathering, gewichtete Palette) |
+| 4 ✅ | Phase 1b (T1b.1 + T1b.5) | Neues Layout (vertikale Palette, gestapelt, 1:1-Toggle), Copy-Code weg |
+| 5 ✅ | Phase 1b (T1b.2 + T1b.3) | Resize/Crop mit Aspect-Lock und Origin-Grid, Auto-Reconvert |
+| 6 ✅ | Phase 1b (T1b.4) | Fullscreen OCS Preview mit interaktiven Controls |
+| 7 ✅ | Phase 1b (T1b.6) | Point of Interest Editor (Pinsel, Feathering, gewichtete Palette) |
 | 8 ✅ | Phase 2 | Sound-Platzhalter |
 | 9 ✅ | Phase 3 | Asset Manager Fenster + Code komplett entfernt |
-| 10 | Phase 4 (T4.1–T4.3) | Tilemap-Editor Grundgerüst + Tileset Sub-View |
-| 11 | Phase 4 (T4.4–T4.7) | Tilemap-Editor komplett, Tree-Integration |
-| 12 | Phase 5 | UX Polish, Shortcuts, Konsistenz |
+| 10 ✅ | Phase 4 (T4.1–T4.3) | Tilemap-Editor Grundgerüst + Tileset Sub-View |
+| 11 ✅ | Phase 4 (T4.4–T4.7) | Tilemap-Editor komplett, Tree-Integration |
+| 12 (partial) | Phase 5 (T5.2, T5.5) | Drag & Drop, Konsolen-Integration |
 | 13 ✅ | Phase 6 | Font-Konverter im Main Panel |
 

@@ -16,6 +16,28 @@ let _tseDepth      = 3;
 let _tseTileCount  = 0;
 let _tseFilename   = '';
 
+// ── Zoom & Pan state ────────────────────────────────────────────────────────
+let _tseZoom = 1;
+let _tsePanX = 0;
+let _tsePanY = 0;
+let _tsePanning = false;
+let _tsePanStartX = 0;
+let _tsePanStartY = 0;
+let _tsePanOriginX = 0;
+let _tsePanOriginY = 0;
+
+function _tseApplyTransform() {
+    const canvas = document.getElementById('tse-canvas');
+    canvas.style.transform = `translate(${_tsePanX}px, ${_tsePanY}px) scale(${_tseZoom})`;
+}
+
+function _tseResetView() {
+    _tseZoom = 1;
+    _tsePanX = 0;
+    _tsePanY = 0;
+    _tseApplyTransform();
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function _tseOcsToRgb(ocs) {
@@ -135,6 +157,17 @@ function _tseRender() {
     }
 
     _tseUpdateProps();
+    _tseCenterCanvas();
+}
+
+function _tseCenterCanvas() {
+    const area = document.getElementById('tse-canvas-area');
+    const canvas = document.getElementById('tse-canvas');
+    const rect = area.getBoundingClientRect();
+    _tseZoom = 1;
+    _tsePanX = Math.round((rect.width  - canvas.width)  / 2);
+    _tsePanY = Math.round((rect.height - canvas.height) / 2);
+    _tseApplyTransform();
 }
 
 // ── Update sidebar properties ────────────────────────────────────────────────
@@ -173,8 +206,10 @@ async function _tseImportPng() {
 
             _tseQuantise();
             _tseRender();
+            if (window.logLine) window.logLine(`[Tileset] Imported ${file.name} (${width}\u00d7${height}, ${_tseTileCount} tiles, ${_tseDepth}bpp)`, 'info');
         } catch (err) {
             document.getElementById('tse-status').textContent = `Error: ${err.message}`;
+            if (window.logLine) window.logLine(`[Tileset] Import failed: ${err.message}`, 'error');
         }
     });
     input.click();
@@ -241,11 +276,112 @@ async function _tseSave() {
     });
     if (!result.saved) return;
 
-    document.getElementById('tse-status').textContent =
-        `Saved: ${result.filePath.replace(/.*[/\\]/, '')}`;
+    const savedName = result.filePath.replace(/.*[/\\]/, '');
+    document.getElementById('tse-status').textContent = `Saved: ${savedName}`;
+    if (window.logLine) {
+        const rowbytes  = Math.ceil(_tseTileSize / 16) * 2;
+        const chipBytes = (1 << _tseDepth) * 2 + nTiles * _tseTileSize * rowbytes * _tseDepth;
+        window.logLine(`[Tileset] Saved ${savedName} (${nTiles} tiles, ${_tseTileSize}\u00d7${_tseTileSize}, ${_tseDepth}bpp, ${(chipBytes / 1024).toFixed(1)} KB)`, 'info');
+    }
 }
 
-// ── Load .tset ───────────────────────────────────────────────────────────────
+// ── Parse + apply .tset buffer ───────────────────────────────────────────────
+
+function _tseApplyBuffer(buf, filename) {
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+
+    // Validate header
+    if (buf.length < 12 ||
+        buf[0] !== 0x54 || buf[1] !== 0x53 || buf[2] !== 0x45 || buf[3] !== 0x54) {
+        throw new Error('Not a valid .tset file');
+    }
+    if (buf[4] !== 1) throw new Error(`Unsupported .tset version ${buf[4]}`);
+
+    const tileSize  = buf[5];
+    const tileCount = view.getUint16(6, false);
+    const depth     = buf[8];
+
+    if (![8, 16, 32].includes(tileSize)) throw new Error(`Invalid tile_size ${tileSize}`);
+    if (depth < 1 || depth > 5) throw new Error(`Invalid depth ${depth}`);
+
+    const colorCount  = 1 << depth;
+    const paletteSize = colorCount * 2;
+    const rowbytes    = Math.ceil(tileSize / 16) * 2;
+    const imageSize   = tileCount * tileSize * rowbytes * depth;
+    const palOffset   = 12;
+    const imgOffset   = 12 + paletteSize;
+
+    if (buf.length < imgOffset + imageSize) throw new Error('File truncated');
+
+    // Extract palette
+    for (let i = 0; i < 32; i++) _tsePalette[i] = 0;
+    for (let i = 0; i < colorCount; i++) {
+        _tsePalette[i] = view.getUint16(palOffset + i * 2, false);
+    }
+
+    // Decode interleaved planar → indexed pixels (one tile-wide column, all tiles stacked)
+    const totalH = tileCount * tileSize;
+    const indices = new Uint8Array(tileSize * totalH);
+    for (let y = 0; y < totalH; y++) {
+        for (let plane = 0; plane < depth; plane++) {
+            const rowBase = imgOffset + (y * depth + plane) * rowbytes;
+            for (let x = 0; x < tileSize; x++) {
+                if ((buf[rowBase + (x >> 3)] >> (7 - (x & 7))) & 1) {
+                    indices[y * tileSize + x] |= 1 << plane;
+                }
+            }
+        }
+    }
+
+    // Reconstruct a grid-layout ImageData for display
+    const gridCols = Math.max(1, Math.floor(Math.sqrt(tileCount)));
+    const gridRows = Math.ceil(tileCount / gridCols);
+    const imgW = gridCols * tileSize;
+    const imgH = gridRows * tileSize;
+
+    const gridIndices = new Uint8Array(imgW * imgH);
+    for (let t = 0; t < tileCount; t++) {
+        const gr = Math.floor(t / gridCols);
+        const gc = t % gridCols;
+        for (let py = 0; py < tileSize; py++) {
+            for (let px = 0; px < tileSize; px++) {
+                gridIndices[(gr * tileSize + py) * imgW + gc * tileSize + px] =
+                    indices[t * tileSize * tileSize + py * tileSize + px];
+            }
+        }
+    }
+
+    // Build ImageData for _tseRender compatibility
+    const imgData = new ImageData(imgW, imgH);
+    for (let i = 0; i < gridIndices.length; i++) {
+        const [r, g, b] = _tseOcsToRgb(_tsePalette[gridIndices[i]]);
+        imgData.data[i * 4]     = r;
+        imgData.data[i * 4 + 1] = g;
+        imgData.data[i * 4 + 2] = b;
+        imgData.data[i * 4 + 3] = 255;
+    }
+
+    // Update state
+    _tseTileSize  = tileSize;
+    _tseDepth     = depth;
+    _tseTileCount = tileCount;
+    _tseWidth     = imgW;
+    _tseHeight    = imgH;
+    _tseImageData = imgData;
+    _tseIndices   = gridIndices;
+    _tseFilename  = filename;
+
+    // Sync UI controls
+    document.getElementById('tse-sel-tilesize').value = tileSize;
+    document.getElementById('tse-sel-depth').value    = depth;
+
+    document.getElementById('tse-status').textContent =
+        `${filename} — ${tileCount} tiles, ${tileSize}×${tileSize}, ${depth}bpp`;
+
+    _tseRender();
+}
+
+// ── Load .tset (dialog) ──────────────────────────────────────────────────────
 
 async function _tseLoad() {
     const input = document.createElement('input');
@@ -256,106 +392,36 @@ async function _tseLoad() {
         if (!file) return;
         try {
             const arrayBuf = await file.arrayBuffer();
-            const buf  = new Uint8Array(arrayBuf);
-            const view = new DataView(arrayBuf);
-
-            // Validate header
-            if (buf.length < 12 ||
-                buf[0] !== 0x54 || buf[1] !== 0x53 || buf[2] !== 0x45 || buf[3] !== 0x54) {
-                throw new Error('Not a valid .tset file');
-            }
-            if (buf[4] !== 1) throw new Error(`Unsupported .tset version ${buf[4]}`);
-
-            const tileSize  = buf[5];
-            const tileCount = view.getUint16(6, false);
-            const depth     = buf[8];
-            const flags     = buf[9];
-
-            if (![8, 16, 32].includes(tileSize)) throw new Error(`Invalid tile_size ${tileSize}`);
-            if (depth < 1 || depth > 5) throw new Error(`Invalid depth ${depth}`);
-
-            const colorCount  = 1 << depth;
-            const paletteSize = colorCount * 2;
-            const rowbytes    = Math.ceil(tileSize / 16) * 2;
-            const imageSize   = tileCount * tileSize * rowbytes * depth;
-            const palOffset   = 12;
-            const imgOffset   = 12 + paletteSize;
-
-            if (buf.length < imgOffset + imageSize) throw new Error('File truncated');
-
-            // Extract palette
-            for (let i = 0; i < 32; i++) _tsePalette[i] = 0;
-            for (let i = 0; i < colorCount; i++) {
-                _tsePalette[i] = view.getUint16(palOffset + i * 2, false);
-            }
-
-            // Decode interleaved planar → indexed pixels (one tile-wide column, all tiles stacked)
-            const totalH = tileCount * tileSize;
-            const indices = new Uint8Array(tileSize * totalH);
-            for (let y = 0; y < totalH; y++) {
-                for (let plane = 0; plane < depth; plane++) {
-                    const rowBase = imgOffset + (y * depth + plane) * rowbytes;
-                    for (let x = 0; x < tileSize; x++) {
-                        if ((buf[rowBase + (x >> 3)] >> (7 - (x & 7))) & 1) {
-                            indices[y * tileSize + x] |= 1 << plane;
-                        }
-                    }
-                }
-            }
-
-            // Reconstruct a grid-layout ImageData for display
-            // Tiles are stacked vertically in the file; arrange in a square-ish grid
-            const gridCols = Math.max(1, Math.floor(Math.sqrt(tileCount)));
-            const gridRows = Math.ceil(tileCount / gridCols);
-            const imgW = gridCols * tileSize;
-            const imgH = gridRows * tileSize;
-
-            const gridIndices = new Uint8Array(imgW * imgH);
-            for (let t = 0; t < tileCount; t++) {
-                const gr = Math.floor(t / gridCols);
-                const gc = t % gridCols;
-                for (let py = 0; py < tileSize; py++) {
-                    for (let px = 0; px < tileSize; px++) {
-                        gridIndices[(gr * tileSize + py) * imgW + gc * tileSize + px] =
-                            indices[t * tileSize * tileSize + py * tileSize + px];
-                    }
-                }
-            }
-
-            // Build ImageData for _tseRender compatibility
-            const imgData = new ImageData(imgW, imgH);
-            for (let i = 0; i < gridIndices.length; i++) {
-                const [r, g, b] = _tseOcsToRgb(_tsePalette[gridIndices[i]]);
-                imgData.data[i * 4]     = r;
-                imgData.data[i * 4 + 1] = g;
-                imgData.data[i * 4 + 2] = b;
-                imgData.data[i * 4 + 3] = 255;
-            }
-
-            // Update state
-            _tseTileSize  = tileSize;
-            _tseDepth     = depth;
-            _tseTileCount = tileCount;
-            _tseWidth     = imgW;
-            _tseHeight    = imgH;
-            _tseImageData = imgData;
-            _tseIndices   = gridIndices;
-            _tseFilename  = file.name;
-
-            // Sync UI controls
-            document.getElementById('tse-sel-tilesize').value = tileSize;
-            document.getElementById('tse-sel-depth').value    = depth;
-
-            document.getElementById('tse-status').textContent =
-                `${file.name} — ${tileCount} tiles, ${tileSize}×${tileSize}, ${depth}bpp`;
-
-            _tseRender();
+            _tseApplyBuffer(new Uint8Array(arrayBuf), file.name);
+            if (window.logLine) window.logLine(`[Tileset] Loaded ${file.name} (${_tseTileCount} tiles, ${_tseTileSize}\u00d7${_tseTileSize}, ${_tseDepth}bpp)`, 'info');
         } catch (err) {
             document.getElementById('tse-status').textContent = `Error: ${err.message}`;
+            if (window.logLine) window.logLine(`[Tileset] Load failed: ${err.message}`, 'error');
         }
     });
     input.click();
 }
+
+// ── Open .tset from Project Tree ─────────────────────────────────────────────
+
+async function tseOpenFromTree(relativePath, projectDir) {
+    const name = relativePath.replace(/\\/g, '/').split('/').pop();
+    document.getElementById('tse-status').textContent = `Loading ${name}\u2026`;
+
+    // Hide Back button when opened standalone from tree
+    document.getElementById('tse-btn-back-tilemap').style.display = 'none';
+
+    try {
+        const bytes = await window.electronAPI.readAsset({ projectDir, path: relativePath });
+        _tseApplyBuffer(new Uint8Array(bytes), name);
+        if (window.logLine) window.logLine(`[Tileset] Opened ${name}`, 'info');
+    } catch (err) {
+        document.getElementById('tse-status').textContent = `Error: ${err.message}`;
+        if (window.logLine) window.logLine(`[Tileset] Failed to load '${name}': ${err.message}`, 'error');
+    }
+}
+
+window.tseOpenFromTree = tseOpenFromTree;
 
 // ── Event wiring ─────────────────────────────────────────────────────────────
 
@@ -367,6 +433,44 @@ document.getElementById('tse-btn-import').addEventListener('click', _tseImportPn
 document.getElementById('tse-btn-load').addEventListener('click', _tseLoad);
 document.getElementById('tse-btn-save').addEventListener('click', _tseSave);
 
+// ── Back to Tilemap (Sub-View navigation) ────────────────────────────────────
+
+function _tseGetCurrentTilesetData() {
+    if (!_tseIndices || _tseTileCount === 0) return null;
+    // Re-slice into stacked format for the tilemap editor
+    const ts = _tseTileSize;
+    const cols = Math.floor(_tseWidth / ts);
+    const rows = Math.floor(_tseHeight / ts);
+    const nTiles = cols * rows;
+    const totalH = nTiles * ts;
+    const stacked = new Uint8Array(ts * totalH);
+    let dst = 0;
+    for (let tr = 0; tr < rows; tr++) {
+        for (let tc = 0; tc < cols; tc++) {
+            for (let py = 0; py < ts; py++) {
+                for (let px = 0; px < ts; px++) {
+                    stacked[dst++] = _tseIndices[(tr * ts + py) * _tseWidth + tc * ts + px];
+                }
+            }
+        }
+    }
+    return {
+        palette: [..._tsePalette],
+        tileCount: nTiles,
+        tileSize: ts,
+        depth: _tseDepth,
+        indices: stacked,
+    };
+}
+
+document.getElementById('tse-btn-back-tilemap').addEventListener('click', () => {
+    const data = _tseGetCurrentTilesetData();
+    const name = _tseFilename || 'tileset.tset';
+    if (window.tmapOnTilesetReturn) {
+        window.tmapOnTilesetReturn(data, name);
+    }
+});
+
 document.getElementById('tse-sel-tilesize').addEventListener('change', (e) => {
     _tseTileSize = parseInt(e.target.value);
     if (_tseImageData) { _tseQuantise(); _tseRender(); }
@@ -376,3 +480,55 @@ document.getElementById('tse-sel-depth').addEventListener('change', (e) => {
     _tseDepth = parseInt(e.target.value);
     if (_tseImageData) { _tseQuantise(); _tseRender(); }
 });
+
+// ── Zoom & Pan ──────────────────────────────────────────────────────────────
+
+const _tseCanvasArea = document.getElementById('tse-canvas-area');
+
+// Wheel zoom — zoom towards cursor position
+_tseCanvasArea.addEventListener('wheel', e => {
+    e.preventDefault();
+    const rect = _tseCanvasArea.getBoundingClientRect();
+    // Cursor position relative to the container
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    // Point under cursor in pre-zoom canvas space
+    const wx = (mx - _tsePanX) / _tseZoom;
+    const wy = (my - _tsePanY) / _tseZoom;
+
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    _tseZoom = Math.min(32, Math.max(0.1, _tseZoom * factor));
+
+    // Adjust pan so the point under the cursor stays fixed
+    _tsePanX = mx - wx * _tseZoom;
+    _tsePanY = my - wy * _tseZoom;
+    _tseApplyTransform();
+}, { passive: false });
+
+// Middle mouse pan
+_tseCanvasArea.addEventListener('mousedown', e => {
+    if (e.button !== 1) return; // middle button only
+    e.preventDefault();
+    _tsePanning = true;
+    _tsePanStartX = e.clientX;
+    _tsePanStartY = e.clientY;
+    _tsePanOriginX = _tsePanX;
+    _tsePanOriginY = _tsePanY;
+    _tseCanvasArea.style.cursor = 'grabbing';
+});
+
+window.addEventListener('mousemove', e => {
+    if (!_tsePanning) return;
+    _tsePanX = _tsePanOriginX + (e.clientX - _tsePanStartX);
+    _tsePanY = _tsePanOriginY + (e.clientY - _tsePanStartY);
+    _tseApplyTransform();
+});
+
+window.addEventListener('mouseup', e => {
+    if (e.button !== 1 || !_tsePanning) return;
+    _tsePanning = false;
+    _tseCanvasArea.style.cursor = '';
+});
+
+// Prevent default middle-click scroll behavior in the canvas area
+_tseCanvasArea.addEventListener('auxclick', e => { if (e.button === 1) e.preventDefault(); });

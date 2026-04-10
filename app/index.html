@@ -47,6 +47,8 @@
 			<!-- Centre: Welcome screen / Monaco Editor -->
 			<div id="editor-panel">
 
+				<div id="editor-drop-overlay"><span id="editor-drop-hint"></span></div>
+
 				<div id="welcome-panel">
 					<div id="welcome-inner">
 						<img id="welcome-logo" src="img/logo.png" alt="BASSM" />
@@ -77,7 +79,8 @@
 
 				<!-- Tileset Editor -->
 				<div id="tileset-editor-panel">
-					<div id="tse-toolbar">
+					<div class="view-toolbar" id="tse-toolbar">
+						<button id="tse-btn-back-tilemap" class="tse-back-btn" title="Back to Tilemap Editor" style="display:none"><i class="codicon codicon-arrow-left"></i> Back to Tilemap</button>
 						<button id="tse-btn-import" title="Import PNG"><i class="codicon codicon-file-media"></i> Import PNG</button>
 						<button id="tse-btn-load" title="Open .tset"><i class="codicon codicon-folder-opened"></i> Open</button>
 						<button id="tse-btn-save" title="Save .tset"><i class="codicon codicon-save"></i> Save</button>
@@ -98,26 +101,26 @@
 								<option value="5">5</option>
 							</select>
 						</label>
-						<span id="tse-status"></span>
+						<span class="view-status" id="tse-status"></span>
 					</div>
 					<div id="tse-body">
 						<div id="tse-canvas-area">
 							<canvas id="tse-canvas"></canvas>
 						</div>
-						<div id="tse-sidebar">
-							<div class="tse-section">
-								<div class="tse-section-title">Properties</div>
+						<div class="view-sidebar" id="tse-sidebar">
+							<div class="view-section">
+								<div class="view-section-title">Properties</div>
 								<div id="tse-props">
-									<div class="tse-prop-row"><span>Tile</span><span id="tse-prop-index">—</span></div>
-									<div class="tse-prop-row"><span>Tiles</span><span id="tse-prop-count">—</span></div>
-									<div class="tse-prop-row"><span>Image</span><span id="tse-prop-imgsize">—</span></div>
+									<div class="view-prop-row"><span>Tile</span><span id="tse-prop-index">—</span></div>
+									<div class="view-prop-row"><span>Tiles</span><span id="tse-prop-count">—</span></div>
+									<div class="view-prop-row"><span>Image</span><span id="tse-prop-imgsize">—</span></div>
 								</div>
 							</div>
-							<div class="tse-section">
-								<div class="tse-section-title">Budget</div>
+							<div class="view-section">
+								<div class="view-section-title">Budget</div>
 								<div id="tse-budget">
-									<div class="tse-prop-row"><span>Chip RAM</span><span id="tse-budget-chip">—</span></div>
-									<div class="tse-prop-row"><span>% of 512 KB</span><span id="tse-budget-pct">—</span></div>
+									<div class="view-prop-row"><span>Chip RAM</span><span id="tse-budget-chip">—</span></div>
+									<div class="view-prop-row"><span>% of 512 KB</span><span id="tse-budget-pct">—</span></div>
 								</div>
 							</div>
 						</div>
@@ -177,7 +180,7 @@
 								</div>
 							</div>
 						</div>
-						<div id="img-sidebar">
+						<div class="view-sidebar" id="img-sidebar">
 							<div class="view-section">
 								<div class="view-section-title">Properties</div>
 								<div class="view-prop-row"><span>File</span><span id="img-prop-file">—</span></div>
@@ -234,7 +237,7 @@
 								</div>
 								<button id="img-poi-sidebar-clear" class="img-dim-action">Clear Mask</button>
 							</div>
-							<div class="view-section img-actions">
+							<div class="view-section view-actions">
 								<button id="img-btn-convert" disabled>Convert &amp; Save</button>
 								<button id="img-btn-export-iff" disabled>Export IFF</button>
 							</div>
@@ -368,7 +371,7 @@
 								</div>
 							</div>
 						</div>
-						<div id="snd-sidebar">
+						<div class="view-sidebar" id="snd-sidebar">
 							<div class="view-section">
 								<div class="view-section-title">Properties</div>
 								<div class="view-prop-row"><span>File</span><span id="snd-prop-file">&mdash;</span></div>
@@ -382,7 +385,7 @@
 								<div class="view-prop-row"><span>Chip RAM</span><span id="snd-prop-chip">&mdash;</span></div>
 								<div class="view-prop-row"><span>% of 512 KB</span><span id="snd-prop-pct">&mdash;</span></div>
 							</div>
-							<div class="view-section snd-actions">
+							<div class="view-section view-actions">
 								<button id="snd-btn-convert" disabled>Convert &amp; Save</button>
 								<button id="snd-btn-copy-code" disabled>Copy Code</button>
 							</div>
@@ -394,10 +397,67 @@
 				<div id="tilemap-editor-panel">
 					<div class="view-toolbar">
 						<span class="view-title">Tilemap Editor</span>
+						<button id="tmap-btn-new" title="New Tilemap">New</button>
+						<button id="tmap-btn-import-csv" title="Import CSV">Import CSV</button>
+						<button id="tmap-btn-save" title="Save .bmap" disabled>Save</button>
+						<span class="toolbar-sep"></span>
+						<label>Map W <input type="number" id="tmap-inp-mapw" min="1" max="1024" value="20" class="tmap-dim-input"></label>
+						<label>Map H <input type="number" id="tmap-inp-maph" min="1" max="1024" value="15" class="tmap-dim-input"></label>
+						<label>Tile W <select id="tmap-sel-tilew">
+							<option value="8">8</option>
+							<option value="16" selected>16</option>
+							<option value="32">32</option>
+						</select></label>
+						<label>Tile H <select id="tmap-sel-tileh">
+							<option value="8">8</option>
+							<option value="16" selected>16</option>
+							<option value="32">32</option>
+						</select></label>
 						<span class="view-status" id="tmap-status">No tilemap loaded</span>
 					</div>
-					<div class="view-content">
-						<div class="view-placeholder">Create a new tilemap or open an existing .bmap file.</div>
+					<div id="tmap-body">
+						<!-- Left: Tile Palette -->
+						<div id="tmap-tile-palette">
+							<div class="tmap-palette-header">
+								<span>Tiles</span>
+								<button id="tmap-btn-new-tileset" title="Create a new Tileset in the Tileset Editor">New</button>
+								<button id="tmap-btn-load-tileset" title="Load Tileset (.tset)">Load</button>
+								<button id="tmap-btn-edit-tileset" title="Edit Tileset" disabled>Edit</button>
+							</div>
+							<div id="tmap-tileset-drop" class="tmap-drop-zone">
+								<canvas id="tmap-canvas-tileset"></canvas>
+								<div class="tmap-drop-hint" id="tmap-tileset-hint">Drop a .tset here or click "Load Tileset"</div>
+							</div>
+						</div>
+						<!-- Center: Map Canvas -->
+						<div id="tmap-map-area">
+							<div class="view-placeholder" id="tmap-placeholder">Create a new tilemap or open an existing .bmap file.</div>
+							<div id="tmap-map-scroll" style="display:none">
+								<canvas id="tmap-canvas-map"></canvas>
+								<canvas id="tmap-canvas-ghost"></canvas>
+							</div>
+						</div>
+						<!-- Right: Sidebar -->
+						<div class="view-sidebar" id="tmap-sidebar">
+							<div class="view-section">
+								<div class="view-section-title">Properties</div>
+								<div class="view-prop-row"><span>Map Size</span><span id="tmap-prop-mapsize">&mdash;</span></div>
+								<div class="view-prop-row"><span>Tile Size</span><span id="tmap-prop-tilesize">&mdash;</span></div>
+								<div class="view-prop-row"><span>Tileset</span><span id="tmap-prop-tileset">&mdash;</span></div>
+								<div class="view-prop-row"><span>Tile Count</span><span id="tmap-prop-tilecount">&mdash;</span></div>
+								<div class="view-prop-row"><span>Unique Used</span><span id="tmap-prop-unique">&mdash;</span></div>
+							</div>
+							<div class="view-section">
+								<div class="view-section-title">Budget</div>
+								<div class="view-prop-row"><span>Map Data</span><span id="tmap-prop-mapdata">&mdash;</span></div>
+								<div class="view-prop-row"><span>Chip RAM</span><span id="tmap-prop-chip">&mdash;</span></div>
+								<div class="view-prop-row"><span>% of 512 KB</span><span id="tmap-prop-pct">&mdash;</span></div>
+							</div>
+							<div class="view-section view-actions">
+								<button id="tmap-btn-save-bmap" disabled>Save .bmap</button>
+								<button id="tmap-btn-copy-code" disabled>Copy Code</button>
+							</div>
+						</div>
 					</div>
 				</div>
 
@@ -471,6 +531,7 @@
 		<script src="src/image-editor.js"></script>
 		<script src="src/font-editor.js"></script>
 		<script src="src/sound-editor.js"></script>
+		<script src="src/tilemap-editor.js"></script>
 		<script src="src/tileset-editor.js"></script>
 		<script type="module" src="src/node-editor.js"></script>
 		<script type="module" src="src/bassm.js"></script>

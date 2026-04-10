@@ -430,7 +430,11 @@ async function _moveItem(srcPath, destDir) {
 }
 
 // Clean up on any drag end (drop, cancel, ESC)
-document.addEventListener('dragend', () => { _dragSrcPath = null; _dragSrcType = null; _setDropTarget(null); });
+document.addEventListener('dragend', () => {
+    _dragSrcPath = null; _dragSrcType = null; _setDropTarget(null);
+    const ov = document.getElementById('editor-drop-overlay');
+    if (ov) ov.classList.remove('active');
+});
 
 // ── Collapse state ─────────────────────────────────────────────────────────────
 // dir paths (relative to projectDir) that are currently collapsed
@@ -794,6 +798,10 @@ async function _openFile(relativePath) {
         await window.fntOpenBfntFile(relativePath, _projectDir);
     } else if (view === 'sound-editor' && window.sndOpenFile) {
         await window.sndOpenFile(relativePath, _projectDir);
+    } else if (view === 'tilemap-editor' && window.tmapOpenFile) {
+        await window.tmapOpenFile(relativePath, _projectDir);
+    } else if (view === 'tileset-editor' && window.tseOpenFromTree) {
+        await window.tseOpenFromTree(relativePath, _projectDir);
     }
 }
 
@@ -1185,6 +1193,71 @@ bassm.init()
             if (!_dragSrcPath) return;
             const src = _dragSrcPath; _dragSrcPath = null;
             await _moveItem(src, '');
+        });
+
+        // ── Global Drag & Drop on Editor Panel ──────────────────────────────
+        const _editorPanel   = document.getElementById('editor-panel');
+        const _dropOverlay   = document.getElementById('editor-drop-overlay');
+        const _dropHint      = document.getElementById('editor-drop-hint');
+        let _editorDragDepth = 0;  // counter for nested dragenter/dragleave
+
+        const _DROP_HINTS = {
+            'image-editor':   'Open in Image Editor',
+            'font-editor':    'Open in Font Editor',
+            'sound-editor':   'Open in Sound Editor',
+            'tileset-editor': 'Open in Tileset Editor',
+            'tilemap-editor': 'Open in Tilemap Editor',
+            'node-editor':    'Open in Node Editor',
+            'code':           'Open in Code Editor',
+        };
+
+        function _dropHintForPath(path) {
+            if (!path) return null;
+            const ext = path.split('.').pop().toLowerCase();
+            const view = _EXT_VIEW_MAP[ext];
+            return view ? (_DROP_HINTS[view] || `Open .${ext} file`) : null;
+        }
+
+        _editorPanel.addEventListener('dragenter', e => {
+            if (!_dragSrcPath || _dragSrcType !== 'file') return;
+            const hint = _dropHintForPath(_dragSrcPath);
+            if (!hint) return;
+            e.preventDefault();
+            _editorDragDepth++;
+            if (_editorDragDepth === 1) {
+                _dropHint.textContent = hint;
+                _dropOverlay.classList.add('active');
+            }
+        });
+
+        _editorPanel.addEventListener('dragover', e => {
+            if (!_dragSrcPath || _dragSrcType !== 'file') return;
+            if (!_dropHintForPath(_dragSrcPath)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+        });
+
+        _editorPanel.addEventListener('dragleave', e => {
+            if (!_dragSrcPath) return;
+            _editorDragDepth--;
+            if (_editorDragDepth <= 0) {
+                _editorDragDepth = 0;
+                _dropOverlay.classList.remove('active');
+            }
+        });
+
+        _editorPanel.addEventListener('drop', async e => {
+            _editorDragDepth = 0;
+            _dropOverlay.classList.remove('active');
+            if (!_dragSrcPath || _dragSrcType !== 'file') return;
+            const hint = _dropHintForPath(_dragSrcPath);
+            if (!hint) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const filePath = _dragSrcPath;
+            _dragSrcPath = null;
+            _dragSrcType = null;
+            await _openFile(filePath);
         });
 
         const modalOverlay = document.getElementById('modal-overlay');
