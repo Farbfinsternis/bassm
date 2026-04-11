@@ -87,7 +87,7 @@ else()
 		# exported runtime methods
 		-sEXPORTED_RUNTIME_METHODS=cwrap,ccall,HEAPU8,HEAPU32
 		# minimal export set for bare-metal preview (must be one string - no line breaks)
-		"-sEXPORTED_FUNCTIONS=_malloc,_free,_main,_wasm_power_on,_wasm_run,_wasm_halt,_wasm_reset,_wasm_loadFile,_wasm_configure,_wasm_get_config_item,_wasm_execute,_wasm_draw_one_frame,_wasm_pixel_buffer,_wasm_frame_info,_wasm_get_render_width,_wasm_get_render_height,_wasm_rom_info,_wasm_get_sound_buffer_address,_wasm_copy_into_sound_buffer,_wasm_set_sample_rate,_wasm_update_audio,_wasm_rightChannelBuffer,_wasm_leftChannelBuffer,_wasm_get_core_version,_wasm_mouse,_wasm_mouse_button,_wasm_key"
+		"-sEXPORTED_FUNCTIONS=_malloc,_free,_main,_wasm_power_on,_wasm_run,_wasm_halt,_wasm_reset,_wasm_loadFile,_wasm_configure,_wasm_get_config_item,_wasm_execute,_wasm_draw_one_frame,_wasm_pixel_buffer,_wasm_frame_info,_wasm_get_render_width,_wasm_get_render_height,_wasm_rom_info,_wasm_get_sound_buffer_address,_wasm_copy_into_sound_buffer,_wasm_set_sample_rate,_wasm_update_audio,_wasm_rightChannelBuffer,_wasm_leftChannelBuffer,_wasm_get_core_version,_wasm_mouse,_wasm_mouse_button,_wasm_key,_wasm_schedule_key,_wasm_joystick"
 		-sDISABLE_DEPRECATED_FIND_EVENT_TARGET_BEHAVIOR=1
 		-sLLD_REPORT_UNDEFINED
 		-sNO_EXIT_RUNTIME=1
