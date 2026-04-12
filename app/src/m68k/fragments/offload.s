@@ -42,7 +42,6 @@
 
 ; ── Graphics Library LVO Offsets ─────────────────────────────────────────────
 _LVOLoadView        EQU -222    ; graphics.library: install a View (copper list)
-_LVOWaitTOF         EQU -270    ; graphics.library: wait for top of frame (VBlank)
 _LVOCloseLibrary    EQU -414    ; exec.library:     close / decrement open count
 
         SECTION offload_code,CODE
@@ -127,29 +126,44 @@ _exit:
 
 ; ── 7. Restore OS display ────────────────────────────────────────────────────
         ;
-        ; Standard KS 1.3 restore sequence:
+        ; We do NOT call LoadView(NULL).  On AROS it can hang (internal
+        ; WaitTOF) and it sets GfxBase->ActiView = NULL, which prevents the
+        ; OS VBlank handler from re-installing the Workbench copper list.
         ;
-        ;   LoadView(NULL)    — blank the display via OS copper machinery; also
-        ;                       resets internal graphics.library copper state.
-        ;   WaitTOF() × 2    — let the null view stabilise for two frames
-        ;                       (PAL/ECS interlace safety: LOF + SHF fields).
-        ;   LoadView(saved)   — reprograms copper with the saved Workbench view.
+        ; Instead we rely on the hardware null copper (step 4) to park the
+        ; display safely and wait two VBlanks via direct hardware polling.
+        ; Then LoadView(saved) re-installs the Workbench view.  If _saved_view
+        ; is NULL (AROS edge case), GfxBase->ActiView still points at the
+        ; original Workbench view (we never cleared it), so the OS VBlank
+        ; handler will restore the copper list automatically after Permit().
         ;
-        ; The hardware null copper (step 4) already parks the copper safely.
-        ; LoadView(NULL) is still needed to reset the OS-side copper tracking
-        ; before LoadView(saved) will install the Workbench copper correctly.
+        ; VBlank polling disables INTF_VERTB temporarily so the restored OS
+        ; handler cannot clear the flag before our poll loop reads it.
 
+        ; Hardware VBlank wait × 2 — let null copper stabilise
+        move.w  #INTF_VERTB,INTENA(a5)  ; disable VBlank interrupt (race-free poll)
+
+        move.w  #INTF_VERTB,INTREQ(a5)  ; clear any pending VBlank flag
+.wait_vbl_1:
+        move.w  INTREQR(a5),d0
+        btst    #5,d0                   ; INTF_VERTB set?
+        beq.s   .wait_vbl_1
+
+        move.w  #INTF_VERTB,INTREQ(a5)
+.wait_vbl_2:
+        move.w  INTREQR(a5),d0
+        btst    #5,d0
+        beq.s   .wait_vbl_2
+
+        move.w  #(INTF_SETCLR|INTF_VERTB),INTENA(a5)  ; re-enable VBlank interrupt
+
+        ; Restore Workbench view via LoadView if we have a saved view
         move.l  _saved_gfx_base,d0
         beq.s   .skip_loadview
 
         move.l  d0,a6
-        sub.l   a1,a1                   ; a1 = NULL
-        jsr     _LVOLoadView(a6)        ; blank display — reset OS copper state
-        jsr     _LVOWaitTOF(a6)         ; wait frame 1
-        jsr     _LVOWaitTOF(a6)         ; wait frame 2 — interlace safety
-
         move.l  _saved_view,a1          ; Workbench View saved at startup
-        beq.s   .skip_savedview         ; guard: NULL means AROS/headless — skip
+        beq.s   .skip_savedview         ; NULL → OS handler restores via ActiView
         jsr     _LVOLoadView(a6)        ; install Workbench view
 .skip_savedview:
 

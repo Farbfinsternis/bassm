@@ -280,6 +280,30 @@ ipcMain.handle('bassm:assemble', (_event, payload) => {
   });
 });
 
+// Renderer → main: create bootable ADF disk image, show save dialog, write to disk.
+// Accepts { projectName: string, exeData: number[] | Buffer }
+// Returns { ok: true, filePath: string } | { ok: false, error: string } | { ok: false, cancelled: true }
+ipcMain.handle('bassm:create-adf', async (_event, { projectName, exeData }) => {
+  try {
+    const { pathToFileURL } = require('url');
+    const adfUrl = pathToFileURL(path.join(__dirname, 'app', 'src', 'adf.js'));
+    const { createADF } = await import(adfUrl.href);
+    const adf = createADF(projectName, 'bassm_out', new Uint8Array(exeData));
+
+    const win = BrowserWindow.getFocusedWindow();
+    const result = await dialog.showSaveDialog(win, {
+      defaultPath: `${projectName}.adf`,
+      filters: [{ name: 'Amiga Disk File', extensions: ['adf'] }],
+    });
+    if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
+
+    fs.writeFileSync(result.filePath, Buffer.from(adf));
+    return { ok: true, filePath: result.filePath };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
 // Renderer → main: load AROS ROM bytes
 // Returns { main: number[], ext: number[] }
 ipcMain.handle('bassm:rom', () => {

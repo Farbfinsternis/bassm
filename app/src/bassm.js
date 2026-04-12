@@ -964,14 +964,27 @@ document.addEventListener('keydown', async e => {
         return;
     }
 
-    // Ctrl+S / Cmd+S — Save current file
+    // Ctrl+S / Cmd+S — Save (context-dependent)
     if ((e.ctrlKey || e.metaKey) && e.key === 's' && !e.altKey) {
         e.preventDefault();
-        if (_isVBEProject) {
+        const _saveButtons = {
+            'image-editor':   'img-btn-convert',
+            'font-editor':    'fnt-btn-convert',
+            'sound-editor':   'snd-btn-convert',
+            'tileset-editor': 'tse-btn-save',
+            'tilemap-editor': 'tmap-btn-save',
+        };
+        const btnId = _saveButtons[_currentView];
+        if (btnId) {
+            const btn = document.getElementById(btnId);
+            if (btn && !btn.disabled) btn.click();
+            return;
+        }
+        if (_currentView === 'node-editor') {
             logLine('VBE Serialization (Nodes Speichern) ist noch in Arbeit.', 'warn');
             return;
         }
-        
+        // Default: save code
         const ed = window._monacoEditor;
         if (!ed || !_projectDir) return;
         try {
@@ -984,6 +997,13 @@ document.addEventListener('keydown', async e => {
         } catch (err) {
             logLine('Save failed: ' + err.message, 'error');
         }
+        return;
+    }
+
+    // Escape — back to Code Editor (unless in emulator fullscreen)
+    if (e.key === 'Escape' && _currentView !== 'code') {
+        e.preventDefault();
+        switchView('code');
         return;
     }
 }, true);  // capture phase — fires before Monaco's own keydown handlers
@@ -1318,6 +1338,7 @@ bassm.init()
             try {
                 const { asm, binary } = await bassm.run(source, _projectDir, { skipEmulator: !runEmulator });
                 _lastBinary = binary;
+                document.getElementById('btn-create-adf').disabled = false;
                 _clearMarkers();
 
                 // Save generated assembly next to the source file for code review
@@ -1352,6 +1373,35 @@ bassm.init()
 
         btnRun.addEventListener('click', () => _doBuild({ runEmulator: true }));
         document.getElementById('btn-build').addEventListener('click', () => _doBuild({ runEmulator: false }));
+
+        // ── Create ADF ────────────────────────────────────────────────────────
+        document.getElementById('btn-create-adf').addEventListener('click', async () => {
+            if (!_lastBinary) {
+                logLine('No build available — run Build first.', 'error');
+                return;
+            }
+            const exeKB = (_lastBinary.length / 1024).toFixed(1);
+            // OFS overhead: bootblock(2) + root(1) + bitmap(1) + s/ dir(1)
+            // + startup-seq header+data(2) + exe header(1) = 8 blocks fixed,
+            // plus each data block loses 24 bytes to OFS header (488/512 payload).
+            // Practical limit: ~835 KB. Warn at 830 KB to give margin.
+            if (_lastBinary.length > 830 * 1024) {
+                logLine(`Warning: executable (${exeKB} KB) may exceed ADF capacity (~830 KB usable).`, 'warn');
+            }
+            logLine(`Creating ADF… (executable: ${exeKB} KB)`, 'info');
+            const name = projectName.textContent || 'bassm';
+            const result = await window.electronAPI.createAdf({
+                projectName: name,
+                exeData:     Array.from(_lastBinary),
+            });
+            if (result.ok) {
+                logLine(`ADF saved: ${result.filePath}  (880 KB, exe ${exeKB} KB, ${(100 * _lastBinary.length / 901120).toFixed(1)}% used)`, 'info');
+            } else if (result.cancelled) {
+                logLine('ADF export cancelled.', 'info');
+            } else {
+                logLine(`ADF error: ${result.error}`, 'error');
+            }
+        });
     })
     .catch(err => {
         console.error('[BASSM] Init failed:', err);

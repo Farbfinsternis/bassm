@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Assemble m68k source with vasmm68k_mot
   // Returns { ok: true, data: number[] } | { ok: false, error: string }
   assemble: (payload) => ipcRenderer.invoke('bassm:assemble', payload),
+  // Create bootable ADF, show save dialog, write to disk
+  // { projectName, exeData: number[] } → { ok, filePath?, error?, cancelled? }
+  createAdf: (payload) => ipcRenderer.invoke('bassm:create-adf', payload),
   // Load AROS ROM bytes from disk
   // Returns { main: number[], ext: number[] }
   loadRom: () => ipcRenderer.invoke('bassm:rom'),
