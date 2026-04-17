@@ -15,6 +15,14 @@ let _tseTileSize   = 16;
 let _tseDepth      = 3;
 let _tseTileCount  = 0;
 let _tseFilename   = '';
+let _tseSelectedTile = -1;  // currently selected tile index (-1 = none)
+let _tseTileTypes  = null;  // Uint8Array(tile_count), 0–255 per tile (T5.3)
+let _tseTileLabels = [];    // string[] per tile, IDE-only (not saved to .tset)
+let _tseTileColl   = null;  // Uint8Array(tile_count), collision bitmask per tile (T6.2)
+let _tseAnimGroups = [];    // { startIndex, frameCount, speed }[] (T9.1)
+let _tseAnimTimer  = null;  // setInterval id for animation preview
+let _tseSlopeData  = new Map();  // Map<tileIndex, Uint8Array(tileSize)> — heightmaps (T10.2)
+let _tseSlopeDrag  = false;
 
 // ── Zoom & Pan state ────────────────────────────────────────────────────────
 let _tseZoom = 1;
@@ -39,6 +47,20 @@ function _tseResetView() {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+// T6.6: Draw a small directional arrow at (x,y) rotated by angle
+function _tseDrawArrow(ctx, x, y, angle, size) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(0, -size * 0.6);
+    ctx.lineTo(-size * 0.4, size * 0.3);
+    ctx.lineTo(size * 0.4, size * 0.3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+}
 
 function _tseOcsToRgb(ocs) {
     return [((ocs >> 8) & 0xF) * 17, ((ocs >> 4) & 0xF) * 17, (ocs & 0xF) * 17];
@@ -103,6 +125,14 @@ function _tseQuantise() {
     // Slice into tiles
     const { nTiles } = _tseSliceTiles(_tseIndices, _tseWidth, _tseHeight, _tseTileSize);
     _tseTileCount = nTiles;
+
+    // Reset type + collision + animation + slope state for new import
+    _tseTileTypes  = new Uint8Array(nTiles);
+    _tseTileLabels = new Array(nTiles).fill('');
+    _tseTileColl   = new Uint8Array(nTiles);
+    _tseAnimGroups = [];
+    _tseSlopeData  = new Map();
+    _tseSelectedTile = -1;
 }
 
 // ── Render tile grid on canvas ───────────────────────────────────────────────
@@ -156,6 +186,64 @@ function _tseRender() {
         }
     }
 
+    // T6.6: Collision overlay
+    if (_tseTileColl) {
+        const cellW = ts * scale;
+        const cellH = ts * scale;
+        for (let i = 0; i < _tseTileCount; i++) {
+            const c = _tseTileColl[i];
+            if (!c) continue;
+            const tc2 = i % cols;
+            const tr2 = Math.floor(i / cols);
+            const ox = gap + tc2 * (cellW + gap);
+            const oy = gap + tr2 * (cellH + gap);
+
+            if (c & 1) {
+                // SOLID — red tint
+                ctx.fillStyle = 'rgba(255,60,60,0.3)';
+                ctx.fillRect(ox, oy, cellW, cellH);
+                ctx.fillStyle = '#ff4444';
+                ctx.font = `bold ${Math.max(8, cellW * 0.35)}px monospace`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('S', ox + cellW / 2, oy + cellH / 2);
+            } else {
+                // PASS arrows (Bits 1–4)
+                ctx.fillStyle = 'rgba(100,180,255,0.25)';
+                if (c & 0x1E) ctx.fillRect(ox, oy, cellW, cellH);
+                const arrowSize = Math.max(4, cellW * 0.22);
+                const cx2 = ox + cellW / 2;
+                const cy2 = oy + cellH / 2;
+                ctx.fillStyle = '#66bbff';
+                if (c & 2)  _tseDrawArrow(ctx, cx2, oy + arrowSize,          0, arrowSize); // UP
+                if (c & 4)  _tseDrawArrow(ctx, cx2, oy + cellH - arrowSize,  Math.PI, arrowSize); // DOWN
+                if (c & 8)  _tseDrawArrow(ctx, ox + arrowSize,          cy2, -Math.PI / 2, arrowSize); // LEFT
+                if (c & 16) _tseDrawArrow(ctx, ox + cellW - arrowSize,  cy2,  Math.PI / 2, arrowSize); // RIGHT
+            }
+
+            if (c & 32) {
+                // SLOPE — yellow diagonal line
+                ctx.strokeStyle = '#ffcc00';
+                ctx.lineWidth = Math.max(1, cellW * 0.08);
+                ctx.beginPath();
+                ctx.moveTo(ox + 1, oy + cellH - 1);
+                ctx.lineTo(ox + cellW - 1, oy + 1);
+                ctx.stroke();
+            }
+        }
+    }
+
+    // T5.2: Selection highlight
+    if (_tseSelectedTile >= 0 && _tseSelectedTile < _tseTileCount) {
+        const sc = _tseSelectedTile % cols;
+        const sr = Math.floor(_tseSelectedTile / cols);
+        const sx = gap + sc * (ts * scale + gap);
+        const sy = gap + sr * (ts * scale + gap);
+        ctx.strokeStyle = '#ffcc00';
+        ctx.lineWidth   = 2;
+        ctx.strokeRect(sx - 1, sy - 1, ts * scale + 2, ts * scale + 2);
+    }
+
     _tseUpdateProps();
     _tseCenterCanvas();
 }
@@ -183,6 +271,300 @@ function _tseUpdateProps() {
     document.getElementById('tse-prop-imgsize').textContent = `${(chipBytes / 1024).toFixed(1)} KB`;
     document.getElementById('tse-budget-chip').textContent  = `${(chipBytes / 1024).toFixed(1)} KB`;
     document.getElementById('tse-budget-pct').textContent   = `${(chipBytes / (512 * 1024) * 100).toFixed(1)}%`;
+
+    _tseUpdateTypeUI();
+}
+
+// ── T5.1: Tile Type UI ──────────────────────────────────────────────────────
+
+function _tseUpdateTypeUI() {
+    const valInput   = document.getElementById('tse-type-value');
+    const labelInput = document.getElementById('tse-type-label');
+    const indexSpan  = document.getElementById('tse-prop-index');
+
+    if (_tseSelectedTile < 0 || !_tseTileTypes) {
+        valInput.disabled   = true;
+        labelInput.disabled = true;
+        valInput.value      = 0;
+        labelInput.value    = '';
+        indexSpan.textContent = '—';
+        return;
+    }
+
+    indexSpan.textContent   = _tseSelectedTile;
+    valInput.disabled       = false;
+    labelInput.disabled     = false;
+    valInput.value          = _tseTileTypes[_tseSelectedTile];
+    labelInput.value        = _tseTileLabels[_tseSelectedTile] || '';
+
+    _tseUpdateCollUI();
+}
+
+// ── T6.1: Collision Flags UI ────────────────────────────────────────────────
+
+const _tseCollIds = [
+    'tse-coll-solid',      // Bit 0
+    'tse-coll-pass-up',    // Bit 1
+    'tse-coll-pass-down',  // Bit 2
+    'tse-coll-pass-left',  // Bit 3
+    'tse-coll-pass-right', // Bit 4
+    'tse-coll-slope',      // Bit 5
+];
+
+function _tseUpdateCollUI() {
+    const noSel = _tseSelectedTile < 0 || !_tseTileColl;
+    const val   = noSel ? 0 : _tseTileColl[_tseSelectedTile];
+    const solid = !!(val & 1);
+
+    for (let bit = 0; bit < _tseCollIds.length; bit++) {
+        const cb    = document.getElementById(_tseCollIds[bit]);
+        cb.checked  = !!(val & (1 << bit));
+        cb.disabled = noSel;
+        // PASS bits (1–4) disabled when SOLID is active
+        const label = cb.parentElement;
+        if (bit >= 1 && bit <= 4) {
+            label.classList.toggle('tse-coll-disabled', solid && !noSel);
+        }
+    }
+
+    // T10.1: Show slope heightmap editor only when SLOPE flag (bit 5) is set
+    const showSlope = !noSel && !!(val & 32);
+    document.getElementById('tse-slope-section').style.display = showSlope ? '' : 'none';
+    if (showSlope) _tseSlopeRender();
+}
+
+// ── T10.2: Slope Heightmap Editor ───────────────────────────────────────────
+
+function _tseSlopeRender() {
+    const canvas = document.getElementById('tse-slope-canvas');
+    const idx = _tseSelectedTile;
+    if (idx < 0 || !_tseIndices) return;
+
+    const ts    = _tseTileSize;
+    const scale = ts <= 8 ? 16 : ts <= 16 ? 8 : 4;
+    const size  = ts * scale;
+    canvas.width  = size;
+    canvas.height = size;
+
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+
+    // Draw tile enlarged
+    const cols  = Math.floor(_tseWidth / ts);
+    const tc    = idx % cols;
+    const tr    = Math.floor(idx / cols);
+    const imgBuf = new ImageData(ts, ts);
+    for (let py = 0; py < ts; py++) {
+        for (let px = 0; px < ts; px++) {
+            const srcIdx = (tr * ts + py) * _tseWidth + tc * ts + px;
+            const [r, g, b] = _tseOcsToRgb(_tsePalette[_tseIndices[srcIdx]]);
+            const off = (py * ts + px) * 4;
+            imgBuf.data[off]     = r;
+            imgBuf.data[off + 1] = g;
+            imgBuf.data[off + 2] = b;
+            imgBuf.data[off + 3] = 255;
+        }
+    }
+    const tmp = document.createElement('canvas');
+    tmp.width = ts; tmp.height = ts;
+    tmp.getContext('2d').putImageData(imgBuf, 0, 0);
+    ctx.drawImage(tmp, 0, 0, size, size);
+
+    // Column grid
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 1;
+    for (let x = 1; x < ts; x++) {
+        const px = x * scale + 0.5;
+        ctx.beginPath();
+        ctx.moveTo(px, 0);
+        ctx.lineTo(px, size);
+        ctx.stroke();
+    }
+
+    // Heightmap overlay
+    const hm = _tseSlopeData.get(idx);
+    if (!hm) return;
+
+    // Fill ground area
+    ctx.fillStyle = 'rgba(255,204,0,0.3)';
+    for (let col = 0; col < ts; col++) {
+        const h = hm[col];
+        if (h <= 0) continue;
+        ctx.fillRect(col * scale, (ts - h) * scale, scale, h * scale);
+    }
+
+    // Surface line
+    ctx.strokeStyle = '#ffcc00';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let col = 0; col < ts; col++) {
+        const x = col * scale + scale / 2;
+        const y = (ts - hm[col]) * scale;
+        if (col === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+}
+
+function _tseSlopeSetColumn(e) {
+    const canvas = document.getElementById('tse-slope-canvas');
+    const idx = _tseSelectedTile;
+    if (idx < 0 || !_tseIndices) return;
+
+    const ts    = _tseTileSize;
+    const rect  = canvas.getBoundingClientRect();
+    const mx = (e.clientX - rect.left) * (canvas.width  / rect.width);
+    const my = (e.clientY - rect.top)  * (canvas.height / rect.height);
+
+    const scale = canvas.width / ts;
+    const col = Math.floor(mx / scale);
+    if (col < 0 || col >= ts) return;
+
+    const h = Math.max(0, Math.min(ts, ts - Math.floor(my / scale)));
+
+    if (!_tseSlopeData.has(idx)) _tseSlopeData.set(idx, new Uint8Array(ts));
+    _tseSlopeData.get(idx)[col] = h;
+    _tseSlopeRender();
+}
+
+// ── T9.1: Animation Groups UI ───────────────────────────────────────────────
+
+function _tseRenderAnimList() {
+    const list = document.getElementById('tse-anim-list');
+    list.innerHTML = '';
+    const addBtn = document.getElementById('tse-anim-add');
+    addBtn.disabled = !_tseTileCount;
+
+    for (let i = 0; i < _tseAnimGroups.length; i++) {
+        const g = _tseAnimGroups[i];
+        const div = document.createElement('div');
+        div.className = 'tse-anim-group';
+
+        const header = document.createElement('div');
+        header.className = 'tse-anim-group-header';
+        header.innerHTML = `<span>Group ${i}</span>`;
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'tse-anim-group-remove';
+        removeBtn.textContent = '\u00d7';
+        removeBtn.addEventListener('click', () => {
+            _tseAnimGroups.splice(i, 1);
+            _tseRenderAnimList();
+            _tseRender();
+        });
+        header.appendChild(removeBtn);
+        div.appendChild(header);
+
+        // Start tile
+        const startLabel = document.createElement('label');
+        startLabel.textContent = 'Start ';
+        const startInput = document.createElement('input');
+        startInput.type = 'number';
+        startInput.min = 0;
+        startInput.max = _tseTileCount - 1;
+        startInput.value = g.startIndex;
+        startInput.addEventListener('change', (e) => {
+            g.startIndex = Math.max(0, Math.min(_tseTileCount - 1, parseInt(e.target.value) || 0));
+            e.target.value = g.startIndex;
+        });
+        startLabel.appendChild(startInput);
+        div.appendChild(startLabel);
+
+        // Frame count
+        const countLabel = document.createElement('label');
+        countLabel.textContent = 'Frames ';
+        const countInput = document.createElement('input');
+        countInput.type = 'number';
+        countInput.min = 2;
+        countInput.max = 255;
+        countInput.value = g.frameCount;
+        countInput.addEventListener('change', (e) => {
+            const maxFrames = _tseTileCount - g.startIndex;
+            g.frameCount = Math.max(2, Math.min(Math.min(255, maxFrames), parseInt(e.target.value) || 2));
+            e.target.value = g.frameCount;
+        });
+        countLabel.appendChild(countInput);
+        div.appendChild(countLabel);
+
+        // Speed (VBlanks per frame)
+        const speedLabel = document.createElement('label');
+        speedLabel.textContent = 'Speed ';
+        const speedInput = document.createElement('input');
+        speedInput.type = 'number';
+        speedInput.min = 1;
+        speedInput.max = 255;
+        speedInput.value = g.speed;
+        speedInput.addEventListener('change', (e) => {
+            g.speed = Math.max(1, Math.min(255, parseInt(e.target.value) || 5));
+            e.target.value = g.speed;
+        });
+        speedLabel.appendChild(speedInput);
+        div.appendChild(speedLabel);
+
+        // Preview canvas
+        const preview = document.createElement('div');
+        preview.className = 'tse-anim-preview';
+        const pCanvas = document.createElement('canvas');
+        const pScale = _tseTileSize <= 8 ? 4 : _tseTileSize <= 16 ? 2 : 1;
+        pCanvas.width  = _tseTileSize * pScale;
+        pCanvas.height = _tseTileSize * pScale;
+        pCanvas.dataset.groupIdx = i;
+        preview.appendChild(pCanvas);
+        div.appendChild(preview);
+
+        list.appendChild(div);
+    }
+
+    _tseStartAnimPreview();
+}
+
+function _tseStartAnimPreview() {
+    if (_tseAnimTimer) { clearInterval(_tseAnimTimer); _tseAnimTimer = null; }
+    if (!_tseAnimGroups.length || !_tseIndices) return;
+
+    const frameCounts = new Uint8Array(_tseAnimGroups.length); // current frame per group
+    _tseAnimTimer = setInterval(() => {
+        const canvases = document.querySelectorAll('.tse-anim-preview canvas');
+        for (let gi = 0; gi < _tseAnimGroups.length; gi++) {
+            const g = _tseAnimGroups[gi];
+            const c = canvases[gi];
+            if (!c) continue;
+
+            frameCounts[gi] = (frameCounts[gi] + 1) % g.frameCount;
+            const tileIdx = g.startIndex + frameCounts[gi];
+            if (tileIdx >= _tseTileCount) continue;
+
+            _tseDrawTileToCanvas(c, tileIdx);
+        }
+    }, 100); // ~10fps preview
+}
+
+function _tseDrawTileToCanvas(canvas, tileIdx) {
+    const ts    = _tseTileSize;
+    const cols  = Math.floor(_tseWidth / ts);
+    const tc    = tileIdx % cols;
+    const tr    = Math.floor(tileIdx / cols);
+    const scale = ts <= 8 ? 4 : ts <= 16 ? 2 : 1;
+
+    const imgBuf = new ImageData(ts, ts);
+    for (let py = 0; py < ts; py++) {
+        for (let px = 0; px < ts; px++) {
+            const srcIdx = (tr * ts + py) * _tseWidth + tc * ts + px;
+            const [r, g, b] = _tseOcsToRgb(_tsePalette[_tseIndices[srcIdx]]);
+            const off = (py * ts + px) * 4;
+            imgBuf.data[off]     = r;
+            imgBuf.data[off + 1] = g;
+            imgBuf.data[off + 2] = b;
+            imgBuf.data[off + 3] = 255;
+        }
+    }
+    const tmp = document.createElement('canvas');
+    tmp.width = ts; tmp.height = ts;
+    tmp.getContext('2d').putImageData(imgBuf, 0, 0);
+
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(tmp, 0, 0, ts * scale, ts * scale);
 }
 
 // ── PNG Import ───────────────────────────────────────────────────────────────
@@ -206,6 +588,7 @@ async function _tseImportPng() {
 
             _tseQuantise();
             _tseRender();
+            _tseRenderAnimList();
             if (window.logLine) window.logLine(`[Tileset] Imported ${file.name} (${width}\u00d7${height}, ${_tseTileCount} tiles, ${_tseDepth}bpp)`, 'info');
         } catch (err) {
             document.getElementById('tse-status').textContent = `Error: ${err.message}`;
@@ -220,7 +603,29 @@ async function _tseImportPng() {
 function _tseBuildBinary(palette, planes, tileSize, tileCount, depth) {
     const colorCount  = 1 << depth;
     const paletteSize = colorCount * 2;
-    const totalSize   = 12 + paletteSize + planes.length;
+
+    // T5.4 / T6.3 / T9.3 / T10.4: Check if optional sections needed
+    let flags = 0;
+    const hasTypes = _tseTileTypes && _tseTileTypes.some(v => v !== 0);
+    const hasColl  = _tseTileColl  && _tseTileColl.some(v => v !== 0);
+    const hasAnim  = _tseAnimGroups.length > 0;
+    // T10.4: Only include slopes for tiles that still have SLOPE flag (bit 5)
+    const slopeEntries = [..._tseSlopeData.entries()].filter(([idx]) =>
+        _tseTileColl && (_tseTileColl[idx] & 32));
+    const hasSlopes = slopeEntries.length > 0;
+    if (hasTypes)  flags |= 1;
+    if (hasColl)   flags |= 2;
+    if (hasAnim)   flags |= 4;
+    if (hasSlopes) flags |= 8;
+
+    const imageEnd   = 12 + paletteSize + planes.length;
+    const typesPad   = hasTypes && (tileCount & 1) ? 1 : 0;
+    const typesSize  = hasTypes ? tileCount + typesPad : 0;
+    const collPad    = hasColl  && (tileCount & 1) ? 1 : 0;
+    const collSize   = hasColl  ? tileCount + collPad : 0;
+    const animSize   = hasAnim  ? 2 + _tseAnimGroups.length * 4 : 0;
+    const slopesSize = hasSlopes ? 2 + slopeEntries.length * (2 + tileSize) : 0;
+    const totalSize  = imageEnd + typesSize + collSize + animSize + slopesSize;
 
     const buf  = new Uint8Array(totalSize);
     const view = new DataView(buf.buffer);
@@ -230,13 +635,49 @@ function _tseBuildBinary(palette, planes, tileSize, tileCount, depth) {
     buf[5] = tileSize;                   // tile_size
     view.setUint16(6, tileCount, false); // tile_count (BE)
     buf[8] = depth;                      // depth
-    buf[9] = 0;                          // flags
+    buf[9] = flags;                      // flags
     view.setUint16(10, 0, false);        // reserved
 
     for (let i = 0; i < colorCount; i++) {
         view.setUint16(12 + i * 2, palette[i] & 0x0FFF, false);
     }
     buf.set(planes, 12 + paletteSize);
+
+    // T5.4: Append TYPES section
+    if (hasTypes) {
+        buf.set(_tseTileTypes.subarray(0, tileCount), imageEnd);
+    }
+
+    // T6.3: Append COLLISION section
+    if (hasColl) {
+        buf.set(_tseTileColl.subarray(0, tileCount), imageEnd + typesSize);
+    }
+
+    // T9.3: Append ANIMATION section
+    if (hasAnim) {
+        let off = imageEnd + typesSize + collSize;
+        view.setUint16(off, _tseAnimGroups.length, false);
+        off += 2;
+        for (const g of _tseAnimGroups) {
+            view.setUint16(off, g.startIndex, false);
+            buf[off + 2] = g.frameCount;
+            buf[off + 3] = g.speed;
+            off += 4;
+        }
+    }
+
+    // T10.4: Append SLOPES section
+    if (hasSlopes) {
+        let off = imageEnd + typesSize + collSize + animSize;
+        view.setUint16(off, slopeEntries.length, false);
+        off += 2;
+        for (const [tileIdx, hm] of slopeEntries) {
+            view.setUint16(off, tileIdx, false);
+            off += 2;
+            buf.set(hm.subarray(0, tileSize), off);
+            off += tileSize;
+        }
+    }
 
     return buf;
 }
@@ -300,6 +741,7 @@ function _tseApplyBuffer(buf, filename) {
     const tileSize  = buf[5];
     const tileCount = view.getUint16(6, false);
     const depth     = buf[8];
+    const flags     = buf[9];
 
     if (![8, 16, 32].includes(tileSize)) throw new Error(`Invalid tile_size ${tileSize}`);
     if (depth < 1 || depth > 5) throw new Error(`Invalid depth ${depth}`);
@@ -371,6 +813,61 @@ function _tseApplyBuffer(buf, filename) {
     _tseIndices   = gridIndices;
     _tseFilename  = filename;
 
+    // T5.1/T5.3: Load TYPES section if present (flags Bit 0)
+    _tseTileTypes  = new Uint8Array(tileCount);
+    _tseTileLabels = new Array(tileCount).fill('');
+    _tseTileColl   = new Uint8Array(tileCount);
+    _tseAnimGroups = [];
+    _tseSlopeData  = new Map();
+    _tseSelectedTile = -1;
+    let metaOffset = imgOffset + imageSize;
+    if (flags & 1) {
+        if (buf.length >= metaOffset + tileCount) {
+            _tseTileTypes.set(buf.subarray(metaOffset, metaOffset + tileCount));
+        }
+        metaOffset += tileCount + (tileCount & 1 ? 1 : 0);
+    }
+    // T6.2: Load COLLISION section if present (flags Bit 1)
+    if (flags & 2) {
+        if (buf.length >= metaOffset + tileCount) {
+            _tseTileColl.set(buf.subarray(metaOffset, metaOffset + tileCount));
+        }
+        metaOffset += tileCount + (tileCount & 1 ? 1 : 0);
+    }
+    // T9.1: Load ANIMATION section if present (flags Bit 2)
+    if (flags & 4) {
+        const view2 = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+        if (buf.length >= metaOffset + 2) {
+            const groupCount = view2.getUint16(metaOffset, false);
+            metaOffset += 2;
+            for (let g = 0; g < groupCount && metaOffset + 4 <= buf.length; g++) {
+                const startIndex = view2.getUint16(metaOffset, false);
+                const frameCount = buf[metaOffset + 2];
+                const speed      = buf[metaOffset + 3];
+                _tseAnimGroups.push({ startIndex, frameCount, speed });
+                metaOffset += 4;
+            }
+        }
+    }
+
+    // T10.3: Load SLOPES section if present (flags Bit 3)
+    if (flags & 8) {
+        const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+        if (buf.length >= metaOffset + 2) {
+            const slopeCount = dv.getUint16(metaOffset, false);
+            metaOffset += 2;
+            for (let s = 0; s < slopeCount; s++) {
+                if (metaOffset + 2 + tileSize > buf.length) break;
+                const tileIdx = dv.getUint16(metaOffset, false);
+                metaOffset += 2;
+                const hm = new Uint8Array(tileSize);
+                hm.set(buf.subarray(metaOffset, metaOffset + tileSize));
+                _tseSlopeData.set(tileIdx, hm);
+                metaOffset += tileSize;
+            }
+        }
+    }
+
     // Sync UI controls
     document.getElementById('tse-sel-tilesize').value = tileSize;
     document.getElementById('tse-sel-depth').value    = depth;
@@ -379,6 +876,7 @@ function _tseApplyBuffer(buf, filename) {
         `${filename} — ${tileCount} tiles, ${tileSize}×${tileSize}, ${depth}bpp`;
 
     _tseRender();
+    _tseRenderAnimList();
 }
 
 // ── Load .tset (dialog) ──────────────────────────────────────────────────────
@@ -433,6 +931,81 @@ document.getElementById('tse-btn-import').addEventListener('click', _tseImportPn
 document.getElementById('tse-btn-load').addEventListener('click', _tseLoad);
 document.getElementById('tse-btn-save').addEventListener('click', _tseSave);
 
+// T9.1 — Add animation group
+document.getElementById('tse-anim-add').addEventListener('click', () => {
+    const start = _tseSelectedTile >= 0 ? _tseSelectedTile : 0;
+    _tseAnimGroups.push({ startIndex: start, frameCount: 2, speed: 5 });
+    _tseRenderAnimList();
+});
+
+// T5.1 — Type value + label inputs
+document.getElementById('tse-type-value').addEventListener('change', (e) => {
+    if (_tseSelectedTile < 0 || !_tseTileTypes) return;
+    _tseTileTypes[_tseSelectedTile] = Math.max(0, Math.min(255, parseInt(e.target.value) || 0));
+    e.target.value = _tseTileTypes[_tseSelectedTile];
+});
+
+document.getElementById('tse-type-label').addEventListener('input', (e) => {
+    if (_tseSelectedTile < 0) return;
+    _tseTileLabels[_tseSelectedTile] = e.target.value;
+});
+
+// T6.1 — Collision flag checkboxes
+for (let bit = 0; bit < _tseCollIds.length; bit++) {
+    document.getElementById(_tseCollIds[bit]).addEventListener('change', (e) => {
+        if (_tseSelectedTile < 0 || !_tseTileColl) return;
+        if (e.target.checked) {
+            _tseTileColl[_tseSelectedTile] |= (1 << bit);
+        } else {
+            _tseTileColl[_tseSelectedTile] &= ~(1 << bit);
+            // T10.3: Remove slope data when SLOPE flag (bit 5) is cleared
+            if (bit === 5) _tseSlopeData.delete(_tseSelectedTile);
+        }
+        _tseUpdateCollUI();
+    });
+}
+
+// T10.2 — Slope heightmap canvas: click/drag to draw
+const _tseSlopeCanvas = document.getElementById('tse-slope-canvas');
+_tseSlopeCanvas.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    _tseSlopeDrag = true;
+    _tseSlopeSetColumn(e);
+});
+_tseSlopeCanvas.addEventListener('mousemove', (e) => {
+    if (!_tseSlopeDrag) return;
+    _tseSlopeSetColumn(e);
+});
+window.addEventListener('mouseup', () => { _tseSlopeDrag = false; });
+
+// T5.2 — Tile selection via click on canvas
+document.getElementById('tse-canvas').addEventListener('click', (e) => {
+    if (!_tseIndices || _tseTileCount === 0) return;
+    const canvas = e.target;
+    const rect   = canvas.getBoundingClientRect();
+    const scaleX = canvas.width  / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const cx = (e.clientX - rect.left) * scaleX;
+    const cy = (e.clientY - rect.top)  * scaleY;
+
+    const ts    = _tseTileSize;
+    const cols  = Math.floor(_tseWidth / ts);
+    const scale = ts <= 8 ? 4 : ts <= 16 ? 2 : 1;
+    const gap   = 1;
+    const cellW = ts * scale + gap;
+    const cellH = ts * scale + gap;
+
+    const tc = Math.floor((cx - gap) / cellW);
+    const tr = Math.floor((cy - gap) / cellH);
+    if (tc < 0 || tr < 0 || tc >= cols) { _tseSelectedTile = -1; _tseUpdateTypeUI(); return; }
+
+    const idx = tr * cols + tc;
+    if (idx >= _tseTileCount) { _tseSelectedTile = -1; _tseUpdateTypeUI(); return; }
+
+    _tseSelectedTile = idx;
+    _tseRender();
+});
+
 // ── Back to Tilemap (Sub-View navigation) ────────────────────────────────────
 
 function _tseGetCurrentTilesetData() {
@@ -473,12 +1046,12 @@ document.getElementById('tse-btn-back-tilemap').addEventListener('click', () => 
 
 document.getElementById('tse-sel-tilesize').addEventListener('change', (e) => {
     _tseTileSize = parseInt(e.target.value);
-    if (_tseImageData) { _tseQuantise(); _tseRender(); }
+    if (_tseImageData) { _tseQuantise(); _tseRender(); _tseRenderAnimList(); }
 });
 
 document.getElementById('tse-sel-depth').addEventListener('change', (e) => {
     _tseDepth = parseInt(e.target.value);
-    if (_tseImageData) { _tseQuantise(); _tseRender(); }
+    if (_tseImageData) { _tseQuantise(); _tseRender(); _tseRenderAnimList(); }
 });
 
 // ── Zoom & Pan ──────────────────────────────────────────────────────────────

@@ -29,7 +29,11 @@ let _tmapTsetTileSize  = 16;
 let _tmapTsetDepth     = 3;
 let _tmapTsetIndices   = null;    // Uint8Array — all tiles stacked vertically (tile_w × totalH)
 let _tmapTsetFilename  = '';
+let _tmapTsetCollision = null;    // Uint8Array(tile_count) — collision bitmask per tile (T12.2)
+let _tmapTsetTypes     = null;    // Uint8Array(tile_count) — type tag per tile (T12.3)
+let _tmapTsetAnimGroups = null;   // [{startIndex, frameCount, speed}] or null (T12.3)
 
+let _tmapShowCollOverlay = false; // toggle for collision overlay on map (T12.2)
 let _tmapSelectedTile  = 0;       // currently selected tile index for painting
 let _tmapPainting      = false;   // mouse is down on map canvas
 
@@ -123,7 +127,46 @@ function _tmapParseTset(buf) {
         }
     }
 
-    return { palette, tileCount, tileSize, depth, indices };
+    // T12.2/T12.3: Parse metadata sections from flags byte
+    const flags = buf[9];
+    let types     = null;
+    let collision = null;
+    let animGroups = null;
+    let metaOffset = imgOffset + imageSize;
+
+    // TYPES section (flags Bit 0)
+    if (flags & 1) {
+        if (buf.length >= metaOffset + tileCount) {
+            types = new Uint8Array(tileCount);
+            types.set(buf.subarray(metaOffset, metaOffset + tileCount));
+        }
+        metaOffset += tileCount + (tileCount & 1 ? 1 : 0);  // + pad
+    }
+    // COLLISION section (flags Bit 1)
+    if (flags & 2) {
+        if (buf.length >= metaOffset + tileCount) {
+            collision = new Uint8Array(tileCount);
+            collision.set(buf.subarray(metaOffset, metaOffset + tileCount));
+        }
+        metaOffset += tileCount + (tileCount & 1 ? 1 : 0);  // + pad
+    }
+    // ANIMATION section (flags Bit 2)
+    if (flags & 4) {
+        if (buf.length >= metaOffset + 2) {
+            const groupCount = view.getUint16(metaOffset, false);
+            metaOffset += 2;
+            animGroups = [];
+            for (let g = 0; g < groupCount && metaOffset + 4 <= buf.length; g++) {
+                const startIndex = view.getUint16(metaOffset, false);
+                const frameCount = buf[metaOffset + 2];
+                const speed      = buf[metaOffset + 3];
+                animGroups.push({ startIndex, frameCount, speed });
+                metaOffset += 4;
+            }
+        }
+    }
+
+    return { palette, tileCount, tileSize, depth, indices, collision, types, animGroups };
 }
 
 async function _tmapLoadTsetFromProject(relativePath) {
@@ -166,7 +209,18 @@ function _tmapApplyTileset(tset, filename) {
     _tmapTsetDepth     = tset.depth;
     _tmapTsetIndices   = tset.indices;
     _tmapTsetFilename  = filename;
-    _tmapSelectedTile  = 0;
+    _tmapTsetCollision  = tset.collision || null;
+    _tmapTsetTypes      = tset.types || null;
+    _tmapTsetAnimGroups = tset.animGroups || null;
+    _tmapSelectedTile   = 0;
+
+    // T12.4: Sync tile dimensions from tileset (authoritative source)
+    _tmapTileW = tset.tileSize;
+    _tmapTileH = tset.tileSize;
+    document.getElementById('tmap-sel-tilew').value    = tset.tileSize;
+    document.getElementById('tmap-sel-tileh').value    = tset.tileSize;
+    document.getElementById('tmap-sel-tilew').disabled = true;
+    document.getElementById('tmap-sel-tileh').disabled = true;
 
     document.getElementById('tmap-tile-palette').classList.add('has-tileset');
     document.getElementById('tmap-btn-edit-tileset').disabled = false;
@@ -263,6 +317,21 @@ function _tmapTilePaletteClick(e) {
     }
 }
 
+// ── T12.2: Collision Overlay Helper ──────────────────────────────────────────
+
+function _tmapDrawArrow(ctx, x, y, angle, size) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(0, -size * 0.6);
+    ctx.lineTo(-size * 0.4, size * 0.3);
+    ctx.lineTo(size * 0.4, size * 0.3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+}
+
 // ── Map Grid Rendering ───────────────────────────────────────────────────────
 
 function _tmapRenderMap() {
@@ -340,6 +409,54 @@ function _tmapRenderMap() {
         }
     }
 
+    // T12.2: Collision overlay
+    if (_tmapShowCollOverlay && _tmapTsetCollision && hasTileset) {
+        for (let my = 0; my < mh; my++) {
+            for (let mx = 0; mx < mw; mx++) {
+                const tileIdx = _tmapGrid[my * mw + mx];
+                if (tileIdx >= _tmapTsetTileCount) continue;
+                const c = _tmapTsetCollision[tileIdx];
+                if (!c) continue;
+
+                const ox = mx * tw;
+                const oy = my * th;
+
+                if (c & 1) {
+                    // SOLID — red tint
+                    ctx.fillStyle = 'rgba(255,60,60,0.3)';
+                    ctx.fillRect(ox, oy, tw, th);
+                    ctx.fillStyle = '#ff4444';
+                    ctx.font = `bold ${Math.max(8, tw * 0.35)}px monospace`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText('S', ox + tw / 2, oy + th / 2);
+                } else if (c & 0x1E) {
+                    // PASS arrows (Bits 1–4)
+                    ctx.fillStyle = 'rgba(100,180,255,0.25)';
+                    ctx.fillRect(ox, oy, tw, th);
+                    const arrowSize = Math.max(4, tw * 0.22);
+                    const cx2 = ox + tw / 2;
+                    const cy2 = oy + th / 2;
+                    ctx.fillStyle = '#66bbff';
+                    if (c & 2)  _tmapDrawArrow(ctx, cx2, oy + arrowSize,          0, arrowSize);
+                    if (c & 4)  _tmapDrawArrow(ctx, cx2, oy + th - arrowSize,     Math.PI, arrowSize);
+                    if (c & 8)  _tmapDrawArrow(ctx, ox + arrowSize,          cy2, -Math.PI / 2, arrowSize);
+                    if (c & 16) _tmapDrawArrow(ctx, ox + tw - arrowSize,     cy2,  Math.PI / 2, arrowSize);
+                }
+
+                if (c & 32) {
+                    // SLOPE — yellow diagonal line
+                    ctx.strokeStyle = '#ffcc00';
+                    ctx.lineWidth = Math.max(1, tw * 0.08);
+                    ctx.beginPath();
+                    ctx.moveTo(ox + 1, oy + th - 1);
+                    ctx.lineTo(ox + tw - 1, oy + 1);
+                    ctx.stroke();
+                }
+            }
+        }
+    }
+
     // Grid lines
     ctx.strokeStyle = 'rgba(255,255,255,0.08)';
     ctx.lineWidth   = 1;
@@ -403,6 +520,54 @@ function _tmapClearGhost() {
     _tmapRenderGhost(-1, -1);
 }
 
+// ── T12.3: Tile-Info Tooltip ────────────────────────────────────────────────
+
+const _tmapCollNames = ['SOLID', 'PASS_UP', 'PASS_DOWN', 'PASS_LEFT', 'PASS_RIGHT', 'SLOPE'];
+
+function _tmapBuildTooltip(tileIdx) {
+    const parts = [`Tile #${tileIdx}`];
+
+    if (_tmapTsetTypes && _tmapTsetTypes[tileIdx]) {
+        parts.push(`Type: ${_tmapTsetTypes[tileIdx]}`);
+    }
+    if (_tmapTsetCollision && _tmapTsetCollision[tileIdx]) {
+        const c = _tmapTsetCollision[tileIdx];
+        const flags = _tmapCollNames.filter((_, i) => c & (1 << i));
+        parts.push(`Coll: ${flags.join(', ')}`);
+    }
+    if (_tmapTsetAnimGroups) {
+        for (let g = 0; g < _tmapTsetAnimGroups.length; g++) {
+            const ag = _tmapTsetAnimGroups[g];
+            if (tileIdx >= ag.startIndex && tileIdx < ag.startIndex + ag.frameCount) {
+                parts.push(`Anim: Group ${g} (${ag.startIndex}..${ag.startIndex + ag.frameCount - 1}, speed ${ag.speed})`);
+                break;
+            }
+        }
+    }
+    return parts.join('\n');
+}
+
+function _tmapShowTooltip(e, mx, my) {
+    const tip = document.getElementById('tmap-tooltip');
+    if (!_tmapGrid || !_tmapTsetIndices) { tip.style.display = 'none'; return; }
+
+    const tileIdx = _tmapGrid[my * _tmapMapW + mx];
+    if (tileIdx >= _tmapTsetTileCount) { tip.style.display = 'none'; return; }
+
+    tip.textContent = _tmapBuildTooltip(tileIdx);
+    tip.style.display = '';
+
+    // Position relative to tmap-map-scroll container
+    const scroll = document.getElementById('tmap-map-scroll');
+    const rect   = scroll.getBoundingClientRect();
+    tip.style.left = (e.clientX - rect.left + 12) + 'px';
+    tip.style.top  = (e.clientY - rect.top  + 12) + 'px';
+}
+
+function _tmapHideTooltip() {
+    document.getElementById('tmap-tooltip').style.display = 'none';
+}
+
 // ── Map Painting ─────────────────────────────────────────────────────────────
 
 function _tmapMapCoords(e) {
@@ -463,6 +628,7 @@ function _tmapOnMapMouseMove(e) {
         _tmapPanX = _tmapPanOriginX + (e.clientX - _tmapPanStartX);
         _tmapPanY = _tmapPanOriginY + (e.clientY - _tmapPanStartY);
         _tmapApplyTransform();
+        _tmapHideTooltip();
         return;
     }
     const c = _tmapMapCoords(e);
@@ -471,8 +637,10 @@ function _tmapOnMapMouseMove(e) {
             _tmapRenderGhost(c.mx, c.my);
         }
         if (_tmapPainting) _tmapPaintTile(c.mx, c.my);
+        _tmapShowTooltip(e, c.mx, c.my);
     } else {
         _tmapClearGhost();
+        _tmapHideTooltip();
     }
 }
 
@@ -844,6 +1012,12 @@ function initTilemapEditor() {
     document.getElementById('tmap-btn-load-tileset').addEventListener('click', _tmapLoadTsetDialog);
     document.getElementById('tmap-btn-edit-tileset').addEventListener('click', _tmapEditTileset);
 
+    // T12.2: Collision overlay toggle
+    document.getElementById('tmap-chk-coll-overlay').addEventListener('change', e => {
+        _tmapShowCollOverlay = e.target.checked;
+        if (_tmapGrid) _tmapRenderMap();
+    });
+
     // Tile palette click
     document.getElementById('tmap-canvas-tileset').addEventListener('click', _tmapTilePaletteClick);
 
@@ -856,6 +1030,7 @@ function initTilemapEditor() {
     mapCanvas.addEventListener('mouseleave', e => {
         if (!_tmapPanning) _tmapPainting = false;
         _tmapClearGhost();
+        _tmapHideTooltip();
     });
     mapCanvas.addEventListener('contextmenu', _tmapPreventCtx);
 

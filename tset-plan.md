@@ -4,134 +4,39 @@ Referenz: `tset-specs.md` (Spezifikation V1)
 
 ---
 
-## Phase 1: .tset Binary Writer (asset-manager.js)
+## Ist-Stand (nach TOOL-RESTRUCTURE)
 
-Ziel: Der bestehende Asset-Manager erzeugt `.tset` statt `.iraw` für Tilesets.
-Zunächst nur Header + PALETTE + IMAGE (flags=0, keine Metadaten-Sections).
+Phase 1–4 des ursprünglichen Plans sind abgeschlossen. Die Implementierung
+weicht vom alten Plan ab — es gibt keine `asset-manager.js`. Alle .tset-Logik
+lebt im Tileset-Editor und im Compiler:
 
-- [x] **T1.1** `buildTsetBinary(palette, imageData, tileSize, tileCount, depth)` erstellen.
-  Baut den 12-Byte-Header (magic "TSET", version 1, tile_size, tile_count,
-  depth, flags=0, reserved=0), hängt PALETTE und IMAGE an.
-  Datei: `app/src/asset-manager.js`
+### .tset Binary Writer + Editor — DONE
 
-- [x] **T1.2** `onConvertAndSaveTileset()` anpassen: Ruft `buildTsetBinary()` statt
-  der bisherigen Logik auf. Palette-Extraktion bleibt gleich (quantisierte OCS-Werte
-  liegen bereits vor), Bilddaten kommen aus `toPlanarBitmapInterleaved()`.
-  Datei: `app/src/asset-manager.js` (ca. Zeile 572–616)
+| Was | Wo | Funktion |
+|-----|----|----------|
+| Header + Binary bauen | `app/src/tileset-editor.js` | `_tseBuildBinary()` |
+| Planar-Konvertierung | `app/src/tileset-editor.js` | `_tseToPlanar()` |
+| Save-Dialog (.tset) | `app/src/tileset-editor.js` | `_tseSave()` |
+| Load + Parse (.tset) | `app/src/tileset-editor.js` | `_tseApplyBuffer()` |
+| PNG-Import + Quantisierung | `app/src/tileset-editor.js` | `_tseImportPng()`, `_tseQuantise()` |
+| Tile-Grid + Zoom/Pan | `app/src/tileset-editor.js` | `_tseRender()`, Wheel/MMB-Events |
+| Budget-Anzeige (Chip KB + %) | `app/src/tileset-editor.js` | `_tseUpdateProps()` |
+| Open from Project Tree | `app/src/tileset-editor.js` | `tseOpenFromTree()` |
+| Back → Tilemap-Editor | `app/src/tileset-editor.js` | `_tseGetCurrentTilesetData()` |
 
-- [x] **T1.3** Dateiendung im Save-Dialog von `.iraw` auf `.tset` ändern.
-  Filter: `{ name: 'BASSM Tileset', extensions: ['tset'] }`.
-  Datei: `app/src/asset-manager.js` (ca. Zeile 603)
+### Compiler — DONE
 
-- [x] **T1.4** `onCopyTilesetCode()` anpassen: 2-Argument-Form generieren.
-  Alt: `LoadTileset 0, "${name}", ${tileW}, ${tileH}`
-  Neu: `LoadTileset 0, "${name}"`
-  Datei: `app/src/asset-manager.js` (ca. Zeile 618–627)
+| Was | Wo | Details |
+|-----|----|---------|
+| `LoadTileset` 2-Arg-Form | `app/src/commands-map.json` | `(slot, file)` — kein tileW/tileH |
+| .tset-Header lesen (Compile-Zeit) | `app/src/bassm.js` | `setAssetHeaderReader()` → `readBinaryHeader` via preload |
+| Collect: Header parsen + validieren | `app/src/codegen.js:3065` | Magic, Version, tileSize, depth, tileCount, flags |
+| Emission: dc.w + INCBIN offset/len | `app/src/codegen.js:1498` | `SECTION DATA_C`, PALETTE + IMAGE separat |
+| `_cmd_loadtileset`: Palette setzen | `app/src/codegen.js:2834` | Slot 0 → `_SetImagePalette` |
 
-- [ ] **T1.5** Manueller Test: PNG importieren → "Convert & Save" → `.tset`-Datei
-  erzeugen → Hex-Dump prüfen (Magic, Header-Felder, Palette, Image-Offset).
+### Beispiel — DONE
 
----
-
-## Phase 2: Compiler — LoadTileset mit .tset
-
-Ziel: `codegen.js` liest den .tset-Header zur Compile-Zeit und emittiert
-korrektes Assembly mit INCBIN-Offset/Länge.
-
-- [x] **T2.1** `commands-map.json` aktualisieren: `LoadTileset` von 4 auf 2 Argumente
-  ändern (slot, file). `tileW`/`tileH`-Parameter entfernen.
-  Datei: `app/src/commands-map.json` (Zeile 548–571)
-
-- [x] **T2.2** Datei-Lese-API für Codegen bereitstellen. `codegen.js` braucht Zugriff
-  auf die ersten 12 Bytes einer `.tset`-Datei zur Compile-Zeit. Optionen:
-  (a) `readFileSync` über `preload.js`-Bridge, oder
-  (b) Asset-Dateien werden vor Codegen-Start gelesen und als Map übergeben.
-  Dateien: `app/preload.js`, `app/src/codegen.js`, ggf. `app/src/bassm.js`
-
-- [x] **T2.3** Collect-Handler `loadtileset` anpassen: .tset-Header lesen statt
-  tileW/tileH aus Source-Argumenten. `_tilesetAssets`-Map erweitern um:
-  `tile_count`, `depth`, `flags`, `palette_size`, `image_size` und Section-Offsets.
-  Datei: `app/src/codegen.js` (ca. Zeile 3059–3079)
-
-- [x] **T2.4** Asset-Emission anpassen: Synthetischen dc.w-Header emittieren,
-  dann PALETTE und IMAGE als separate INCBIN mit Offset+Länge.
-  Alt: `INCBIN "${filename}"` (gesamte .iraw)
-  Neu: `INCBIN "${filename}",${palOffset},${palSize}` +
-       `INCBIN "${filename}",${imgOffset},${imgSize}`
-  Datei: `app/src/codegen.js` (ca. Zeile 1493–1501)
-
-- [x] **T2.5** `_cmd_loadtileset` prüfen: `_SetImagePalette`-Aufruf bleibt
-  unverändert — das Memory-Layout (Header → Palette → Image) ist identisch.
-  Nur sicherstellen, dass der emittierte dc.w-Header `depth` aus dem .tset
-  verwendet, nicht hart `GFXDEPTH`.
-  Datei: `app/src/codegen.js` (ca. Zeile 2828–2836)
-
-- [x] **T2.6** Compile-Zeit-Validierung: Magic-Check ("TSET"), Version (1),
-  tile_size ∈ {8,16,32}, depth ∈ {1..5}, tile_count > 0. Klare Fehlermeldung
-  bei ungültiger .tset-Datei.
-  Datei: `app/src/codegen.js`
-
-- [ ] **T2.7** End-to-End-Test: BASSM-Programm mit `LoadTileset 0, "tiles.tset"` +
-  `DrawTilemap` compilieren → vasmm68k_mot → vlink → vAmiga Preview.
-  Erwartung: Identisches Ergebnis wie bisher mit .iraw.
-
----
-
-## Phase 3: Migration & Beispiele
-
-Ziel: Bestehende Beispiele auf .tset umstellen, alte .iraw-Tileset-Referenzen entfernen.
-
-- [x] **T3.1** Konvertierungs-Hilfsfunktion `irawToTset(irawBuffer, tileSize, depth)`
-  erstellen. Liest bestehende .iraw (Palette + Image), schreibt .tset.
-  Datei: `app/src/asset-manager.js`
-
-- [ ] **T3.2** Beispiel-Tileset `examples/viewport/images/tiles.iraw` nach `.tset`
-  konvertieren.
-
-- [x] **T3.3** `examples/viewport/test_viewport_camera.bassm` aktualisieren:
-  `LoadTileset 0, "images/tiles.tset"` (2 Argumente).
-
-- [x] **T3.4** ~~Übersprungen~~ — Keine externen Nutzer; Examples werden bald ersetzt.
-
-- [x] **T3.5** ~~Übersprungen~~ — .tset ist exklusiv; keine Backward-Compat nötig.
-
----
-
-## Phase 4: Tileset-Editor — Grundgerüst
-
-Ziel: Neuer Editor-Tab in der IDE. PNG importieren, Tiles im Grid anzeigen,
-.tset speichern (noch ohne Metadaten-Sections).
-
-- [x] **T4.1** Neuen Editor-View erstellen: HTML-Struktur mit Canvas (Tile-Grid),
-  Seitenleiste (Toolbar + Properties), Import-Button.
-  Dateien: `app/index.html` oder neues HTML-Partial
-
-- [x] **T4.2** CSS-Layout: Canvas mit Zoom/Pan, Tile-Palette-Panel, Property-Panel.
-  Datei: `app/style.css`
-
-- [x] **T4.3** PNG-Import: Datei laden → auf Canvas zeichnen → in tile_size-Blöcke
-  zerlegen → Tile-Array aufbauen. Tile-Größe wählbar (8/16/32).
-  Datei: `app/src/tileset-editor.js` (neues Modul)
-
-- [x] **T4.4** Tile-Grid-Rendering: Alle Tiles nummeriert auf Canvas anzeigen.
-  Hover zeigt Tile-Index. Klick selektiert Tile für Property-Editing.
-  Datei: `app/src/tileset-editor.js`
-
-- [x] **T4.5** Depth-Auswahl (1–5 Bitplanes) und Farbquantisierung: Bestehende
-  Quantisierungs-Logik aus asset-manager.js wiederverwenden.
-  Datei: `app/src/tileset-editor.js`
-
-- [x] **T4.6** "Save .tset"-Button: Ruft `buildTsetBinary()` (aus Phase 1) auf,
-  speichert via `window.assetAPI.saveAssetWithDialog()`.
-  Datei: `app/src/tileset-editor.js`
-
-- [x] **T4.7** "Load .tset"-Button: Bestehende .tset-Datei öffnen, Header parsen,
-  Palette + Image anzeigen, Metadaten laden (falls vorhanden).
-  Datei: `app/src/tileset-editor.js`
-
-- [x] **T4.8** Budget-Anzeige: Geschätzte Chip-RAM-Belegung berechnen und
-  anzeigen (palette_size + image_size). Warnung bei > 50% von 512 KB.
-  Datei: `app/src/tileset-editor.js`
+`examples/viewport/test_viewport_camera.bassm` nutzt `LoadTileset 0, "images/tiles.tset"`.
 
 ---
 
@@ -140,24 +45,29 @@ Ziel: Neuer Editor-Tab in der IDE. PNG importieren, Tiles im Grid anzeigen,
 Ziel: User kann pro Tile einen Typ-Tag vergeben. Die TYPES-Section wird in die
 .tset-Datei geschrieben.
 
-- [ ] **T5.1** UI: Typ-Eingabefeld im Property-Panel. Dropdown oder Nummer (0–255).
+- [x] **T5.1** UI: Typ-Eingabefeld im Property-Panel. Dropdown oder Nummer (0–255).
   Optionales Textfeld für Label (nur IDE-intern, wird nicht in .tset gespeichert).
   Datei: `app/src/tileset-editor.js`
 
-- [ ] **T5.2** Internes State-Array `tileTypes = new Uint8Array(tile_count)`.
-  Initialisierung mit 0. Aktualisierung bei Typ-Änderung.
+- [x] **T5.2** Tile-Selektion: Klick auf Tile im Grid selektiert es, zeigt Index +
+  aktuellen Typ im Property-Panel. Highlight-Rahmen auf selektiertem Tile.
   Datei: `app/src/tileset-editor.js`
 
-- [ ] **T5.3** `buildTsetBinary()` erweitern: Wenn mindestens ein Typ ≠ 0,
-  flags Bit 0 setzen und TYPES-Section anhängen (tile_count Bytes + Pad).
-  Datei: `app/src/asset-manager.js`
+- [x] **T5.3** Internes State-Array `_tseTileTypes = new Uint8Array(tile_count)`.
+  Initialisierung mit 0. Aktualisierung bei Typ-Änderung. Bei `_tseApplyBuffer()`
+  aus .tset laden wenn flags Bit 0 gesetzt.
+  Datei: `app/src/tileset-editor.js`
 
-- [ ] **T5.4** Codegen: Wenn .tset-Header flags Bit 0 gesetzt, TYPES-Label und
+- [x] **T5.4** `_tseBuildBinary()` erweitern: Wenn mindestens ein Typ ≠ 0,
+  flags Bit 0 setzen und TYPES-Section anhängen (tile_count Bytes + Pad).
+  Datei: `app/src/tileset-editor.js`
+
+- [x] **T5.5** Codegen: Wenn .tset-Header flags Bit 0 gesetzt, TYPES-Label und
   INCBIN emittieren (`SECTION DATA`). Offset berechnen:
   `types_offset = 12 + palette_size + image_size`.
-  Datei: `app/src/codegen.js`
+  Datei: `app/src/codegen.js` (Emission ~Zeile 1498, Collect ~Zeile 3065)
 
-- [ ] **T5.5** Codegen: BSS-Variable `_active_tileset_types: ds.l 1` emittieren
+- [x] **T5.6** Codegen: BSS-Variable `_active_tileset_types: ds.l 1` emittieren
   (nur wenn TYPES-Section vorhanden). `SetTilemap` setzt den Pointer.
   Datei: `app/src/codegen.js`
 
@@ -168,29 +78,30 @@ Ziel: User kann pro Tile einen Typ-Tag vergeben. Die TYPES-Section wird in die
 Ziel: User kann pro Tile Kollisions-Flags setzen. Die COLLISION-Section wird in
 die .tset-Datei geschrieben.
 
-- [ ] **T6.1** UI: Checkbox-Gruppe im Property-Panel für SOLID, PASS_UP,
+- [x] **T6.1** UI: Checkbox-Gruppe im Property-Panel für SOLID, PASS_UP,
   PASS_DOWN, PASS_LEFT, PASS_RIGHT, SLOPE. Visuelle Deaktivierung der PASS-Bits
   wenn SOLID aktiv.
   Datei: `app/src/tileset-editor.js`
 
-- [ ] **T6.2** Internes State-Array `tileColl = new Uint8Array(tile_count)`.
-  Bit-Manipulation bei Checkbox-Änderung.
+- [x] **T6.2** Internes State-Array `_tseTileColl = new Uint8Array(tile_count)`.
+  Bit-Manipulation bei Checkbox-Änderung. Bei `_tseApplyBuffer()` aus .tset laden
+  wenn flags Bit 1 gesetzt.
   Datei: `app/src/tileset-editor.js`
 
-- [ ] **T6.3** `buildTsetBinary()` erweitern: Wenn mindestens ein Collision-Flag ≠ 0,
+- [x] **T6.3** `_tseBuildBinary()` erweitern: Wenn mindestens ein Collision-Flag ≠ 0,
   flags Bit 1 setzen und COLLISION-Section anhängen.
-  Datei: `app/src/asset-manager.js`
+  Datei: `app/src/tileset-editor.js`
 
-- [ ] **T6.4** Codegen: Wenn .tset-Header flags Bit 1 gesetzt, COLLISION-Label
+- [x] **T6.4** Codegen: Wenn .tset-Header flags Bit 1 gesetzt, COLLISION-Label
   und INCBIN emittieren. Offset berechnen:
   `coll_offset = types_offset + (has_types ? align(tile_count) : 0)`.
   Datei: `app/src/codegen.js`
 
-- [ ] **T6.5** Codegen: BSS-Variable `_active_tileset_coll: ds.l 1` emittieren.
+- [x] **T6.5** Codegen: BSS-Variable `_active_tileset_coll: ds.l 1` emittieren.
   `SetTilemap` setzt den Pointer.
   Datei: `app/src/codegen.js`
 
-- [ ] **T6.6** Tile-Grid Overlay: Selektierte Collision-Flags als farbige
+- [x] **T6.6** Tile-Grid Overlay: Selektierte Collision-Flags als farbige
   Overlay-Icons auf den Tiles im Editor anzeigen (S=Solid, Pfeile für PASS,
   Schraffur für SLOPE).
   Datei: `app/src/tileset-editor.js`
@@ -202,25 +113,25 @@ die .tset-Datei geschrieben.
 Ziel: Neue BASSM-Befehle `GetTileType()` und `GetTileColl()` für den Zugriff
 auf Tile-Eigenschaften zur Laufzeit.
 
-- [ ] **T7.1** `commands-map.json`: Neue Befehle definieren.
-  `GetTileType(slot, x, y)` → gibt Typ-Byte zurück.
-  `GetTileColl(slot, x, y)` → gibt Collision-Byte zurück.
-  Datei: `app/src/commands-map.json`
-
-- [ ] **T7.2** Codegen `_cmd_gettiletype`: Inline-Codegen (kein Fragment nötig).
-  1. Tile-Index aus Map lesen: `scrollX+x` / tile_w → col, `scrollY+y` / tile_h → row,
-     map_data[row * map_w + col] → tile_index.
-  2. TYPES-LUT lesen: `move.b 0(types_ptr, tile_index.w), result`.
-  3. Ergebnis in d0 oder User-Variable.
+- [x] **T7.1** Builtin-Handler registrieren: `gettiletype` und `gettilecoll`
+  in `_initBuiltinHandlers()`. (Funktionen mit Rückgabewert sind Builtins,
+  nicht commands-map.json — commands-map ist nur für void-Commands.)
   Datei: `app/src/codegen.js`
 
-- [ ] **T7.3** Codegen `_cmd_gettilecoll`: Analog zu T7.2, aber auf COLLISION-LUT.
+- [x] **T7.2** Codegen `_builtin_gettiletype`: Inline-Codegen via shared
+  `_builtin_tilequery()`. World (x,y) → `divu` col/row → Map-Lookup →
+  TYPES-LUT-Byte → d0. Kein Fragment nötig.
   Datei: `app/src/codegen.js`
 
-- [ ] **T7.4** Alternative: Subroutinen `_GetTileAtPos(d0=x, d1=y) → d0=tile_index`
-  als Fragment (vermeidet Code-Duplikation zwischen GetTileType/GetTileColl).
-  Entscheidung: Inline vs. Fragment basierend auf Code-Größe.
-  Datei: `app/src/m68k/fragments/tilemap.s` oder neues `tileprops.s`
+- [x] **T7.3** Codegen `_builtin_gettilecoll`: Analog zu T7.2 via shared
+  `_builtin_tilequery()`, aber auf `_active_tileset_coll`.
+  Datei: `app/src/codegen.js`
+
+- [x] **T7.4** ~~Fragment~~ → Entscheidung: Inline mit shared Codegen-Helper
+  `_builtin_tilequery(expr, lines, lutVar, fnName)`. Kein Fragment nötig —
+  der Helper emittiert identischen ASM für beide Builtins, nur LUT-Pointer
+  unterscheidet sich. Signatur: `GetTileType(x, y)` / `GetTileColl(x, y)`
+  ohne Slot-Argument (nutzt `_active_tilemap_ptr` + `_active_tileset_*`).
 
 - [ ] **T7.5** Test: BASSM-Programm das Tile-Typen abfragt und Ergebnis
   auf Screen anzeigt (z.B. `Print GetTileType(0, playerX, playerY)`).
@@ -232,18 +143,23 @@ auf Tile-Eigenschaften zur Laufzeit.
 Ziel: BASSM-Befehl `ChangeTile(slot, x, y, newIndex)` zum Ändern von Tiles
 zur Laufzeit.
 
-- [ ] **T8.1** `commands-map.json`: `ChangeTile(slot, x, y, newIndex)` definieren.
-  Datei: `app/src/commands-map.json`
+- [x] **T8.1** `commands-map.json`: `ChangeTile x, y, newIndex` definieren (kein
+  Slot — nutzt `_active_tilemap_ptr` von SetTilemap). Command-Handler in
+  `_initCmdHandlers()` registriert.
+  Dateien: `app/src/commands-map.json`, `app/src/codegen.js`
 
-- [ ] **T8.2** Codegen `_cmd_changetile`: Map-Array-Eintrag überschreiben.
+- [x] **T8.2** Codegen `_cmd_changetile`: Map-Array-Eintrag überschreiben.
   `x / tile_w → col`, `y / tile_h → row`, `map_data[row * map_w + col] = newIndex`.
-  Schreibzugriff: `move.w newIndex, 0(map_base, offset.l)`.
+  Schreibzugriff: `move.w d2,8(a0,d1.l)`.
   Datei: `app/src/codegen.js`
 
-- [ ] **T8.3** Optionaler visueller Update: Wenn das geänderte Tile im sichtbaren
-  Viewport liegt, ein einzelnes Tile-Blit in den Back-Buffer auslösen.
-  Entscheidung: automatisch vs. "wird beim nächsten DrawTilemap sichtbar".
-  Datei: `app/src/codegen.js`, ggf. `tilemap.s`
+- [x] **T8.3** Entscheidung: **Kein sofortiger Blit.** Das geänderte Tile wird beim
+  nächsten `DrawTilemap` sichtbar. Begründung: Phase 1 zeichnet ohnehin alle
+  sichtbaren Tiles neu — ein Einzel-Blit wäre verschwendet und müsste fine_x/y,
+  Copper-State und Back-Buffer-Pointer kennen. `_bg_restore_tilemap` liest
+  ebenfalls aus `_active_tilemap_ptr` und ist damit automatisch konsistent.
+  **Achtung:** Wenn PERF-J (Screen-to-Screen Blit) implementiert wird, braucht
+  `ChangeTile` eine Dirty-Tile-Liste → siehe `perf-plan.md` T19.
 
 ---
 
@@ -252,38 +168,38 @@ zur Laufzeit.
 Ziel: User kann Animations-Gruppen definieren. Die ANIMATION-Section wird in die
 .tset-Datei geschrieben.
 
-- [ ] **T9.1** UI: "Animations"-Panel im Editor. Button "Neue Gruppe".
+- [x] **T9.1** UI: "Animations"-Panel im Editor. Button "Neue Gruppe".
   Pro Gruppe: Start-Tile (Klick auf Grid), Frame-Count (Spinner), Speed (Spinner).
   Vorschau: animierte Tile-Anzeige im Panel.
   Datei: `app/src/tileset-editor.js`
 
-- [ ] **T9.2** Internes State-Array `animGroups = []`, jedes Element:
+- [x] **T9.2** Internes State-Array `_tseAnimGroups = []`, jedes Element:
   `{ startIndex, frameCount, speed }`. Validierung: Frames müssen konsekutiv
   und innerhalb tile_count liegen.
   Datei: `app/src/tileset-editor.js`
 
-- [ ] **T9.3** `buildTsetBinary()` erweitern: Wenn animGroups.length > 0,
+- [x] **T9.3** `_tseBuildBinary()` erweitern: Wenn _tseAnimGroups.length > 0,
   flags Bit 2 setzen und ANIMATION-Section anhängen (2 + groups × 4 Bytes).
-  Datei: `app/src/asset-manager.js`
+  Bei `_tseApplyBuffer()` aus .tset laden wenn flags Bit 2 gesetzt.
+  Datei: `app/src/tileset-editor.js`
 
-- [ ] **T9.4** Codegen: Wenn flags Bit 2 gesetzt, ANIMATION-Label + INCBIN emittieren.
+- [x] **T9.4** Codegen: Wenn flags Bit 2 gesetzt, ANIMATION-Label + INCBIN emittieren.
   BSS-Variable `_active_tileset_anim: ds.l 1`. Offset berechnen.
   Datei: `app/src/codegen.js`
 
-- [ ] **T9.5** Runtime-Architektur entscheiden: Wie werden animierte Tiles
-  zur Laufzeit substituiert?
-  Option A: Substitutions-LUT (`tile_remap[tile_count]`, 2 Bytes/Tile),
-  aktualisiert pro VBlank.
-  Option B: DrawTilemap prüft pro Tile inline gegen Animations-Gruppen.
-  Empfehlung: Option A (LUT), da O(1) pro Tile beim Rendern.
+- [x] **T9.5** Runtime-Architektur entschieden: **Option A (LUT)**.
+  Substitutions-LUT (`tile_remap[tile_count]`, 2 Bytes/Tile),
+  aktualisiert pro VBlank. O(1) pro Tile beim Rendern.
 
-- [ ] **T9.6** Runtime: Animations-Tick implementieren. Pro Gruppe:
+- [x] **T9.6** Runtime: Animations-Tick implementieren. Pro Gruppe:
   frame_counter inkrementieren, bei Überlauf wraparound. Remap-LUT patchen.
   Datei: `app/src/m68k/fragments/tilemap.s` oder neues Fragment
 
-- [ ] **T9.7** DrawTilemap anpassen: Vor _DrawImageFrame den Tile-Index durch
-  `tile_remap[index]` ersetzen (`move.w 0(remap_base, d2.w*2), d2`).
-  Datei: `app/src/m68k/fragments/tilemap.s`
+- [x] **T9.7** DrawTilemap + _bg_restore_tilemap: Tile-Index durch
+  `tile_remap[index]` ersetzen. `_tile_remap` BSS wird immer emittiert
+  (nicht nur bei Animationen), `SetTilemap` initialisiert identity-Remap.
+  `_DrawTilemap` nutzt a1 als Remap-Base, `_bg_restore_tilemap` nutzt a4.
+  Dateien: `app/src/m68k/fragments/tilemap.s`, `app/src/codegen.js`
 
 ---
 
@@ -292,26 +208,31 @@ Ziel: User kann Animations-Gruppen definieren. Die ANIMATION-Section wird in die
 Ziel: User kann Heightmaps für Slope-Tiles zeichnen. Die SLOPES-Section wird
 in die .tset-Datei geschrieben.
 
-- [ ] **T10.1** Voraussetzung: Tile muss SLOPE-Flag in COLLISION haben (Phase 6).
-  UI zeigt Heightmap-Editor nur wenn SLOPE-Flag gesetzt.
+- [x] **T10.1** Voraussetzung: Tile muss SLOPE-Flag in COLLISION haben (Phase 6).
+  UI: `#tse-slope-section` (Canvas + Titel) wird per `_tseUpdateCollUI()` nur
+  angezeigt wenn Bit 5 (SLOPE) im Collision-Byte gesetzt ist.
+  Dateien: `app/index.html`, `app/style.css`, `app/src/tileset-editor.js`
+
+- [x] **T10.2** Heightmap-Editor: `_tseSlopeRender()` zeichnet Tile 8× vergrößert
+  mit Spalten-Grid und gelber Heightmap-Linie + Ground-Fill. Klick/Drag auf
+  Canvas setzt Spaltenhöhe (0=unten, tileSize=oben) via `_tseSlopeSetColumn()`.
+  State in `_tseSlopeData` Map (tileIdx → Uint8Array). Reset bei Import/Load.
   Datei: `app/src/tileset-editor.js`
 
-- [ ] **T10.2** Heightmap-Editor: Canvas zeigt das Tile vergrößert (z.B. 8×).
-  User zeichnet die Bodenlinie durch Klick/Drag auf die Pixel-Spalten.
-  Höhe pro Spalte = Mausposition (0 = unten, tile_size = oben).
+- [x] **T10.3** State `_tseSlopeData` (Map, T10.2 angelegt). Laden in
+  `_tseApplyBuffer()`: flags Bit 3 → slope_count + entries parsen
+  (2 + tile_idx + heightmap pro Entry). Cleanup: SLOPE-Checkbox unchecked →
+  `_tseSlopeData.delete()`. Reset bei Import/Load (T10.2).
   Datei: `app/src/tileset-editor.js`
 
-- [ ] **T10.3** Internes State: `slopeData = new Map()`, Key = tile_index,
-  Value = `Uint8Array(tile_size)`. Nur für Tiles mit SLOPE-Flag.
+- [x] **T10.4** `_tseBuildBinary()`: flags Bit 3, SLOPES-Section anhängen.
+  Gefiltert auf Tiles mit SLOPE-Bit (belt-and-suspenders zu T10.3 Cleanup).
+  Format: slope_count(w) + entries × (tile_index(w) + heightmap(tile_size B)).
   Datei: `app/src/tileset-editor.js`
 
-- [ ] **T10.4** `buildTsetBinary()` erweitern: Wenn slopeData.size > 0,
-  flags Bit 3 setzen und SLOPES-Section anhängen
-  (2 + entries × (2 + tile_size) Bytes).
-  Datei: `app/src/asset-manager.js`
-
-- [ ] **T10.5** Codegen: Wenn flags Bit 3 gesetzt, SLOPES-Label + INCBIN emittieren.
-  BSS-Variable `_active_tileset_slopes: ds.l 1`. Offset berechnen.
+- [x] **T10.5** Codegen: flags Bit 3 → Collect: `_readAssetHeader` für slope_count,
+  Offset/Size berechnen. Emission: `SECTION DATA`, XDEF + INCBIN.
+  BSS: `_active_tileset_slopes: ds.l 1`. SetTilemap: Pointer setzen.
   Datei: `app/src/codegen.js`
 
 ---
@@ -321,12 +242,12 @@ in die .tset-Datei geschrieben.
 Ziel: Subroutine für Slope-Kollision. BASSM-Befehl oder automatische Integration
 in die Tile-Kollisionsprüfung.
 
-- [ ] **T11.1** Slope-Lookup-Subroutine: Eingabe: tile_index + rel_x.
+- [x] **T11.1** Slope-Lookup-Subroutine: Eingabe: tile_index + rel_x.
   Slope-Eintrag im SLOPES-Array finden (linearer Scan oder Index-Tabelle).
   Heightmap-Byte lesen.
   Datei: `app/src/m68k/fragments/tilemap.s` oder `tileprops.s`
 
-- [ ] **T11.2** Collide-and-Slide-Algorithmus: Spielerposition korrigieren.
+- [x] **T11.2** Collide-and-Slide-Algorithmus: Spielerposition korrigieren.
   1. Foot-Position → Tile bestimmen
   2. Collision-Flag prüfen (SLOPE?)
   3. rel_x = foot_x AND (tile_size-1)
@@ -335,9 +256,12 @@ in die Tile-Kollisionsprüfung.
   6. Horizontale Bewegung bleibt erhalten
   Datei: `app/src/m68k/fragments/tilemap.s`
 
-- [ ] **T11.3** BASSM-Befehl entscheiden: Eigener Befehl (`CollideTile`)?
-  Oder automatisch in eine erweiterte `GetTileColl`-Variante integriert?
-  Abwägung: Explizit vs. implizit (BASSM-Philosophie: kein verstecktes Verhalten).
+- [x] **T11.3** Entscheidung: **Eigener Builtin `CollideTile(x, y)`**.
+  Gibt korrigiertes y zurück (surface_y bei Slope-Snap, sonst y unverändert).
+  Builtin-Funktion (Rückgabewert d0), nicht void-Command. Kollisions-Erkennung
+  durch Vergleich mit Original-y: `If CollideTile(px, py) <> py`.
+  Inline-Codegen: Argumente evaluieren → `jsr _CollideSlope` → `move.l d1,d0`.
+  Datei: `app/src/codegen.js` (`_initBuiltinHandlers`, `_builtin_collidetile`)
 
 - [ ] **T11.4** Test: Platformer-Testprogramm mit Rampen. Spieler läuft über
   Slopes, gleitet hoch/runter ohne zu stoppen oder durchzufallen.
@@ -349,52 +273,48 @@ in die Tile-Kollisionsprüfung.
 Ziel: Der Tilemap-Editor nutzt .tset-Dateien als Tile-Palette und zeigt
 Eigenschaften als Overlay an.
 
-- [ ] **T12.1** .tset als Palette-Quelle: Tilemap-Editor lädt .tset,
+- [x] **T12.1** .tset als Palette-Quelle: Tilemap-Editor lädt .tset,
   zeigt Tiles in der Palette an (statt manueller PNG-Konfiguration).
-  Datei: Tilemap-Editor-Modul
+  Bereits durch TOOL-RESTRUCTURE implementiert: `_tmapParseTset()`,
+  `_tmapLoadTsetDialog()`, `_tmapApplyTileset()`, `_tmapRenderTilePalette()`.
+  Datei: `app/src/tilemap-editor.js`
 
-- [ ] **T12.2** Tile-Overlay im Map-Canvas: Collision-Flags als halbtransparentes
+- [x] **T12.2** Tile-Overlay im Map-Canvas: Collision-Flags als halbtransparentes
   Overlay auf den platzierten Tiles anzeigen (Solid=rot, PASS=Pfeile, Slope=gelb).
-  Datei: Tilemap-Editor-Modul
+  `_tmapParseTset()` erweitert (COLLISION-Section), `_tmapDrawArrow()`,
+  Overlay-Pass in `_tmapRenderMap()`, Checkbox "Show Collision" im Sidebar.
+  Dateien: `app/src/tilemap-editor.js`, `app/index.html`
 
-- [ ] **T12.3** Tile-Info auf Hover: Tooltip zeigt Tile-Index, Typ-Name,
-  Collision-Flags, Animation-Zugehörigkeit.
-  Datei: Tilemap-Editor-Modul
+- [x] **T12.3** Tile-Info auf Hover: Tooltip zeigt Tile-Index, Typ-Name,
+  Collision-Flags, Animation-Zugehörigkeit. `_tmapParseTset()` erweitert
+  (TYPES + ANIMATION), `_tmapBuildTooltip()`, `_tmapShowTooltip()` in
+  mousemove, `#tmap-tooltip` div + CSS.
+  Dateien: `app/src/tilemap-editor.js`, `app/index.html`, `app/style.css`
 
-- [ ] **T12.4** .bmap-Export: Map-Grid als .bmap speichern (bestehende Logik
-  aus asset-manager.js, Tile-Size kommt jetzt aus der geladenen .tset).
-  Datei: Tilemap-Editor-Modul
+- [x] **T12.4** .bmap-Export: Map-Grid als .bmap speichern (bestehende Logik
+  aus tilemap-editor.js, Tile-Size kommt jetzt aus der geladenen .tset).
+  Fix: `_tmapApplyTileset()` synchronisiert `_tmapTileW/H` auf `tset.tileSize`,
+  aktualisiert Dropdowns, disabled Tile-Size-Selektoren (Tileset ist autoritativ).
+  Datei: `app/src/tilemap-editor.js`
 
 ---
 
 ## Abhängigkeiten
 
 ```
-Phase 1 ──→ Phase 2 ──→ Phase 3
-                │
-                ↓
-             Phase 4 ──→ Phase 5 ──→ Phase 7
-                │           │
-                │           ↓
-                ├──→ Phase 6 ──→ Phase 7
-                │                  │
-                │                  ↓
-                │               Phase 8
-                │
-                ├──→ Phase 9
-                │
-                ├──→ Phase 10 ──→ Phase 11
-                │
-                └──→ Phase 12 (benötigt Phase 5 + 6)
+Phase 5 (TYPES) ──────→ Phase 7 (GetTileType/GetTileColl)
+    │                       │
+    │                       ↓
+Phase 6 (COLLISION) ──→ Phase 7 ──→ Phase 8 (ChangeTile)
+    │
+    └──→ Phase 10 (SLOPES) ──→ Phase 11 (Collide & Slide)
+
+Phase 9 (ANIMATION) ──→ eigenständig (nur Tileset-Editor + Codegen + Runtime)
+
+Phase 12 (Tilemap-Editor) ──→ benötigt Phase 5 + 6
 ```
 
-Phase 1–3 bilden den kritischen Pfad: Ohne funktionierendes .tset-Format und
-Compiler-Support kann kein Editor-Feature getestet werden.
-
-Phase 4 (Editor-Grundgerüst) ist Voraussetzung für alle Editor-Phasen (5, 6, 9, 10, 12).
-
-Phase 7–8 (Runtime-Befehle) können parallel zur Editor-Entwicklung stattfinden,
-sobald Phase 2 abgeschlossen ist.
-
-Phase 9–11 (Animation, Slopes) sind unabhängig voneinander und haben die niedrigste
-Priorität.
+Phase 5 + 6 sind Voraussetzung für die meisten Runtime-Features.
+Phase 9 (Animation) und Phase 10 (Slopes) sind unabhängig voneinander.
+Phase 12 (Tilemap-Editor Integration) profitiert von allen Editor-Phasen,
+kann aber inkrementell umgesetzt werden.

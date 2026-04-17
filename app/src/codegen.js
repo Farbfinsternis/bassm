@@ -1171,6 +1171,12 @@ export class CodeGen {
         }
         if (this._usesTilemap) {
             out.push('        INCLUDE "tilemap.s"');
+            // T9.6: include animation fragment if any tileset has animation
+            if ([...this._tilesetAssets.values()].some(ts => ts.flags & 4))
+                out.push('        INCLUDE "tilemap_anim.s"');
+            // T11.1: include slope lookup if any tileset has slopes
+            if ([...this._tilesetAssets.values()].some(ts => ts.flags & 8))
+                out.push('        INCLUDE "tileprops.s"');
         }
         out.push('');
         out.push('        even');
@@ -1317,6 +1323,27 @@ export class CodeGen {
                 out.push('_active_tileset_ptr: ds.l    1');
                 out.push('_active_scroll_x:    ds.l    1');
                 out.push('_active_scroll_y:    ds.l    1');
+                // T5.6: TYPES pointer (only if any tileset has flags Bit 0)
+                if ([...this._tilesetAssets.values()].some(ts => ts.flags & 1))
+                    out.push('_active_tileset_types: ds.l 1');
+                // T6.5: COLLISION pointer (only if any tileset has flags Bit 1)
+                if ([...this._tilesetAssets.values()].some(ts => ts.flags & 2))
+                    out.push('_active_tileset_coll: ds.l 1');
+                // T10.5: SLOPES pointer (only if any tileset has flags Bit 3)
+                if ([...this._tilesetAssets.values()].some(ts => ts.flags & 8))
+                    out.push('_active_tileset_slopes: ds.l 1');
+                // T9.7: Remap LUT — always emitted, identity-initialized by SetTilemap
+                const maxTileCount = Math.max(...[...this._tilesetAssets.values()].map(ts => ts.tileCount));
+                out.push(`_tile_remap: ds.w ${maxTileCount}`);
+                // T9.4: ANIMATION pointer + state (only if any tileset has flags Bit 2)
+                const animTilesets = [...this._tilesetAssets.values()].filter(ts => ts.flags & 4);
+                if (animTilesets.length > 0) {
+                    out.push('_active_tileset_anim: ds.l 1');
+                    // T9.6: Per-group state (2 bytes: tick + offset, sized to max group count)
+                    const maxGroupCount = Math.max(...animTilesets.map(ts => ts.animGroupCount));
+                    out.push(`_anim_state: ds.b ${maxGroupCount * 2}`);
+                    out.push('        EVEN');
+                }
             }
             if (this._usesBobs || this._usesTilemap) {
                 out.push('_active_fine_x:      ds.w    1');  // written by DrawTilemap (T31), read by FlushBobs via state block
@@ -1495,7 +1522,7 @@ export class CodeGen {
         }
 
         // Tileset data (chip RAM — Blitter source for DrawTilemap / _bg_restore_tilemap)
-        for (const [, { filename, label: lbl, tileW, tileH, rowbytes, depth: tsDepth, paletteSize, imageSize, palOffset, imgOffset }] of this._tilesetAssets) {
+        for (const [, { filename, label: lbl, tileW, tileH, rowbytes, depth: tsDepth, paletteSize, imageSize, palOffset, imgOffset, flags: tsFlags, tileCount: tsCount, typesOffset, typesSize, collOffset, animOffset, animSize, slopesOffset, slopesSize }] of this._tilesetAssets) {
             out.push(`        SECTION ${lbl}_sec,DATA_C`);
             out.push(`        XDEF    ${lbl}`);
             out.push(`${lbl}:`);
@@ -1504,6 +1531,46 @@ export class CodeGen {
             out.push(`        INCBIN  "${filename}",${imgOffset},${imageSize}`);
             out.push(`        EVEN`);
             out.push('');
+
+            // T5.5: TYPES section (fast/chip RAM — CPU lookup only)
+            if (tsFlags & 1) {
+                out.push(`        SECTION ${lbl}_types_sec,DATA`);
+                out.push(`        XDEF    ${lbl}_types`);
+                out.push(`${lbl}_types:`);
+                out.push(`        INCBIN  "${filename}",${typesOffset},${tsCount}`);
+                out.push(`        EVEN`);
+                out.push('');
+            }
+
+            // T6.4: COLLISION section (fast/chip RAM — CPU lookup only)
+            if (tsFlags & 2) {
+                out.push(`        SECTION ${lbl}_coll_sec,DATA`);
+                out.push(`        XDEF    ${lbl}_coll`);
+                out.push(`${lbl}_coll:`);
+                out.push(`        INCBIN  "${filename}",${collOffset},${tsCount}`);
+                out.push(`        EVEN`);
+                out.push('');
+            }
+
+            // T9.4: ANIMATION section (fast/chip RAM — CPU lookup only)
+            if (tsFlags & 4) {
+                out.push(`        SECTION ${lbl}_anim_sec,DATA`);
+                out.push(`        XDEF    ${lbl}_anim`);
+                out.push(`${lbl}_anim:`);
+                out.push(`        INCBIN  "${filename}",${animOffset},${animSize}`);
+                out.push(`        EVEN`);
+                out.push('');
+            }
+
+            // T10.5: SLOPES section (fast/chip RAM — CPU lookup only)
+            if (tsFlags & 8) {
+                out.push(`        SECTION ${lbl}_slopes_sec,DATA`);
+                out.push(`        XDEF    ${lbl}_slopes`);
+                out.push(`${lbl}_slopes:`);
+                out.push(`        INCBIN  "${filename}",${slopesOffset},${slopesSize}`);
+                out.push(`        EVEN`);
+                out.push('');
+            }
         }
 
         // Tilemap data (normal RAM — CPU index lookup only, no Blitter access)
@@ -2282,6 +2349,7 @@ export class CodeGen {
             loadtilemap:    (stmt, lines) => this._cmd_loadtilemap(stmt, lines),
             drawtilemap:    (stmt, lines) => this._cmd_drawtilemap(stmt, lines),
             settilemap:     (stmt, lines) => this._cmd_settilemap(stmt, lines),
+            changetile:     (stmt, lines) => this._cmd_changetile(stmt, lines),
             delay:          (stmt, lines) => this._cmd_delay(stmt, lines),
         };
     }
@@ -2891,6 +2959,10 @@ export class CodeGen {
             lines.push(`        move.l  d0,_vp${vpN}_scroll_x`);
             lines.push(`        move.l  d1,_vp${vpN}_scroll_y`);
         }
+        // T9.6: tick tile animation before rendering (safe to call every frame,
+        // skips if no anim data or already ticked this VBlank)
+        if ([...this._tilesetAssets.values()].some(ts => ts.flags & 4))
+            lines.push('        jsr     _AnimTilesTick');
         lines.push(`        lea     ${tmEntry.label},a0`);
         lines.push(`        lea     ${tsEntry.label},a1`);
         lines.push('        jsr     _DrawTilemap');
@@ -2916,14 +2988,76 @@ export class CodeGen {
         lines.push('        move.l  a0,_active_tilemap_ptr');
         lines.push(`        lea     ${tsEntry.label},a0`);
         lines.push('        move.l  a0,_active_tileset_ptr');
+        // T5.6: Set TYPES pointer if tileset has TYPES section
+        if (tsEntry.flags & 1) {
+            lines.push(`        lea     ${tsEntry.label}_types,a0`);
+            lines.push('        move.l  a0,_active_tileset_types');
+        }
+        // T6.5: Set COLLISION pointer if tileset has COLLISION section
+        if (tsEntry.flags & 2) {
+            lines.push(`        lea     ${tsEntry.label}_coll,a0`);
+            lines.push('        move.l  a0,_active_tileset_coll');
+        }
+        // T10.5: Set SLOPES pointer if tileset has SLOPES section
+        if (tsEntry.flags & 8) {
+            lines.push(`        lea     ${tsEntry.label}_slopes,a0`);
+            lines.push('        move.l  a0,_active_tileset_slopes');
+        }
+        // T9.7: Initialize remap LUT — always (identity for non-animated)
+        if (tsEntry.flags & 4) {
+            // Animated: _AnimTilesInit handles identity remap + anim state zero
+            lines.push(`        lea     ${tsEntry.label}_anim,a0`);
+            lines.push('        move.l  a0,_active_tileset_anim');
+            lines.push(`        move.w  #${tsEntry.tileCount},d0`);
+            lines.push('        jsr     _AnimTilesInit');
+        } else {
+            // Non-animated: inline identity remap init
+            const lbl = this._nextLabel();
+            lines.push('        lea     _tile_remap,a0');
+            lines.push('        moveq   #0,d0');
+            lines.push(`        move.w  #${tsEntry.tileCount - 1},d1`);
+            lines.push(`${lbl}:`);
+            lines.push('        move.w  d0,(a0)+');
+            lines.push('        addq.w  #1,d0');
+            lines.push(`        dbra    d1,${lbl}`);
+        }
         if (this._hasExplicitViewports) {
             const N = this._activeViewportIdx;
             lines.push(`        move.l  _active_tilemap_ptr,_vp${N}_tilemap_ptr`);
-            lines.push(`        move.l  a0,_vp${N}_tileset_ptr`);
+            lines.push(`        move.l  _active_tileset_ptr,_vp${N}_tileset_ptr`);
         }
         lines.push('        move.l  _active_bob_state,a0');
         lines.push('        lea     _bg_restore_tilemap,a1');
         lines.push('        move.l  a1,BOB_ST_RESTORE_FN(a0)');
+    }
+
+    // T8.2: ChangeTile x, y, newIndex — overwrite tile in active tilemap
+    _cmd_changetile(stmt, lines) {
+        if (stmt.args.length < 3)
+            throw new Error(`ChangeTile: requires 3 arguments (x, y, newIndex) — line ${stmt.line}`);
+
+        // Evaluate all three args: x, y, newIndex → stack
+        this._genExpr(stmt.args[2], lines);          // newIndex → d0
+        lines.push('        move.l  d0,-(sp)');
+        this._genExpr(stmt.args[1], lines);          // y → d0
+        lines.push('        move.l  d0,-(sp)');
+        this._genExpr(stmt.args[0], lines);          // x → d0
+        lines.push('        move.l  4(sp),d1');      // d1 = y
+        lines.push('        move.l  8(sp),d2');      // d2 = newIndex
+        lines.push('        add.w   #12,sp');
+
+        // d0 = x, d1 = y, d2 = newIndex
+        lines.push('        move.l  _active_tilemap_ptr,a0');
+        lines.push('        move.w  4(a0),d3');      // d3.w = tile_w (= tile_h)
+        lines.push('        divu.w  d3,d0');         // d0.w = col
+        lines.push('        divu.w  d3,d1');         // d1.w = row
+        lines.push('        move.w  (a0),d3');       // d3.w = map_w
+        lines.push('        and.l   #$FFFF,d1');     // clear remainder
+        lines.push('        mulu.w  d3,d1');         // d1.l = row * map_w
+        lines.push('        and.l   #$FFFF,d0');     // clear remainder
+        lines.push('        add.l   d0,d1');         // d1.l = row * map_w + col
+        lines.push('        add.l   d1,d1');         // d1.l *= 2 (word array)
+        lines.push('        move.w  d2,8(a0,d1.l)'); // map_data[offset] = newIndex
     }
 
     // ── Built-in function handler table (Phase 3 refactoring) ───────────────
@@ -2953,6 +3087,11 @@ export class CodeGen {
             rectsoverlap:     (expr, lines) => this._builtin_rectsoverlap(expr, lines),
             imagesoverlap:    (expr, lines) => this._builtin_imagesoverlap(expr, lines),
             imagerectoverlap: (expr, lines) => this._builtin_imagerectoverlap(expr, lines),
+            // T7.1: Tile property queries
+            gettiletype:      (expr, lines) => this._builtin_gettiletype(expr, lines),
+            gettilecoll:      (expr, lines) => this._builtin_gettilecoll(expr, lines),
+            // T11.3: Slope collision
+            collidetile:      (expr, lines) => this._builtin_collidetile(expr, lines),
         };
     }
 
@@ -3104,11 +3243,53 @@ export class CodeGen {
                     const palOffset   = 12;
                     const imgOffset   = 12 + paletteSize;
 
+                    // T5.5: TYPES section offset (flags Bit 0)
+                    const typesOffset = (flags & 1) ? imgOffset + imageSize : 0;
+                    const typesSize   = (flags & 1) ? tileCount + (tileCount & 1 ? 1 : 0) : 0;
+
+                    // T6.4: COLLISION section offset (flags Bit 1)
+                    const collBase    = imgOffset + imageSize + typesSize;
+                    const collOffset  = (flags & 2) ? collBase : 0;
+                    const collSize    = (flags & 2) ? tileCount + (tileCount & 1 ? 1 : 0) : 0;
+
+                    // T9.4: ANIMATION section offset (flags Bit 2)
+                    const animBase    = imgOffset + imageSize + typesSize + collSize;
+                    const animOffset  = (flags & 4) ? animBase : 0;
+                    // Animation section: uint16 group_count + groups × 4 bytes — re-read to get groupCount
+                    let animSize = 0;
+                    let animGroupCount = 0;
+                    if (flags & 4) {
+                        const animResult = this._readAssetHeader(fileArg.value, animBase + 2);
+                        if (!animResult.ok)
+                            throw new Error(`LoadTileset: ANIMATION-Header nicht lesbar — ${animResult.error} (Zeile ${stmt.line})`);
+                        const animHdr = animResult.data;
+                        animGroupCount = (animHdr[animBase] << 8) | animHdr[animBase + 1];
+                        animSize = 2 + animGroupCount * 4;
+                    }
+
+                    // T10.5: SLOPES section offset (flags Bit 3)
+                    const slopesBase = animBase + animSize;
+                    let slopesOffset = 0;
+                    let slopesSize   = 0;
+                    if (flags & 8) {
+                        const slopesResult = this._readAssetHeader(fileArg.value, slopesBase + 2);
+                        if (!slopesResult.ok)
+                            throw new Error(`LoadTileset: SLOPES-Header nicht lesbar — ${slopesResult.error} (Zeile ${stmt.line})`);
+                        const slopesHdr = slopesResult.data;
+                        const slopeCount = (slopesHdr[slopesBase] << 8) | slopesHdr[slopesBase + 1];
+                        slopesSize   = 2 + slopeCount * (2 + tileSize);
+                        slopesOffset = slopesBase;
+                    }
+
                     this._tilesetAssets.set(idxArg.value, {
                         filename: fileArg.value, label: lbl,
                         tileW: tileSize, tileH: tileSize, rowbytes,
                         tileCount, depth, flags,
                         paletteSize, imageSize, palOffset, imgOffset,
+                        typesOffset, typesSize,
+                        collOffset, collSize,
+                        animOffset, animSize, animGroupCount,
+                        slopesOffset, slopesSize,
                     });
                 }
             },
@@ -3416,6 +3597,63 @@ export class CodeGen {
         lines.push('        moveq   #0,d0');
         lines.push(`${ioELbl}:`);
         lines.push('        movem.l (sp)+,d4-d7');
+    }
+
+    // ── T7.2/T7.3: Tile property queries ────────────────────────────────────
+
+    /**
+     * Shared codegen for GetTileType / GetTileColl.
+     * Emits inline asm: world (x,y) → tile index via _active_tilemap_ptr,
+     * then looks up byte from lutLabel → result in d0.
+     */
+    _builtin_tilequery(expr, lines, lutVar, fnName) {
+        if (expr.args.length < 2)
+            throw new Error(`${fnName}: requires 2 arguments (x, y)`);
+
+        // Evaluate y first (push), then x
+        this._genExpr(expr.args[1], lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExpr(expr.args[0], lines);
+        lines.push('        move.l  (sp)+,d1');
+        // d0 = x, d1 = y (world coordinates)
+
+        lines.push('        move.l  _active_tilemap_ptr,a0');
+        lines.push('        move.w  4(a0),d2');             // d2.w = tile_w (= tile_h)
+        lines.push('        divu.w  d2,d0');                // d0.w = col = x / tile_w
+        lines.push('        divu.w  d2,d1');                // d1.w = row = y / tile_h
+        lines.push('        move.w  (a0),d2');              // d2.w = map_w
+        lines.push('        and.l   #$FFFF,d1');            // clear remainder
+        lines.push('        mulu.w  d2,d1');                // d1.l = row * map_w
+        lines.push('        and.l   #$FFFF,d0');            // clear remainder
+        lines.push('        add.l   d0,d1');                // d1.l = row * map_w + col
+        lines.push('        add.l   d1,d1');                // d1.l *= 2 (word array)
+        lines.push('        moveq   #0,d0');
+        lines.push('        move.w  8(a0,d1.l),d2');        // d2.w = tile_index
+        lines.push(`        move.l  ${lutVar},a0`);
+        lines.push('        move.b  0(a0,d2.w),d0');        // d0 = LUT byte (zero-extended)
+    }
+
+    _builtin_gettiletype(expr, lines) {
+        this._builtin_tilequery(expr, lines, '_active_tileset_types', 'GetTileType');
+    }
+
+    _builtin_gettilecoll(expr, lines) {
+        this._builtin_tilequery(expr, lines, '_active_tileset_coll', 'GetTileColl');
+    }
+
+    // ── T11.3: CollideTile(x, y) — slope collision with snap ────────────────
+    _builtin_collidetile(expr, lines) {
+        if (expr.args.length < 2)
+            throw new Error('CollideTile: requires 2 arguments (x, y)');
+
+        // Evaluate y first (push), then x → d0=x, d1=y
+        this._genExpr(expr.args[1], lines);
+        lines.push('        move.l  d0,-(sp)');
+        this._genExpr(expr.args[0], lines);
+        lines.push('        move.l  (sp)+,d1');     // d1.l = y
+        // d0.l = x
+        lines.push('        jsr     _CollideSlope'); // d1.l = corrected y, d0.w = hit flag
+        lines.push('        move.l  d1,d0');         // return corrected y in d0
     }
 
     /** Return a globally unique local label string. */

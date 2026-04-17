@@ -448,6 +448,156 @@ body.state-tileset-editor #tileset-editor-panel { display: flex; }
 /* ── Tileset Editor (uses .view-toolbar, .view-sidebar, .view-section, .view-prop-row) ── */
 .tse-back-btn { color: #7ac5ff !important; border-color: #7ac5ff !important; }
 .tse-back-btn:hover { background: #1a2a4a !important; }
+
+/* T5.1 — Tile Type input */
+.tse-type-row {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.tse-type-row label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+    color: #999;
+}
+.tse-type-row input[type="number"] {
+    width: 52px;
+    background: #1a1a1a;
+    color: #ccc;
+    border: 1px solid #333;
+    border-radius: 3px;
+    padding: 3px 6px;
+    font-size: 12px;
+    text-align: right;
+}
+.tse-type-row input[type="text"] {
+    background: #1a1a1a;
+    color: #ccc;
+    border: 1px solid #333;
+    border-radius: 3px;
+    padding: 3px 6px;
+    font-size: 12px;
+}
+.tse-type-row input:focus {
+    border-color: #5a8abe;
+    outline: none;
+}
+.tse-type-row input:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+/* T6.1 — Collision flag checkboxes */
+.tse-coll-flags {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.tse-coll-flags label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #999;
+    cursor: pointer;
+}
+.tse-coll-flags label.tse-coll-disabled {
+    opacity: 0.35;
+    pointer-events: none;
+}
+.tse-coll-flags input[type="checkbox"] {
+    accent-color: #5a8abe;
+    margin: 0;
+}
+.tse-coll-flags input[type="checkbox"]:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+/* T10.1 — Slope heightmap editor */
+#tse-slope-canvas {
+    width: 100%;
+    aspect-ratio: 1;
+    background: #1a1a1a;
+    border: 1px solid #333;
+    image-rendering: pixelated;
+    cursor: crosshair;
+}
+
+/* T9.1 — Animation groups panel */
+.tse-anim-btn {
+    width: 100%;
+    padding: 4px 0;
+    font-size: 11px;
+    background: #252525;
+    color: #999;
+    border: 1px dashed #444;
+    border-radius: 3px;
+    cursor: pointer;
+}
+.tse-anim-btn:hover:not(:disabled) { background: #303030; color: #ccc; }
+.tse-anim-btn:disabled { opacity: 0.4; cursor: default; }
+
+.tse-anim-group {
+    background: #1e1e1e;
+    border: 1px solid #333;
+    border-radius: 3px;
+    padding: 5px 6px;
+    margin-bottom: 4px;
+    font-size: 12px;
+    color: #999;
+}
+.tse-anim-group-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+}
+.tse-anim-group-header span { font-weight: bold; color: #bbb; }
+.tse-anim-group-remove {
+    background: none;
+    border: none;
+    color: #666;
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 2px;
+    line-height: 1;
+}
+.tse-anim-group-remove:hover { color: #ff6666; }
+.tse-anim-group label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 4px;
+    margin-bottom: 2px;
+}
+.tse-anim-group input[type="number"] {
+    width: 48px;
+    background: #1a1a1a;
+    color: #ccc;
+    border: 1px solid #333;
+    border-radius: 3px;
+    padding: 2px 4px;
+    font-size: 12px;
+    text-align: right;
+}
+.tse-anim-group input[type="number"]:focus {
+    border-color: #5a8abe;
+    outline: none;
+}
+.tse-anim-preview {
+    margin-top: 4px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.tse-anim-preview canvas {
+    border: 1px solid #444;
+    image-rendering: pixelated;
+}
 #tse-body {
     display: flex;
     flex: 1;
@@ -1240,6 +1390,19 @@ body.state-tilemap-editor #btn-tilemap-editor { color: #7ac5ff; background: #1a2
 }
 #tmap-canvas-ghost {
     pointer-events: none;
+}
+.tmap-tooltip {
+    position: absolute;
+    pointer-events: none;
+    z-index: 20;
+    background: rgba(20, 20, 28, 0.92);
+    color: #ccc;
+    font: 11px/1.4 monospace;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid #444;
+    white-space: nowrap;
+    max-width: 260px;
 }
 
 /* ── Sidebar (right) ── */

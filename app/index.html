@@ -114,6 +114,34 @@
 									<div class="view-prop-row"><span>Tile</span><span id="tse-prop-index">—</span></div>
 									<div class="view-prop-row"><span>Tiles</span><span id="tse-prop-count">—</span></div>
 									<div class="view-prop-row"><span>Image</span><span id="tse-prop-imgsize">—</span></div>
+									<div class="tse-type-row" id="tse-type-row">
+										<label>Type <input type="number" id="tse-type-value" min="0" max="255" step="1" value="0" disabled></label>
+										<input type="text" id="tse-type-label" placeholder="Label" maxlength="16" disabled>
+									</div>
+								</div>
+							</div>
+							<div class="view-section" id="tse-coll-section">
+								<div class="view-section-title">Collision</div>
+								<div id="tse-coll" class="tse-coll-flags">
+									<label><input type="checkbox" id="tse-coll-solid" disabled> SOLID</label>
+									<label><input type="checkbox" id="tse-coll-pass-up" disabled> PASS_UP</label>
+									<label><input type="checkbox" id="tse-coll-pass-down" disabled> PASS_DOWN</label>
+									<label><input type="checkbox" id="tse-coll-pass-left" disabled> PASS_LEFT</label>
+									<label><input type="checkbox" id="tse-coll-pass-right" disabled> PASS_RIGHT</label>
+									<label><input type="checkbox" id="tse-coll-slope" disabled> SLOPE</label>
+								</div>
+							</div>
+							<div class="view-section" id="tse-slope-section" style="display:none">
+								<div class="view-section-title">Slope Heightmap</div>
+								<div id="tse-slope">
+									<canvas id="tse-slope-canvas"></canvas>
+								</div>
+							</div>
+							<div class="view-section" id="tse-anim-section">
+								<div class="view-section-title">Animation</div>
+								<div id="tse-anim">
+									<div id="tse-anim-list"></div>
+									<button id="tse-anim-add" class="tse-anim-btn" disabled>+ Add Group</button>
 								</div>
 							</div>
 							<div class="view-section">
@@ -435,6 +463,7 @@
 							<div id="tmap-map-scroll" style="display:none">
 								<canvas id="tmap-canvas-map"></canvas>
 								<canvas id="tmap-canvas-ghost"></canvas>
+								<div id="tmap-tooltip" class="tmap-tooltip" style="display:none"></div>
 							</div>
 						</div>
 						<!-- Right: Sidebar -->
@@ -446,6 +475,7 @@
 								<div class="view-prop-row"><span>Tileset</span><span id="tmap-prop-tileset">&mdash;</span></div>
 								<div class="view-prop-row"><span>Tile Count</span><span id="tmap-prop-tilecount">&mdash;</span></div>
 								<div class="view-prop-row"><span>Unique Used</span><span id="tmap-prop-unique">&mdash;</span></div>
+								<div class="view-prop-row"><label><input type="checkbox" id="tmap-chk-coll-overlay"> Show Collision</label></div>
 							</div>
 							<div class="view-section">
 								<div class="view-section-title">Budget</div>

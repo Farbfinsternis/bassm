@@ -674,6 +674,27 @@
         "zone": "setup"
     },
     {
+        "name": "ChangeTile",
+        "description": "Change a tile in the active tilemap at world position (x, y) to newIndex. Uses the tilemap set by SetTilemap. The change is visible on the next DrawTilemap call.",
+        "type": "global",
+        "return": "void",
+        "args": [
+            {
+                "name": "x",
+                "type": "integer"
+            },
+            {
+                "name": "y",
+                "type": "integer"
+            },
+            {
+                "name": "newIndex",
+                "type": "integer"
+            }
+        ],
+        "zone": "any"
+    },
+    {
         "name": "LoadFont",
         "description": "Load a raw font image. chars defines the character set order in the image; charW/charH define glyph size in pixels.",
         "type": "global",

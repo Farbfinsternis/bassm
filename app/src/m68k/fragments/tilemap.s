@@ -76,6 +76,8 @@
 BOB_ST_FINE_X     EQU 16
 BOB_ST_FINE_Y     EQU 18
 
+        XREF    _tile_remap
+
         SECTION tilemap_code,CODE
 
 
@@ -209,6 +211,7 @@ _DrawTilemap:
         lea     0(a3,d0.l),a4   ; a4 = pointer to first_row's data
 
         moveq   #0,d1           ; d1.l = screen_y = 0
+        lea     _tile_remap,a1  ; a1 = remap LUT base (T9.7, permanent in tile loop)
 
 ; ════════════════════ Outer loop (rows) ═════════════════════════════════════
 .row_loop:
@@ -226,8 +229,10 @@ _DrawTilemap:
         ; ── Load tile index: word at row_base + map_col * 2 ─────────────────
         move.w  d6,d2
         add.w   d2,d2           ; d2.w = map_col * 2  (byte offset within row)
-        move.w  0(a4,d2.w),d2   ; d2.w = tile index (0-based, unsigned)
-        ; Upper word of d2 irrelevant — _DrawImageFrame uses mulu.w d2 only.
+        move.w  0(a4,d2.w),d2   ; d2.w = raw tile index (0-based)
+        ; ── T9.7: remap for tile animation ──
+        add.w   d2,d2           ; word offset into remap LUT
+        move.w  0(a1,d2.w),d2   ; d2.w = remapped tile index
 
         ; ── _DrawImageFrame(a0=tileset, d0=x, d1=y, d2=tile_idx) ────────────
         ; Saves and restores d0-d7/a0-a3, so all our registers are intact.
@@ -313,6 +318,7 @@ _DrawTilemap:
 ;   d4 = map_w, d5 = tile_w, d6 = tile_h  (permanent throughout)
 ;   a2 = tileset ptr   (permanent)
 ;   a3 = tilemap data base (permanent, past 8-byte header)
+;   a4 = _tile_remap base (T9.7, permanent — remap LUT for animated tiles)
 
         XDEF    _bg_restore_tilemap
 
@@ -391,6 +397,7 @@ _bg_restore_tilemap:
 
         ; ── Advance a3 past header ────────────────────────────────────────────
         lea     8(a3),a3        ; a3 = tilemap data base (permanent)
+        lea     _tile_remap,a4  ; a4 = remap LUT base (T9.7)
 
         ; ── row_top_abs = first_row + buf_y / tile_h → d7 (outer counter) ────
         moveq   #0,d7
@@ -444,10 +451,13 @@ _bg_restore_tilemap:
         bra.s   .rbr_wrap
 .rbr_no_wrap:
         add.w   d2,d2
-        move.w  0(a1,d2.w),d2   ; d2.w = tile index
+        move.w  0(a1,d2.w),d2   ; d2.w = raw tile index
+        ; ── T9.7: remap for tile animation ──
+        add.w   d2,d2           ; word offset into remap LUT
+        move.w  0(a4,d2.w),d2   ; d2.w = remapped tile index
 
         ; _DrawImageFrame(a0=tileset, d0=screen_x, d1=buf_y, d2=tile_idx)
-        ; Saves/restores d0-d7/a0-a3 → d3(k), d7(row_abs), a2(tileset) intact.
+        ; Saves/restores d0-d7/a0-a3 → d3(k), d7(row_abs), a2(tileset), a4(remap) intact.
         move.l  a2,a0
         jsr     _DrawImageFrame
 

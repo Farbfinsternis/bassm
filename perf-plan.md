@@ -519,6 +519,15 @@ _tilemap_needs_full_redraw:  ds.b 1   ; 1 = erster Frame oder Teleport
 ```
 Wird von `SetTilemap` auf 1 gesetzt. `_DrawTilemap` setzt auf 0 nach Full-Redraw.
 
+**⚠ ChangeTile-Abhängigkeit (aus T8.3):**
+`ChangeTile` modifiziert nur das Map-Array — kein sofortiger Blit (in Phase 1
+kein Problem, da DrawTilemap alle Tiles neu zeichnet). Mit PERF-J würde ein
+geändertes Tile im sichtbaren Bereich aber NICHT neu gezeichnet, weil der
+Screen-Shift es als "bereits korrekt" betrachtet. Lösung: Dirty-Tile-Liste.
+`ChangeTile` trägt (col, row) in eine kleine Liste ein (z.B. 8–16 Einträge).
+`_DrawTilemap` im Scroll-Modus zeichnet nach dem Edge-Fill zusätzlich alle
+Dirty-Tiles und leert die Liste. Full-Redraw leert sie ebenfalls.
+
 ---
 
 ## Phase 6 — Register-Pinning (PERF-I)
