@@ -41,9 +41,10 @@
 ; ============================================================================
 
 
-; ── Graphics Library LVO Offsets ─────────────────────────────────────────────
+; ── Library LVO Offsets ──────────────────────────────────────────────────────
 _LVOLoadView        EQU -222    ; graphics.library: install a View (copper list)
-_LVORethinkDisplay  EQU -390    ; graphics.library: rebuild the display from current views
+_LVOWaitTOF         EQU -270    ; graphics.library: wait for top of frame
+_LVORethinkDisplay  EQU -390    ; intuition.library: rebuild the display from current views
 _LVOCloseLibrary    EQU -414    ; exec.library:     close / decrement open count
 
         SECTION offload_code,CODE
@@ -142,6 +143,9 @@ _exit:
         ;   WaitTOF × 2 (hw poll) ; let null view propagate
         ;   LoadView(saved_view)  ; reinstall Workbench/CLI view (skip if NULL)
         ;   WaitTOF × 2 (hw poll) ; let new copper take hold
+        ;   RethinkDisplay()      ; tell Intuition to rebuild its views
+        ;   WaitTOF × 2 (hw poll)
+        ;   CloseLibrary(IntuitionBase)
         ;   CloseLibrary(GfxBase)
         ;
         ; AROS-Hinweis: LoadView(NULL) kann auf AROS hängen. Per project
@@ -158,7 +162,8 @@ _exit:
         suba.l  a1,a1                       ; a1 = NULL
         jsr     _LVOLoadView(a6)
 
-        bsr     _hw_wait_vbl_2              ; let null view propagate
+        jsr     _LVOWaitTOF(a6)             ; let null view propagate
+        jsr     _LVOWaitTOF(a6)
 
         ; LoadView(saved_view) — only if we actually have a saved view
         move.l  _saved_view,d1              ; move.l→d1 sets CCR (move→An doesn't)
@@ -167,20 +172,46 @@ _exit:
         move.l  _saved_gfx_base,a6
         jsr     _LVOLoadView(a6)
 
-        bsr     _hw_wait_vbl_2              ; let new copper take hold
+        jsr     _LVOWaitTOF(a6)             ; let new copper take hold
+        jsr     _LVOWaitTOF(a6)
 .skip_loadsaved:
 
         ; RethinkDisplay — reorganises Intuition's view of the existing
-        ; display.  Lighter than RemakeDisplay (which tried to re-allocate
-        ; the entire cprlist and deadlocked the half-restored scheduler).
-        ; Helps the library re-establish its VBlank-server hooks for
-        ; input.device — which is what gets keyboard/mouse alive again.
-        move.l  _saved_gfx_base,a6
+        ; display.  Lighter than RemakeDisplay. Helps the library re-establish
+        ; its VBlank-server hooks for input.device.
+        move.l  _saved_intuition_base,d0
+        beq.s   .skip_rethink
+        move.l  d0,a6
         jsr     _LVORethinkDisplay(a6)
 
-        bsr     _hw_wait_vbl_2              ; let rebuilt display propagate
+        move.l  _saved_gfx_base,a6
+        jsr     _LVOWaitTOF(a6)             ; let rebuilt display propagate
+        jsr     _LVOWaitTOF(a6)
+.skip_rethink:
+
+        ; ── 7b. MANUALLY RE-HOOK COPPER TO SYSTEM ────────────────────────────────
+        ; The OS often optimizes Copper updates and may NOT reload COP1LC if it
+        ; believes the View hasn't fundamentally changed. Since we changed COP1LC
+        ; to _null_copper behind the OS's back, we MUST manually point it back
+        ; to the OS copper list (GfxBase->copinit) before exit.
+        ; Otherwise, the copper keeps running our _null_copper (which is freed)
+        ; and executes random memory, causing the pixel garbage!
+        move.l  _saved_gfx_base,a0
+        move.l  38(a0),d0              ; d0 = GfxBase->copinit
+        lea     CUSTOM,a5              ; a5 = $DFF000
+        move.w  d0,COP1LCL(a5)
+        swap    d0
+        move.w  d0,COP1LCH(a5)
+        move.w  d0,COPJMP1(a5)         ; Strobe Copper!
 
         move.l  ABSEXECBASE.w,a6            ; CloseLibrary — matches startup
+        
+        move.l  _saved_intuition_base,d1
+        beq.s   .skip_close_intuition
+        move.l  d1,a1
+        jsr     _LVOCloseLibrary(a6)
+.skip_close_intuition:
+
         move.l  _saved_gfx_base,a1
         jsr     _LVOCloseLibrary(a6)
 .skip_gfx:
@@ -192,24 +223,4 @@ _exit:
         rts                                 ; return to AmigaOS
 
 
-; ── Helper: hardware-poll 2 VBlanks ─────────────────────────────────────────
-;       Used during teardown when scheduler may not yet be fully responsive.
-;       Disables VERTB IRQ-routing for race-free polling, restores it after.
-;       Self-contained: re-establishes a5 = CUSTOM (caller may have called
-;       OS functions that clobbered a5 — a5 is scratch in the AmigaOS ABI).
-_hw_wait_vbl_2:
-        lea     CUSTOM,a5                   ; a5 = $DFF000 (clobbered by OS calls)
-        move.w  #INTF_VERTB,INTENA(a5)      ; disable VERTB IRQ (race-free poll)
 
-        move.w  #INTF_VERTB,INTREQ(a5)      ; clear pending VERTB flag
-.w1:    move.w  INTREQR(a5),d0
-        btst    #5,d0                       ; VERTB?
-        beq.s   .w1
-
-        move.w  #INTF_VERTB,INTREQ(a5)
-.w2:    move.w  INTREQR(a5),d0
-        btst    #5,d0
-        beq.s   .w2
-
-        move.w  #(INTF_SETCLR|INTF_VERTB),INTENA(a5)  ; re-enable VERTB IRQ
-        rts

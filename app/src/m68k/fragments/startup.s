@@ -176,10 +176,11 @@ start:
         lea     CUSTOM,a5               ; a5 = $DFF000 — never changes again
         move.l  ABSEXECBASE.w,a6        ; a6 = ExecBase
 
-; ── 1a. Open graphics.library and save current View ──────────────────────────
+; ── 1a. Open libraries and save current View ─────────────────────────────────
         ; Done BEFORE Forbid() so OpenLibrary can use the task scheduler.
         ; offload.s uses the saved GfxBase to call LoadView() on exit,
-        ; which is the only proper way to restore the AROS Workbench display.
+        ; which is the only proper way to restore the AmigaOS Workbench display.
+        ; We also open intuition.library to call RethinkDisplay on exit.
         lea     _gfx_lib_name,a1        ; name = "graphics.library"
         moveq   #0,d0                   ; minimum version = any
         jsr     _LVOOpenLibrary(a6)     ; d0 = GfxBase (or NULL on failure)
@@ -188,6 +189,11 @@ start:
         move.l  d0,a0
         move.l  gb_ActiView(a0),_saved_view  ; save active OS View pointer
 .no_view_save:
+
+        lea     _intuition_lib_name,a1  ; name = "intuition.library"
+        moveq   #0,d0                   ; minimum version = any
+        jsr     _LVOOpenLibrary(a6)
+        move.l  d0,_saved_intuition_base
 
 ; ── 1b. Point _gfx_planes / _gfx_planes_b at BSS_C bitplane buffers ──────────
 ; Both buffers are defined as BSS_C sections in the generated assembly.
@@ -491,6 +497,8 @@ _WaitBlit:
 
 _gfx_lib_name:
         dc.b    'graphics.library',0
+_intuition_lib_name:
+        dc.b    'intuition.library',0
         EVEN
 
 
@@ -517,6 +525,7 @@ _null_copper:
         XDEF    _saved_lev3vec
         XDEF    _saved_lev6vec
         XDEF    _saved_gfx_base
+        XDEF    _saved_intuition_base
         XDEF    _saved_view
         XDEF    _frame_count
         XDEF    _vblank_hook
@@ -536,6 +545,7 @@ _saved_lev2vec:     ds.l    1   ; Level-2 vector     — restored by offload.s
 _saved_lev3vec:     ds.l    1   ; Level-3 vector     — restored by offload.s
 _saved_lev6vec:     ds.l    1   ; Level-6 vector     — restored by offload.s (CIA-B / EXTER)
 _saved_gfx_base:    ds.l    1   ; graphics.library base — used by offload.s for LoadView
+_saved_intuition_base: ds.l 1   ; intuition.library base — used by offload.s for RethinkDisplay
 _saved_view:        ds.l    1   ; GfxBase->ActiView on entry — restored by offload.s
 _frame_count:       ds.l    1   ; VBlank counter, incremented 50×/sec
 _vblank_hook:       ds.l    1   ; optional user callback address (0 = none)
