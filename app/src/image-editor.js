@@ -457,13 +457,21 @@ async function _imgConvertAndSave() {
         // Always interleaved (.iraw)
         const planes = _imgToPlanarInterleaved(_imgIndices, _imgWidth, _imgHeight, depth);
 
-        // Prepend OCS palette: colorCount × 2-byte big-endian words ($0RGB)
-        const raw = new Uint8Array(colorCount * 2 + planes.length);
+        // .iraw v2 format: 12-byte header ('IRAW' magic + width.w + height.w + depth.w + rowbytes.w)
+        // followed by OCS palette (colorCount × 2-byte big-endian $0RGB words) and interleaved planes.
+        const headerBytes = 12;
+        const rowbytes    = Math.ceil(Math.ceil(_imgWidth / 8) / 2) * 2;
+        const raw = new Uint8Array(headerBytes + colorCount * 2 + planes.length);
+        raw[0] = 0x49; raw[1] = 0x52; raw[2] = 0x41; raw[3] = 0x57; // 'IRAW'
+        raw[4] = (_imgWidth  >> 8) & 0xFF; raw[5]  = _imgWidth  & 0xFF;
+        raw[6] = (_imgHeight >> 8) & 0xFF; raw[7]  = _imgHeight & 0xFF;
+        raw[8] = (depth      >> 8) & 0xFF; raw[9]  = depth      & 0xFF;
+        raw[10] = (rowbytes  >> 8) & 0xFF; raw[11] = rowbytes   & 0xFF;
         for (let i = 0; i < colorCount; i++) {
-            raw[i * 2]     = (_imgPalette[i] >> 8) & 0xFF;
-            raw[i * 2 + 1] =  _imgPalette[i]       & 0xFF;
+            raw[headerBytes + i * 2]     = (_imgPalette[i] >> 8) & 0xFF;
+            raw[headerBytes + i * 2 + 1] =  _imgPalette[i]       & 0xFF;
         }
-        raw.set(planes, colorCount * 2);
+        raw.set(planes, headerBytes + colorCount * 2);
 
         const defaultPath = [
             _imgProjectDir ? _imgProjectDir.replace(/\\/g, '/') : null,

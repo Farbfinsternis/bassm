@@ -1,0 +1,13 @@
+; restore-test — Diagnose für BUG-5 OS-Restore (KS 1.3 / A500)
+; Minimaler Pfad: Graphics + Text + WaitKey + End.
+; Keine Bobs, keine Tilemap, keine Bitmaps, kein Sound, keine Bitplanes > 1.
+; Wenn nach End Maus + Tastatur unter KS 1.3 funktionieren → Restore-Pfad ok,
+; und der Breakout-Hang ist Memory-Korruption zur Runtime (Bobs/Bitmaps/Tilemap).
+; Wenn auch hier alles tot bleibt → Bug liegt im allgemeinen offload.s/startup.s.
+
+Graphics 320, 256, 1
+Cls
+Text 100, 100, "HELLO KS13"
+ScreenFlip
+WaitKey
+End

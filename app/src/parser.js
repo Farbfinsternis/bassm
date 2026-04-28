@@ -97,6 +97,11 @@ export class Parser {
             // (e.g. `line = 5`).  Treat as variable assignment rather than command.
             const next = this._peekAt(1);
             if (next && next.type === TT.EQ) return this._parseAssignment();
+            // Statement-shape commands that need bespoke parsing (their codegen
+            // dispatches on AST `type`, not on the generic `command` handler).
+            if (tok.value === 'setviewport') return this._parseSetViewport();
+            if (tok.value === 'viewport')    return this._parseViewport();
+            if (tok.value === 'setcamera')   return this._parseSetCamera();
             return this._parseCommand();
         }
 
@@ -125,9 +130,6 @@ export class Parser {
             if (tok.value === 'data')        return this._parseData();
             if (tok.value === 'read')        return this._parseRead();
             if (tok.value === 'restore')     return this._parseRestore();
-            if (tok.value === 'setviewport') return this._parseSetViewport();
-            if (tok.value === 'viewport')    return this._parseViewport();
-            if (tok.value === 'setcamera')   return this._parseSetCamera();
         }
 
         // Bare IDENT at statement level (no =, (, \) → user function call statement
@@ -416,7 +418,7 @@ export class Parser {
     // layout are determined at compile time.
 
     _parseSetViewport() {
-        const tok = this._advance();                // consume 'setviewport' KEYWORD
+        const tok = this._advance();                // consume 'setviewport' COMMAND
         const readIntLit = (name) => {
             const t = this._peek();
             if (!t || t.type !== TT.INT) {
@@ -441,7 +443,7 @@ export class Parser {
     // index must be an integer literal (compile-time context switch, V1).
 
     _parseViewport() {
-        const tok = this._advance();                // consume 'viewport' KEYWORD
+        const tok = this._advance();                // consume 'viewport' COMMAND
         const t = this._peek();
         if (!t || t.type !== TT.INT) {
             throw new Error(`[Parser] Viewport: index must be an integer literal on line ${tok.line}`);
@@ -455,7 +457,7 @@ export class Parser {
     // x and y are full expressions (variables and arithmetic allowed).
 
     _parseSetCamera() {
-        const tok = this._advance();                // consume 'setcamera' KEYWORD
+        const tok = this._advance();                // consume 'setcamera' COMMAND
         const x = this._parseExpr();
         if (this._peek().type === TT.COMMA) this._advance();  // consume ','
         const y = this._parseExpr();

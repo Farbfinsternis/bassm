@@ -7,6 +7,5 @@
     "Const",
     "Data", "Read", "Restore",
     "And", "Or", "Xor", "Not",
-    "Mod", "Shl", "Shr",
-    "SetViewport", "Viewport", "SetCamera"
+    "Mod", "Shl", "Shr"
 ]

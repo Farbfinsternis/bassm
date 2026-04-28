@@ -119,8 +119,8 @@ export class CodeGen {
         if (H < 1 || H > 256) {
             throw new Error(`Graphics height ${H} out of range — must be 1–256 for OCS PAL lores.`);
         }
-        if (D < 1 || D > 6) {
-            throw new Error(`Graphics depth ${D} out of range — must be 1–6 bitplanes.`);
+        if (D < 1 || D > 5) {
+            throw new Error(`Graphics depth ${D} out of range — must be 1–5 bitplanes.`);
         }
         this._gfxHeight = H;
 
@@ -441,11 +441,14 @@ export class CodeGen {
 
         this._hasExplicitViewports = true;
 
-        // D9: CopperColor raster effects are incompatible with multi-viewport (V1)
+        // D9: CopperColor raster effects are incompatible with multi-viewport (V1).
+        // Compile-time error — runtime would silently drop raster effects, leaving the
+        // user wondering why their CopperColor calls had no effect.
         if (this._usesRaster) {
-            console.warn(
-                `[CodeGen] Warning: CopperColor is not supported together with SetViewport ` +
-                `(D9) — raster effects will be ignored.`
+            throw new Error(
+                `CopperColor is not compatible with SetViewport — both modify the Copper list ` +
+                `in incompatible ways. Use either CopperColor (single-viewport raster effects) ` +
+                `or SetViewport (multi-viewport without CopperColor), not both.`
             );
         }
     }
@@ -1500,13 +1503,19 @@ export class CodeGen {
         }
 
         // Image data (chip RAM, one DATA_C section per unique file)
+        // .iraw v2 files carry a 12-byte header (IRAW magic + width/height/depth/rowbytes);
+        // the runtime header is rewritten by codegen so the file header is skipped on INCBIN.
         for (const [, { filename, label: lbl, width, height, rowbytes, isInterleaved }] of this._imageAssets) {
             const depthWord = isInterleaved ? 'GFXDEPTH+$8000' : 'GFXDEPTH';
             out.push(`        SECTION ${lbl}_sec,DATA_C`);
             out.push(`        XDEF    ${lbl}`);
             out.push(`${lbl}:`);
             out.push(`        dc.w    ${width},${height},${depthWord},${rowbytes}`);
-            out.push(`        INCBIN  "${filename}"`);
+            if (isInterleaved) {
+                out.push(`        INCBIN  "${filename}",12`);
+            } else {
+                out.push(`        INCBIN  "${filename}"`);
+            }
             out.push(`        EVEN`);
             out.push('');
         }
@@ -1573,12 +1582,16 @@ export class CodeGen {
             }
         }
 
-        // Tilemap data (normal RAM — CPU index lookup only, no Blitter access)
-        for (const [, { filename, label: lbl }] of this._tilemapAssets) {
+        // Tilemap data (normal RAM — CPU index lookup only, no Blitter access).
+        // .bmap v2 file header + tileset path are stripped via INCBIN offset/length;
+        // codegen emits its own runtime header (map_w/h, tile_w/h) so the runtime
+        // layout (+0 map_w, +2 map_h, +4 tile_w, +6 tile_h, +8 indices[]) is preserved.
+        for (const [, { filename, label: lbl, mapW, mapH, tileW, tileH, indicesOffset, indicesSize }] of this._tilemapAssets) {
             out.push(`        SECTION ${lbl}_sec,DATA`);
             out.push(`        XDEF    ${lbl}`);
             out.push(`${lbl}:`);
-            out.push(`        INCBIN  "${filename}"`);
+            out.push(`        dc.w    ${mapW},${mapH},${tileW},${tileH}`);
+            out.push(`        INCBIN  "${filename}",${indicesOffset},${indicesSize}`);
             out.push(`        EVEN`);
             out.push('');
         }
@@ -2198,8 +2211,11 @@ export class CodeGen {
         const N = this._activeViewportIdx;
         const vp = this._viewports.get(N);
         if (vp && !vp.scroll) {
-            console.warn(`[CodeGen] SetCamera in Viewport ${N} has no effect (no scroll buffer) — line ${stmt.line}`);
-            return;
+            throw new Error(
+                `SetCamera in Viewport ${N} has no effect — viewport has no scroll buffer. ` +
+                `Call SetTilemap (which allocates the scroll buffer) before SetCamera, or ` +
+                `remove the SetCamera call (line ${stmt.line}).`
+            );
         }
         this._cameraVPs.add(N);
         // eval y → d0, store to _vpN_cam_y
@@ -2271,12 +2287,17 @@ export class CodeGen {
 
     _genStmt_command(stmt, lines) {
         const handler = this._cmdHandlers[stmt.name];
-        if (handler) {
-            handler(stmt, lines);
-        } else {
-            lines.push(`; [codegen] Unhandled command: ${stmt.name} (line ${stmt.line})`);
-            console.warn(`[CodeGen] No codegen for '${stmt.name}' on line ${stmt.line}`);
+        if (!handler) {
+            // S0-T04: unknown command in the handler table is now a hard compile
+            // error instead of a silent warning. If a new entry is added to
+            // commands-map.json, the matching handler must be wired up in
+            // _initCommandHandlers() — this throw makes the omission obvious.
+            throw new Error(
+                `Unknown command '${stmt.name}' on line ${stmt.line} — no codegen handler registered. ` +
+                `Add a handler in codegen.js _initCommandHandlers() for any new entry in commands-map.json.`
+            );
         }
+        handler(stmt, lines);
     }
 
     // ── Command handler table (Phase 1 refactoring) ─────────────────────────
@@ -3031,7 +3052,10 @@ export class CodeGen {
         lines.push('        move.l  a1,BOB_ST_RESTORE_FN(a0)');
     }
 
-    // T8.2: ChangeTile x, y, newIndex — overwrite tile in active tilemap
+    // T8.2: ChangeTile x, y, newIndex — overwrite tile in active tilemap.
+    // OOB (negative or beyond map_w*tile_w / map_h*tile_h) is silently no-op:
+    // x/y are dynamic, so a throw is wrong; bounds-check protects against
+    // arbitrary memory writes that would crash on real hardware.
     _cmd_changetile(stmt, lines) {
         if (stmt.args.length < 3)
             throw new Error(`ChangeTile: requires 3 arguments (x, y, newIndex) — line ${stmt.line}`);
@@ -3047,17 +3071,40 @@ export class CodeGen {
         lines.push('        add.w   #12,sp');
 
         // d0 = x, d1 = y, d2 = newIndex
+        const skipLbl = this._nextLabel();
         lines.push('        move.l  _active_tilemap_ptr,a0');
-        lines.push('        move.w  4(a0),d3');      // d3.w = tile_w (= tile_h)
-        lines.push('        divu.w  d3,d0');         // d0.w = col
-        lines.push('        divu.w  d3,d1');         // d1.w = row
+
+        // Bounds check x: must be in [0, map_w*tile_w)
+        lines.push('        tst.l   d0');
+        lines.push(`        bmi     ${skipLbl}`);    // x < 0 → skip
         lines.push('        move.w  (a0),d3');       // d3.w = map_w
-        lines.push('        and.l   #$FFFF,d1');     // clear remainder
+        lines.push('        mulu.w  4(a0),d3');      // d3.l = map_w * tile_w
+        lines.push('        cmp.l   d3,d0');
+        lines.push(`        bcc     ${skipLbl}`);    // x >= map_pixel_width → skip
+
+        // Bounds check y: must be in [0, map_h*tile_h)
+        lines.push('        tst.l   d1');
+        lines.push(`        bmi     ${skipLbl}`);    // y < 0 → skip
+        lines.push('        move.w  2(a0),d3');      // d3.w = map_h
+        lines.push('        mulu.w  6(a0),d3');      // d3.l = map_h * tile_h
+        lines.push('        cmp.l   d3,d1');
+        lines.push(`        bcc     ${skipLbl}`);    // y >= map_pixel_height → skip
+
+        // Compute col = x / tile_w, row = y / tile_h (divu safe — x/y bounded above)
+        lines.push('        move.w  4(a0),d3');      // d3.w = tile_w
+        lines.push('        divu.w  d3,d0');         // d0.w = col
+        lines.push('        and.l   #$FFFF,d0');
+        lines.push('        move.w  6(a0),d3');      // d3.w = tile_h
+        lines.push('        divu.w  d3,d1');         // d1.w = row
+        lines.push('        and.l   #$FFFF,d1');
+
+        // Compute offset = (row * map_w + col) * 2
+        lines.push('        move.w  (a0),d3');       // d3.w = map_w
         lines.push('        mulu.w  d3,d1');         // d1.l = row * map_w
-        lines.push('        and.l   #$FFFF,d0');     // clear remainder
         lines.push('        add.l   d0,d1');         // d1.l = row * map_w + col
         lines.push('        add.l   d1,d1');         // d1.l *= 2 (word array)
         lines.push('        move.w  d2,8(a0,d1.l)'); // map_data[offset] = newIndex
+        lines.push(`${skipLbl}:`);
     }
 
     // ── Built-in function handler table (Phase 3 refactoring) ───────────────
@@ -3116,22 +3163,34 @@ export class CodeGen {
                 this._usesImage = true;
                 const idxArg  = stmt.args[0];
                 const fileArg = stmt.args[1];
-                const wArg    = stmt.args[2];
-                const hArg    = stmt.args[3];
-                if (idxArg?.type === 'int' && fileArg?.type === 'string' &&
-                    wArg?.type === 'int'   && hArg?.type  === 'int') {
-                    if (!this._imageAssets.has(idxArg.value)) {
-                        const lbl      = `_img_${this._imageAssets.size}`;
-                        const width    = wArg.value;
-                        const height   = hArg.value;
-                        const rowbytes = Math.ceil(Math.ceil(width / 8) / 2) * 2;
-                        const isInterleaved = fileArg.value.toLowerCase().endsWith('.iraw');
-                        this._imageAssets.set(idxArg.value, {
-                            filename: fileArg.value, label: lbl, width, height, rowbytes,
-                            isAnim: false, frameCount: 1, isInterleaved
-                        });
-                    }
-                }
+                if (idxArg?.type !== 'int')
+                    throw new Error(`LoadImage: erstes Argument (Index) muss ein Integer-Literal sein — Zeile ${stmt.line}`);
+                if (fileArg?.type !== 'string')
+                    throw new Error(`LoadImage: zweites Argument (Dateiname) muss ein String-Literal sein — Zeile ${stmt.line}`);
+                if (stmt.args.length !== 2)
+                    throw new Error(`LoadImage: Signatur ist LoadImage index, "file.iraw" — width/height entfallen, sie werden aus dem .iraw v2 Header gelesen (Zeile ${stmt.line})`);
+                if (this._imageAssets.has(idxArg.value)) return;
+
+                const isInterleaved = fileArg.value.toLowerCase().endsWith('.iraw');
+                if (!isInterleaved)
+                    throw new Error(`LoadImage: nur .iraw-Dateien werden unterstützt — "${fileArg.value}" ist kein .iraw (Zeile ${stmt.line})`);
+                if (!this._readAssetHeader)
+                    throw new Error(`LoadImage: kein Projekt-Verzeichnis — .iraw-Header nicht lesbar (Zeile ${stmt.line})`);
+                const result = this._readAssetHeader(fileArg.value, 12);
+                if (!result.ok)
+                    throw new Error(`LoadImage: "${fileArg.value}" nicht lesbar — ${result.error} (Zeile ${stmt.line})`);
+                const hdr = result.data;
+                if (hdr[0] !== 0x49 || hdr[1] !== 0x52 || hdr[2] !== 0x41 || hdr[3] !== 0x57)
+                    throw new Error(`LoadImage: "${fileArg.value}" hat keinen IRAW-Header (legacy v1). Bitte mit dem Image-Editor neu exportieren (Zeile ${stmt.line})`);
+                const width    = (hdr[4] << 8) | hdr[5];
+                const height   = (hdr[6] << 8) | hdr[7];
+                const rowbytes = Math.ceil(Math.ceil(width / 8) / 2) * 2;
+
+                const lbl = `_img_${this._imageAssets.size}`;
+                this._imageAssets.set(idxArg.value, {
+                    filename: fileArg.value, label: lbl, width, height, rowbytes,
+                    isAnim: false, frameCount: 1, isInterleaved: true
+                });
             },
 
             loadanimimage: (stmt) => {
@@ -3145,12 +3204,23 @@ export class CodeGen {
                     wArg?.type === 'int'   && hArg?.type  === 'int' &&
                     countArg?.type === 'int') {
                     if (!this._imageAssets.has(idxArg.value)) {
+                        const isInterleaved = fileArg.value.toLowerCase().endsWith('.iraw');
+                        // Reject legacy v1 .iraw files — INCBIN skip 12 would corrupt palette data.
+                        if (isInterleaved) {
+                            if (!this._readAssetHeader)
+                                throw new Error(`LoadAnimImage: kein Projekt-Verzeichnis — .iraw-Header nicht lesbar (Zeile ${stmt.line})`);
+                            const result = this._readAssetHeader(fileArg.value, 4);
+                            if (!result.ok)
+                                throw new Error(`LoadAnimImage: "${fileArg.value}" nicht lesbar — ${result.error} (Zeile ${stmt.line})`);
+                            const hdr = result.data;
+                            if (hdr[0] !== 0x49 || hdr[1] !== 0x52 || hdr[2] !== 0x41 || hdr[3] !== 0x57)
+                                throw new Error(`LoadAnimImage: "${fileArg.value}" hat keinen IRAW-Header (legacy v1). Bitte mit dem Image-Editor neu exportieren (Zeile ${stmt.line})`);
+                        }
                         const lbl        = `_img_${this._imageAssets.size}`;
                         const width      = wArg.value;
                         const height     = hArg.value;
                         const frameCount = countArg.value;
                         const rowbytes   = Math.ceil(Math.ceil(width / 8) / 2) * 2;
-                        const isInterleaved = fileArg.value.toLowerCase().endsWith('.iraw');
                         this._imageAssets.set(idxArg.value, {
                             filename: fileArg.value, label: lbl, width, height, rowbytes,
                             isAnim: true, frameCount, isInterleaved
@@ -3302,10 +3372,43 @@ export class CodeGen {
                     throw new Error(`LoadTilemap: slot muss ein Integer-Literal sein — Zeile ${stmt.line}`);
                 if (fileArg?.type !== 'string')
                     throw new Error(`LoadTilemap: Dateiname muss ein String-Literal sein — Zeile ${stmt.line}`);
-                if (!this._tilemapAssets.has(idxArg.value)) {
-                    const lbl = `_tilemap_${this._tilemapAssets.size}`;
-                    this._tilemapAssets.set(idxArg.value, { filename: fileArg.value, label: lbl });
-                }
+                if (this._tilemapAssets.has(idxArg.value)) return;
+
+                // Parse .bmap v2 header (24 bytes fixed + tileset_len) at compile time.
+                // The codegen emits its own runtime header (dc.w map_w/h/tile_w/h) and
+                // INCBINs only the tile-index payload — file header + tileset path are skipped.
+                if (!this._readAssetHeader)
+                    throw new Error(`LoadTilemap: kein Projekt-Verzeichnis — .bmap-Header nicht lesbar (Zeile ${stmt.line})`);
+                const result = this._readAssetHeader(fileArg.value, 24);
+                if (!result.ok)
+                    throw new Error(`LoadTilemap: "${fileArg.value}" nicht lesbar — ${result.error} (Zeile ${stmt.line})`);
+                const hdr = result.data;
+                if (hdr[0] !== 0x42 || hdr[1] !== 0x4D || hdr[2] !== 0x41 || hdr[3] !== 0x50)
+                    throw new Error(`LoadTilemap: "${fileArg.value}" hat keinen BMAP-Header (legacy v1). Bitte mit dem Tilemap-Editor neu speichern (Zeile ${stmt.line})`);
+                const version = (hdr[4] << 8) | hdr[5];
+                if (version !== 2)
+                    throw new Error(`LoadTilemap: "${fileArg.value}" hat unsupported version ${version} (erwartet 2) — Zeile ${stmt.line}`);
+                const flags = (hdr[6] << 8) | hdr[7];
+                if (flags !== 0)
+                    throw new Error(`LoadTilemap: "${fileArg.value}" reserved flags müssen 0 sein (Zeile ${stmt.line})`);
+                const mapW  = (hdr[8]  << 8) | hdr[9];
+                const mapH  = (hdr[10] << 8) | hdr[11];
+                const tileW = (hdr[12] << 8) | hdr[13];
+                const tileH = (hdr[14] << 8) | hdr[15];
+                const tilesetLen = (hdr[16] << 8) | hdr[17];
+                if (mapW === 0 || mapH === 0)
+                    throw new Error(`LoadTilemap: "${fileArg.value}" ungültige Map-Dimension ${mapW}×${mapH} (Zeile ${stmt.line})`);
+                if (![8, 16, 32].includes(tileW) || ![8, 16, 32].includes(tileH))
+                    throw new Error(`LoadTilemap: "${fileArg.value}" ungültige Tile-Dimension ${tileW}×${tileH} — 8/16/32 erlaubt (Zeile ${stmt.line})`);
+                const padByte       = (tilesetLen & 1) ? 1 : 0;
+                const indicesOffset = 24 + tilesetLen + padByte;
+                const indicesSize   = mapW * mapH * 2;
+
+                const lbl = `_tilemap_${this._tilemapAssets.size}`;
+                this._tilemapAssets.set(idxArg.value, {
+                    filename: fileArg.value, label: lbl,
+                    mapW, mapH, tileW, tileH, indicesOffset, indicesSize,
+                });
             },
 
             drawtilemap: () => { this._usesTilemap = true; this._usesImage = true; },

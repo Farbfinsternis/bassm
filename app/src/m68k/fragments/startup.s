@@ -158,6 +158,7 @@ CUSTOM      EQU $DFF000     ; Custom chip registers base address
 ABSEXECBASE EQU 4           ; Address 4 always contains ExecBase pointer
 VEC_LEVEL2  EQU $68         ; 68000 Level-2 autovector (CIA-A: keyboard, timers)
 VEC_LEVEL3  EQU $6C         ; 68000 Level-3 autovector (VBlank on Amiga)
+VEC_LEVEL6  EQU $78         ; 68000 Level-6 autovector (CIA-B / EXTER on Amiga)
 
 
 ; ============================================================================
@@ -205,6 +206,7 @@ start:
         move.w  DMACONR(a5),_saved_dmacon
         move.l  VEC_LEVEL2.w,_saved_lev2vec
         move.l  VEC_LEVEL3.w,_saved_lev3vec
+        move.l  VEC_LEVEL6.w,_saved_lev6vec    ; CIA-B / EXTER (timer.device, audio.device)
 
 ; ── 3. Disable all interrupts and DMA ────────────────────────────────────────
         move.w  #$7FFF,INTENA(a5)       ; clear all interrupt enables
@@ -513,6 +515,7 @@ _null_copper:
         XDEF    _saved_dmacon
         XDEF    _saved_lev2vec
         XDEF    _saved_lev3vec
+        XDEF    _saved_lev6vec
         XDEF    _saved_gfx_base
         XDEF    _saved_view
         XDEF    _frame_count
@@ -531,6 +534,7 @@ _saved_intena:      ds.w    1   ; INTENAR snapshot   — restored by offload.s
 _saved_dmacon:      ds.w    1   ; DMACONR snapshot   — restored by offload.s
 _saved_lev2vec:     ds.l    1   ; Level-2 vector     — restored by offload.s
 _saved_lev3vec:     ds.l    1   ; Level-3 vector     — restored by offload.s
+_saved_lev6vec:     ds.l    1   ; Level-6 vector     — restored by offload.s (CIA-B / EXTER)
 _saved_gfx_base:    ds.l    1   ; graphics.library base — used by offload.s for LoadView
 _saved_view:        ds.l    1   ; GfxBase->ActiView on entry — restored by offload.s
 _frame_count:       ds.l    1   ; VBlank counter, incremented 50×/sec

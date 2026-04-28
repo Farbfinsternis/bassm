@@ -29,6 +29,8 @@ let _tmapTsetTileSize  = 16;
 let _tmapTsetDepth     = 3;
 let _tmapTsetIndices   = null;    // Uint8Array — all tiles stacked vertically (tile_w × totalH)
 let _tmapTsetFilename  = '';
+let _tmapTsetRelPath   = '';      // Project-relative path to current .tset (empty if loaded via dialog) — persisted in .bmap v2
+let _tmapBmapTilesetPath = '';    // Tileset path read from a loaded .bmap v2 (consumed by S2-T03 auto-link)
 let _tmapTsetCollision = null;    // Uint8Array(tile_count) — collision bitmask per tile (T12.2)
 let _tmapTsetTypes     = null;    // Uint8Array(tile_count) — type tag per tile (T12.3)
 let _tmapTsetAnimGroups = null;   // [{startIndex, frameCount, speed}] or null (T12.3)
@@ -174,9 +176,10 @@ async function _tmapLoadTsetFromProject(relativePath) {
     const bytes = await window.electronAPI.readAsset({
         projectDir: _tmapProjectDir, path: relativePath
     });
-    const buf  = new Uint8Array(bytes);
-    const name = relativePath.replace(/\\/g, '/').split('/').pop();
-    _tmapApplyTileset(_tmapParseTset(buf), name);
+    const buf      = new Uint8Array(bytes);
+    const normPath = relativePath.replace(/\\/g, '/');
+    const name     = normPath.split('/').pop();
+    _tmapApplyTileset(_tmapParseTset(buf), name, normPath);
 }
 
 async function _tmapLoadTsetDialog() {
@@ -202,13 +205,14 @@ async function _tmapLoadTsetDialog() {
     });
 }
 
-function _tmapApplyTileset(tset, filename) {
+function _tmapApplyTileset(tset, filename, relPath) {
     _tmapTsetPalette   = tset.palette;
     _tmapTsetTileCount = tset.tileCount;
     _tmapTsetTileSize  = tset.tileSize;
     _tmapTsetDepth     = tset.depth;
     _tmapTsetIndices   = tset.indices;
     _tmapTsetFilename  = filename;
+    _tmapTsetRelPath   = relPath || '';   // Empty when loaded via OS file picker (no project path)
     _tmapTsetCollision  = tset.collision || null;
     _tmapTsetTypes      = tset.types || null;
     _tmapTsetAnimGroups = tset.animGroups || null;
@@ -675,29 +679,59 @@ function tmapNewMap() {
     _tmapLog(`Created new tilemap ${_tmapMapW}×${_tmapMapH}`);
 }
 
-// ── .bmap Load ───────────────────────────────────────────────────────────────
+// ── .bmap v2 Load ────────────────────────────────────────────────────────────
+// Format spec: plans/bmap-v2-spec.md
+// 24-byte fixed header (BMAP magic + version + flags + map_w/h + tile_w/h
+// + tileset_len + 6 reserved) → tileset path (UTF-8, optional pad byte)
+// → map_w*map_h u16 BE indices (row-major).
 
 function _tmapParseBmap(buf) {
-    if (buf.length < 8) throw new Error('File too small for .bmap header');
+    if (buf.length < 24) throw new Error('File too small for .bmap v2 header (need 24 bytes)');
     const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
 
-    const mapW  = view.getUint16(0, false);
-    const mapH  = view.getUint16(2, false);
-    const tileW = view.getUint16(4, false);
-    const tileH = view.getUint16(6, false);
+    if (buf[0] !== 0x42 || buf[1] !== 0x4D || buf[2] !== 0x41 || buf[3] !== 0x50)
+        throw new Error('Not a v2 .bmap (missing BMAP magic). Legacy v1 .bmap is not supported — please re-export from the editor.');
+
+    const version = view.getUint16(4, false);
+    if (version !== 2) throw new Error(`Unsupported .bmap version ${version} (expected 2)`);
+
+    const flags = view.getUint16(6, false);
+    if (flags !== 0) throw new Error(`Reserved flags must be 0 (got 0x${flags.toString(16)})`);
+
+    const mapW  = view.getUint16(8,  false);
+    const mapH  = view.getUint16(10, false);
+    const tileW = view.getUint16(12, false);
+    const tileH = view.getUint16(14, false);
 
     if (mapW === 0 || mapH === 0) throw new Error(`Invalid map dimensions ${mapW}×${mapH}`);
-    if (tileW === 0 || tileH === 0) throw new Error(`Invalid tile dimensions ${tileW}×${tileH}`);
+    if (![8, 16, 32].includes(tileW) || ![8, 16, 32].includes(tileH))
+        throw new Error(`Invalid tile dimensions ${tileW}×${tileH} (must be 8/16/32)`);
 
-    const dataSize = mapW * mapH * 2;
-    if (buf.length < 8 + dataSize) throw new Error('File truncated — expected ' + (8 + dataSize) + ' bytes');
+    const tilesetLen = view.getUint16(16, false);
+    if (tilesetLen > 4096) throw new Error(`Tileset path too long (${tilesetLen} bytes, max 4096)`);
+
+    for (let i = 18; i < 24; i++) {
+        if (buf[i] !== 0) throw new Error(`Reserved bytes must be 0 (offset ${i} = 0x${buf[i].toString(16)})`);
+    }
+
+    const pathOffset    = 24;
+    const padByte       = (tilesetLen & 1) ? 1 : 0;
+    const indicesOffset = pathOffset + tilesetLen + padByte;
+    const expectedSize  = indicesOffset + mapW * mapH * 2;
+    if (buf.length !== expectedSize)
+        throw new Error(`File size mismatch — expected ${expectedSize} bytes, got ${buf.length}`);
+
+    let tilesetPath = '';
+    if (tilesetLen > 0) {
+        tilesetPath = new TextDecoder('utf-8').decode(buf.subarray(pathOffset, pathOffset + tilesetLen));
+    }
 
     const grid = new Uint16Array(mapW * mapH);
     for (let i = 0; i < mapW * mapH; i++) {
-        grid[i] = view.getUint16(8 + i * 2, false);
+        grid[i] = view.getUint16(indicesOffset + i * 2, false);
     }
 
-    return { mapW, mapH, tileW, tileH, grid };
+    return { mapW, mapH, tileW, tileH, tilesetPath, grid };
 }
 
 async function tmapOpenFile(relativePath, projectDir) {
@@ -721,6 +755,7 @@ async function tmapOpenFile(relativePath, projectDir) {
         _tmapGrid     = bmap.grid;
         _tmapDirty    = false;
         _tmapFilename = name;
+        _tmapBmapTilesetPath = bmap.tilesetPath || '';   // Consumed by S2-T03 auto-link
 
         // Sync UI controls
         document.getElementById('tmap-inp-mapw').value    = bmap.mapW;
@@ -737,26 +772,58 @@ async function tmapOpenFile(relativePath, projectDir) {
         _tmapEnableSave();
         _tmapSetStatus(`${name} — ${bmap.mapW}×${bmap.mapH} tiles, ${bmap.tileW}×${bmap.tileH}px`);
         _tmapLog(`Opened ${name} (${bmap.mapW}×${bmap.mapH}, ${bmap.tileW}×${bmap.tileH}px)`);
+
+        // S2-T03: Auto-load the tileset that was recorded in the .bmap v2 header.
+        // Failure is non-fatal — the map is already loaded and editable; the user
+        // can manually attach a different tileset. Skip if already loaded (round-trip).
+        if (bmap.tilesetPath && bmap.tilesetPath !== _tmapTsetRelPath) {
+            try {
+                await _tmapLoadTsetFromProject(bmap.tilesetPath);
+                _tmapLog(`Auto-loaded tileset from .bmap header: ${bmap.tilesetPath}`);
+            } catch (tsetErr) {
+                _tmapLog(`Auto-load tileset '${bmap.tilesetPath}' failed: ${tsetErr.message} — please attach a tileset manually`, 'warn');
+            }
+        }
     } catch (err) {
         _tmapSetStatus(`Error: ${err.message}`);
         _tmapLog(`Failed to load '${name}': ${err.message}`, 'error');
     }
 }
 
-// ── .bmap Save ───────────────────────────────────────────────────────────────
+// ── .bmap v2 Save ────────────────────────────────────────────────────────────
+// Format spec: plans/bmap-v2-spec.md
 
 function _tmapBuildBmapBinary() {
-    const size = 8 + _tmapMapW * _tmapMapH * 2;
-    const buf  = new Uint8Array(size);
-    const view = new DataView(buf.buffer);
+    const tsetBytes = _tmapTsetRelPath
+        ? new TextEncoder().encode(_tmapTsetRelPath)
+        : new Uint8Array(0);
+    if (tsetBytes.length > 4096)
+        throw new Error(`Tileset path too long (${tsetBytes.length} bytes, max 4096)`);
 
-    view.setUint16(0, _tmapMapW, false);
-    view.setUint16(2, _tmapMapH, false);
-    view.setUint16(4, _tmapTileW, false);
-    view.setUint16(6, _tmapTileH, false);
+    const padByte    = (tsetBytes.length & 1) ? 1 : 0;
+    const headerSize = 24;
+    const size       = headerSize + tsetBytes.length + padByte + _tmapMapW * _tmapMapH * 2;
+    const buf        = new Uint8Array(size);
+    const view       = new DataView(buf.buffer);
 
+    // Fixed header (24 bytes)
+    buf[0] = 0x42; buf[1] = 0x4D; buf[2] = 0x41; buf[3] = 0x50;   // 'BMAP'
+    view.setUint16(4,  2,             false);   // version
+    view.setUint16(6,  0,             false);   // flags
+    view.setUint16(8,  _tmapMapW,     false);
+    view.setUint16(10, _tmapMapH,     false);
+    view.setUint16(12, _tmapTileW,    false);
+    view.setUint16(14, _tmapTileH,    false);
+    view.setUint16(16, tsetBytes.length, false);
+    // Bytes 18..23 reserved — Uint8Array is zero-initialized
+
+    // Tileset path + optional pad byte (already zero from Uint8Array init)
+    if (tsetBytes.length > 0) buf.set(tsetBytes, headerSize);
+
+    // Indices
+    const indicesOffset = headerSize + tsetBytes.length + padByte;
     for (let i = 0; i < _tmapMapW * _tmapMapH; i++) {
-        view.setUint16(8 + i * 2, _tmapGrid[i], false);
+        view.setUint16(indicesOffset + i * 2, _tmapGrid[i], false);
     }
     return buf;
 }

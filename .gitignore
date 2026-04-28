@@ -11,8 +11,4 @@ EMULATOR.md
 CHANGELOG.dev.md
 examples/**/*.s
 examples/**/*.exe
-PERF-G.md
-M-SCROLL.md
-VBE-TWOWAY-SYNC.md
-site-review.md
-TILEMAP-FILEFORMAT.md
+plans/

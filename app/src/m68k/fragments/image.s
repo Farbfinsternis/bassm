@@ -8,11 +8,13 @@
 ;     _DrawImage — blit a pre-converted planar image to the current back buffer
 ;
 ; BLITZ2D SYNTAX
-;   LoadImage index, "file.raw", width, height
+;   LoadImage index, "file.iraw"
 ;   DrawImage index, x, y
 ;
+;   width/height are parsed from the .iraw v2 header at compile time.
+;
 ;   Example:
-;     LoadImage 0, "gfx/player.raw", 16, 16
+;     LoadImage 0, "gfx/player.iraw"
 ;     DrawImage 0, px, py
 ;
 ; IMAGE FILE FORMAT

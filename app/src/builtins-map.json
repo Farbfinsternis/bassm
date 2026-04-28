@@ -1,0 +1,261 @@
+[
+    {
+        "name": "PeekB",
+        "description": "Read an 8-bit byte from an absolute hardware address. Result is zero-extended to 32 bits.",
+        "snippet": "PeekB(${1:addr})",
+        "detail": "(addr) → byte  (zero-extended)",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "addr", "type": "integer" }
+        ]
+    },
+    {
+        "name": "PeekW",
+        "description": "Read a 16-bit word from an absolute hardware address. Result is sign-extended to 32 bits.",
+        "snippet": "PeekW(${1:addr})",
+        "detail": "(addr) → word  (sign-extended)",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "addr", "type": "integer" }
+        ]
+    },
+    {
+        "name": "PeekL",
+        "description": "Read a 32-bit longword from an absolute hardware address.",
+        "snippet": "PeekL(${1:addr})",
+        "detail": "(addr) → long",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "addr", "type": "integer" }
+        ]
+    },
+    {
+        "name": "RectsOverlap",
+        "description": "Test if two axis-aligned rectangles overlap. Returns **-1** (true) or **0** (false). Width/height are exclusive.",
+        "snippet": "RectsOverlap(${1:x1}, ${2:y1}, ${3:w1}, ${4:h1}, ${5:x2}, ${6:y2}, ${7:w2}, ${8:h2})",
+        "detail": "(x1,y1,w1,h1, x2,y2,w2,h2) → -1/0",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "x1", "type": "integer" },
+            { "name": "y1", "type": "integer" },
+            { "name": "w1", "type": "integer" },
+            { "name": "h1", "type": "integer" },
+            { "name": "x2", "type": "integer" },
+            { "name": "y2", "type": "integer" },
+            { "name": "w2", "type": "integer" },
+            { "name": "h2", "type": "integer" }
+        ]
+    },
+    {
+        "name": "ImagesOverlap",
+        "description": "Test if two placed images overlap using their bounding boxes. Returns **-1** (true) or **0** (false).",
+        "snippet": "ImagesOverlap(${1:img1}, ${2:x1}, ${3:y1}, ${4:img2}, ${5:x2}, ${6:y2})",
+        "detail": "(img1,x1,y1, img2,x2,y2) → -1/0",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "img1", "type": "integer" },
+            { "name": "x1",   "type": "integer" },
+            { "name": "y1",   "type": "integer" },
+            { "name": "img2", "type": "integer" },
+            { "name": "x2",   "type": "integer" },
+            { "name": "y2",   "type": "integer" }
+        ]
+    },
+    {
+        "name": "ImageRectOverlap",
+        "description": "Test if an image's bounding box overlaps a given rectangle. Returns **-1** (true) or **0** (false).",
+        "snippet": "ImageRectOverlap(${1:img}, ${2:x}, ${3:y}, ${4:rx}, ${5:ry}, ${6:rw}, ${7:rh})",
+        "detail": "(img,x,y, rx,ry,rw,rh) → -1/0",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "img", "type": "integer" },
+            { "name": "x",   "type": "integer" },
+            { "name": "y",   "type": "integer" },
+            { "name": "rx",  "type": "integer" },
+            { "name": "ry",  "type": "integer" },
+            { "name": "rw",  "type": "integer" },
+            { "name": "rh",  "type": "integer" }
+        ]
+    },
+    {
+        "name": "Str$",
+        "description": "Convert an integer to a decimal string. Returns a pointer to a shared buffer — copy before the next call.",
+        "snippet": "Str$(${1:n})",
+        "detail": "(n) → string pointer (shared buffer)",
+        "type": "expression",
+        "return": "string",
+        "args": [
+            { "name": "n", "type": "integer" }
+        ]
+    },
+    {
+        "name": "Rnd",
+        "description": "Return a pseudo-random integer in the range **0** to **n−1**. n must be between 1 and 32767.",
+        "snippet": "Rnd(${1:n})",
+        "detail": "(n) → random 0..n-1  (n must be 1..32767)",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "n", "type": "integer" }
+        ]
+    },
+    {
+        "name": "Abs",
+        "description": "Return the absolute (non-negative) value of n.",
+        "snippet": "Abs(${1:n})",
+        "detail": "(n) → absolute value",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "n", "type": "integer" }
+        ]
+    },
+    {
+        "name": "KeyDown",
+        "description": "Return **-1** if the key with the given Amiga raw scancode is currently held down, **0** otherwise. Non-blocking.",
+        "snippet": "KeyDown(${1:scancode})",
+        "detail": "(scancode) → -1/0  (non-blocking)",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "scancode", "type": "integer" }
+        ]
+    },
+    {
+        "name": "JoyUp",
+        "description": "Return **-1** if the joystick on port 0 or 1 is pushed up.",
+        "snippet": "JoyUp(${1:0})",
+        "detail": "(port) → -1/0",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "port", "type": "integer" }
+        ]
+    },
+    {
+        "name": "JoyDown",
+        "description": "Return **-1** if the joystick on port 0 or 1 is pushed down.",
+        "snippet": "JoyDown(${1:0})",
+        "detail": "(port) → -1/0",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "port", "type": "integer" }
+        ]
+    },
+    {
+        "name": "JoyLeft",
+        "description": "Return **-1** if the joystick on port 0 or 1 is pushed left.",
+        "snippet": "JoyLeft(${1:0})",
+        "detail": "(port) → -1/0",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "port", "type": "integer" }
+        ]
+    },
+    {
+        "name": "JoyRight",
+        "description": "Return **-1** if the joystick on port 0 or 1 is pushed right.",
+        "snippet": "JoyRight(${1:0})",
+        "detail": "(port) → -1/0",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "port", "type": "integer" }
+        ]
+    },
+    {
+        "name": "JoyFire",
+        "description": "Return **-1** if the fire button on port 0 or 1 is pressed.",
+        "snippet": "JoyFire(${1:0})",
+        "detail": "(port) → -1/0  (port 0 or 1)",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "port", "type": "integer" }
+        ]
+    },
+    {
+        "name": "MouseX",
+        "description": "Return the current mouse X position in screen pixels (0 to screenWidth−1).",
+        "snippet": "MouseX()",
+        "detail": "() → x position (0..screenW-1)",
+        "type": "expression",
+        "return": "integer",
+        "args": []
+    },
+    {
+        "name": "MouseY",
+        "description": "Return the current mouse Y position in screen pixels (0 to screenHeight−1).",
+        "snippet": "MouseY()",
+        "detail": "() → y position (0..screenH-1)",
+        "type": "expression",
+        "return": "integer",
+        "args": []
+    },
+    {
+        "name": "MouseDown",
+        "description": "Return **-1** if the given mouse button is currently held. 0 = left button, 1 = right button.",
+        "snippet": "MouseDown(${1:0})",
+        "detail": "(button) → -1/0  (0=left, 1=right)",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "button", "type": "integer" }
+        ]
+    },
+    {
+        "name": "MouseHit",
+        "description": "Return **-1** if the given mouse button was pressed since the last call. Clears the flag — one-shot read.",
+        "snippet": "MouseHit(${1:0})",
+        "detail": "(button) → -1/0  (one-shot, clears flag)",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "button", "type": "integer" }
+        ]
+    },
+    {
+        "name": "GetTileType",
+        "description": "Return the type byte of the tile at world (x, y), looked up from the active tileset's TYPES table. 0 if no tilemap is active.",
+        "snippet": "GetTileType(${1:x}, ${2:y})",
+        "detail": "(x, y) → tile type byte",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "x", "type": "integer" },
+            { "name": "y", "type": "integer" }
+        ]
+    },
+    {
+        "name": "GetTileColl",
+        "description": "Return the collision byte of the tile at world (x, y), looked up from the active tileset's COLL table. 0 if no tilemap is active.",
+        "snippet": "GetTileColl(${1:x}, ${2:y})",
+        "detail": "(x, y) → tile collision byte",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "x", "type": "integer" },
+            { "name": "y", "type": "integer" }
+        ]
+    },
+    {
+        "name": "CollideTile",
+        "description": "Slope-aware collision: returns the corrected y coordinate after snapping the actor at world (x, y) onto the tile slope. Use as `y = CollideTile(x, y)`.",
+        "snippet": "CollideTile(${1:x}, ${2:y})",
+        "detail": "(x, y) → corrected y",
+        "type": "expression",
+        "return": "integer",
+        "args": [
+            { "name": "x", "type": "integer" },
+            { "name": "y", "type": "integer" }
+        ]
+    }
+]

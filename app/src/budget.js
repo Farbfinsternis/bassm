@@ -12,11 +12,34 @@
 //   Frame budget: 141,800 Cycles @ 50 Hz PAL
 //   Blitter:      ~1.8 MB/s effektiv (shared chip bus)
 //   Chip RAM:     512 KB (A500 standard)
+//
+// SSOT (M2-T08):
+//   - commands-map.json liefert die Liste aller bekannten Commands.
+//   - budget-costs.json liefert pro Command einen Cost-Eintrag (`kind` +
+//     entweder `cycles` für fixed-cost oder `factor` für skalierende blits).
+//   Neue Commands ohne Eintrag in budget-costs.json fallen automatisch auf
+//   den 15-Zyklen-Default — kein manueller Sync nötig, bis ein Command
+//   explizit teurer als generisch wird.
+
+import COMMANDS_MAP from './commands-map.json' with { type: 'json' };
+import BUDGET_COSTS from './budget-costs.json' with { type: 'json' };
 
 const CPU_HZ        = 7_090_000;
 const FRAME_HZ      = 50;
-export const CYCLES_FRAME  = Math.floor(CPU_HZ / FRAME_HZ);  // 141,800
+export const CYCLES_FRAME   = Math.floor(CPU_HZ / FRAME_HZ);  // 141,800
 export const CHIP_RAM_BYTES = 512 * 1024;                     // 524,288 bytes
+
+const GENERIC_STMT_CYCLES = 15;
+
+// ── Lookup tables derived from JSON SSOT ─────────────────────────────────────
+
+const _COMMAND_LOWER = new Set(COMMANDS_MAP.map(c => c.name.toLowerCase()));
+
+const _COSTS_LOWER = Object.fromEntries(
+    Object.entries(BUDGET_COSTS)
+        .filter(([k]) => !k.startsWith('_'))
+        .map(([k, v]) => [k.toLowerCase(), v])
+);
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -40,28 +63,21 @@ export function analyzeBudget(source) {
     let chipRam     = 2 * planes * bytesPerPlane;
     let chipRamPlus = false;  // true = unknown-size assets present
 
-    // LoadImage assets (planar DATA_C in chip RAM)
+    // LoadImage: sizes live in the .iraw v2 header (compile-time read by codegen).
+    // budget.js can't read binary headers, so any LoadImage flags assets+ as
+    // "size unknown" and DrawImage/DrawBob fall back to a 32×32 default.
     const imageMap = {};
-    const imgRE = /^\s*LoadImage\s+(\d+)\s*,\s*"[^"]*"(?:\s*,\s*(\d+)\s*,\s*(\d+))?/img;
+    const imgRE = /^\s*LoadImage\s+(\d+)\s*,\s*"[^"]*"/img;
     let m;
     while ((m = imgRE.exec(source)) !== null) {
-        const idx = parseInt(m[1]);
-        const w = m[2] ? parseInt(m[2]) : 0;
-        const h = m[3] ? parseInt(m[3]) : 0;
-        imageMap[idx] = { w: w || 32, h: h || 32 };
-        if (w && h) {
-            chipRam += Math.ceil(w / 8) * h * planes;
-        } else {
-            chipRamPlus = true;
-        }
+        imageMap[parseInt(m[1])] = { w: 32, h: 32 };
+        chipRamPlus = true;
     }
 
-    // LoadSample — file size unknown at parse time
-    if (/^\s*LoadSample\b/im.test(source)) chipRamPlus = true;
-
-    // LoadTileset / LoadTilemap — INCBIN assets in DATA_C (chip RAM), size unknown at parse time
-    if (/^\s*LoadTileset\b/im.test(source)) chipRamPlus = true;
-    if (/^\s*LoadTilemap\b/im.test(source)) chipRamPlus = true;
+    // INCBIN-driven assets — chip RAM size unknown at parse time.
+    if (/^\s*LoadSample\b/im.test(source))   chipRamPlus = true;
+    if (/^\s*LoadTileset\b/im.test(source))  chipRamPlus = true;
+    if (/^\s*LoadTilemap\b/im.test(source))  chipRamPlus = true;
 
     // LoadFont — data goes into normal (fast) RAM, not chip RAM; no chip RAM cost.
     // Collect charH per font index for accurate Text cycle estimation.
@@ -182,7 +198,7 @@ function _estimateCycles(lines, imageMap, fontMap, gfxW, gfxH, planes) {
             // If with trailing Else: exactly one branch always runs → use average.
             // If without Else: condition may be false → weight body at 50%.
             const probability = hasTrailingElse ? 1.0 : 0.5;
-            total += 15 + Math.round(avgBranch * probability);
+            total += GENERIC_STMT_CYCLES + Math.round(avgBranch * probability);
             i = j;
             continue;
         }
@@ -193,95 +209,81 @@ function _estimateCycles(lines, imageMap, fontMap, gfxW, gfxH, planes) {
     return total;
 }
 
+/** Extract leading command identifier (or null for non-command statements). */
+function _firstCommandToken(trim) {
+    const m = /^([A-Za-z][A-Za-z0-9_]*)\b/.exec(trim);
+    if (!m) return null;
+    const lower = m[1].toLowerCase();
+    return _COMMAND_LOWER.has(lower) ? lower : null;
+}
+
 function _estimateLineCycles(trim, imageMap, gfxW, gfxH, planes, activeFontCharH = 8) {
     if (!trim || /^;/.test(trim)) return 0;
 
-    const wpl = Math.ceil(gfxW / 16);  // blitter words per scanline
+    // ── Built-in expression calls (PeekB/PeekW/PeekL, *Overlap) ───────────────
+    // These appear inside expressions, not as leading tokens — keep regex paths.
+    if (/\bPeek[BWL]\s*\(/i.test(trim))       return 20;
+    if (/RectsOverlap\s*\(/i.test(trim))      return 120;
+    if (/ImageRectOverlap\s*\(/i.test(trim))  return 80;
+    if (/ImagesOverlap\s*\(/i.test(trim))     return 80;
 
-    // ── Blitter commands ──────────────────────────────────────────────────────
+    // ── JSON-driven command dispatch ──────────────────────────────────────────
+    const cmd = _firstCommandToken(trim);
+    if (cmd) {
+        const cost = _COSTS_LOWER[cmd];
+        if (!cost) return GENERIC_STMT_CYCLES;       // command known but no override
 
-    if (/^Cls\b/i.test(trim)) {
-        // D-only fill, fastest blitter mode
-        return planes * wpl * gfxH * 4;
+        switch (cost.kind) {
+            case 'init':
+            case 'fixed':
+                return cost.cycles ?? 0;
+
+            case 'screen': {
+                // D-only fill — cost scales with full screen size
+                const wpl = Math.ceil(gfxW / 16);
+                return planes * wpl * gfxH * cost.factor;
+            }
+
+            case 'rect': {
+                // Box: filled rect blit, w/h are 3rd/4th args (literal-only)
+                const m = /\s+[^,]+,[^,]+,\s*(\d+)\s*,\s*(\d+)/.exec(trim);
+                const bw = m ? parseInt(m[1]) : 32, bh = m ? parseInt(m[2]) : 32;
+                return planes * (Math.ceil(bw / 16) + 1) * bh * cost.factor;
+            }
+
+            case 'outline': {
+                // Rect: outline only — ~2×(w+h) words per plane
+                const m = /\s+[^,]+,[^,]+,\s*(\d+)\s*,\s*(\d+)/.exec(trim);
+                const bw = m ? parseInt(m[1]) : 32, bh = m ? parseInt(m[2]) : 32;
+                return planes * (bw + bh) * 2 * cost.factor;
+            }
+
+            case 'image': {
+                // DrawImage — masked blit per plane, scales with image size
+                const m = /\s+(\d+)/.exec(trim);
+                const img = (m && imageMap[parseInt(m[1])]) || { w: 32, h: 32 };
+                return planes * (Math.ceil(img.w / 16) + 1) * img.h * cost.factor;
+            }
+
+            case 'bob': {
+                // DrawBob — restore + masked draw, ~2× DrawImage per plane
+                const m = /\s+(\d+)/.exec(trim);
+                const img = (m && imageMap[parseInt(m[1])]) || { w: 32, h: 32 };
+                return planes * (Math.ceil(img.w / 16) + 1) * img.h * cost.factor;
+            }
+
+            case 'text': {
+                // Text — CPU cost scales with chars × charH; 8px = 1× factor
+                const strM  = /"([^"]*)"/.exec(trim);
+                const chars = strM ? Math.max(strM[1].length, 4) : 12;
+                return chars * Math.round(cost.factor * (activeFontCharH / 8));
+            }
+
+            default:
+                return GENERIC_STMT_CYCLES;
+        }
     }
-
-    if (/^Box\b/i.test(trim)) {
-        // Match w/h as the 3rd and 4th comma-separated args; x and y may be expressions
-        const m = /Box\s+[^,]+,[^,]+,\s*(\d+)\s*,\s*(\d+)/i.exec(trim);
-        const bw = m ? parseInt(m[1]) : 32, bh = m ? parseInt(m[2]) : 32;
-        return planes * (Math.ceil(bw / 16) + 1) * bh * 4;
-    }
-
-    if (/^Rect\b/i.test(trim)) {
-        // Only the outline — 4 thin blits, roughly 2 × (w+h) words
-        const m = /Rect\s+[^,]+,[^,]+,\s*(\d+)\s*,\s*(\d+)/i.exec(trim);
-        const bw = m ? parseInt(m[1]) : 32, bh = m ? parseInt(m[2]) : 32;
-        return planes * (bw + bh) * 2 * 4;
-    }
-
-    if (/^DrawImage\b/i.test(trim)) {
-        const m = /DrawImage\s+(\d+)/i.exec(trim);
-        const img = (m && imageMap[parseInt(m[1])]) || { w: 32, h: 32 };
-        // Masked blit (A+C→D) — slightly more than plain copy
-        return planes * (Math.ceil(img.w / 16) + 1) * img.h * 8;
-    }
-
-    if (/^DrawBob\b/i.test(trim)) {
-        const m = /DrawBob\s+(\d+)/i.exec(trim);
-        const img = (m && imageMap[parseInt(m[1])]) || { w: 32, h: 32 };
-        // Bob = background restore blit + masked draw blit, both per plane
-        return planes * (Math.ceil(img.w / 16) + 1) * img.h * 16;
-    }
-
-    // ── Tilemap ───────────────────────────────────────────────────────────────
-
-    if (/^LoadTileset\b/i.test(trim)) return 0;   // init only — pointer setup
-    if (/^LoadTilemap\b/i.test(trim)) return 0;   // init only — pointer setup
-    if (/^SetTilemap\b/i.test(trim))  return 10;  // 4 pointer writes
-    if (/^DrawTilemap\b/i.test(trim)) return 70000; // Phase 1: ~336 blits × ~200 cycles
-                                                    // (PERF-J will reduce to ~14000)
-
-    if (/^Plot\b/i.test(trim))  return 50;
-    if (/^Line\b/i.test(trim))  return 400;
-
-    if (/^Text\b/i.test(trim)) {
-        // Best-effort: measure the first string literal; fall back to 12 chars
-        // Cost scales with charH: more rows per glyph = more CPU work
-        const strM  = /"([^"]*)"/i.exec(trim);
-        const chars = strM ? Math.max(strM[1].length, 4) : 12;
-        return chars * Math.round(400 * (activeFontCharH / 8));
-    }
-
-    // ── Cheap commands ────────────────────────────────────────────────────────
-
-    if (/^CopperColor\b/i.test(trim))   return 20;
-    if (/^PaletteColor\b/i.test(trim))  return 20;
-    if (/^Color\b/i.test(trim))         return 10;
-    if (/^ClsColor\b/i.test(trim))      return 10;
-    if (/^ScreenFlip\b/i.test(trim))    return 800;   // WaitBlit + copper swap
-    if (/^PlaySample\b/i.test(trim))    return 200;
-    if (/^PlaySampleOnce\b/i.test(trim)) return 300;
-    if (/^StopSample\b/i.test(trim))    return 100;
-    if (/^WaitKey\b/i.test(trim))       return 0;     // blocks — not in budget
-
-    // ── Collision checks ──────────────────────────────────────────────────────
-    // All three are inline-expanded (no JSR) but evaluate 6–8 args + AABB logic.
-
-    if (/RectsOverlap\s*\(/i.test(trim))     return 120;
-    if (/ImageRectOverlap\s*\(/i.test(trim)) return 80;
-    if (/ImagesOverlap\s*\(/i.test(trim))    return 80;
-
-    // ── Data / Read / Restore ─────────────────────────────────────────────────
-    if (/^Data\b/i.test(trim))    return 0;    // DATA section — no runtime cost
-    if (/^Read\b/i.test(trim))    return 15;   // 4 instructions: ptr load/store + read
-    if (/^Restore\b/i.test(trim)) return 10;   // 2 instructions: lea + store
-
-    // ── Hardware access ───────────────────────────────────────────────────────
-    // PeekB/W/L: move + optional ext.l; PokeB/W/L/Poke: move to absolute addr.
-
-    if (/\bPeek[BWL]\s*\(/i.test(trim))                         return 20;
-    if (/^\s*Poke[BWL]?\s+/i.test(trim))                        return 20;
 
     // Generic statement (assignment, condition, arithmetic, …)
-    return 15;
+    return GENERIC_STMT_CYCLES;
 }

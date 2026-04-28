@@ -13,103 +13,49 @@ window.MonacoEnvironment = {
 // ── AMD loader config ─────────────────────────────────────────────────────────
 require.config({ paths: { vs: '../node_modules/monaco-editor/min/vs' } });
 
-require(['vs/editor/editor.main'], function () {
+require(['vs/editor/editor.main'], async function () {
 
-    // ── Command signatures (used for completions, hover, and keyword list) ────
+    // ── Single source of truth: load command + keyword maps from JSON ─────────
+    // S0-T02/T03 (Sprint-Ticketliste): COMMAND_SIGS, hover docs, snippets and
+    // the syntax-highlighting keyword list all derive from commands-map.json /
+    // keywords-map.json. No duplicate command list, no duplicate doc text and
+    // no duplicate snippet table.
 
-    const COMMAND_SIGS = [
-        // Core
-        { label: 'Graphics',       insertText: 'Graphics ${1:320}, ${2:256}, ${3:4}',                                      detail: 'width, height, depth',
-          doc: 'Set up the display. **depth** = bitplanes (1–5), giving 2^depth colours. Must be called before any drawing.' },
-        { label: 'ScreenFlip',     insertText: 'ScreenFlip',                                                                detail: '',
-          doc: 'Swap front and back buffers. Call once per frame after all drawing is done. Also triggers the copper-list swap.' },
-        { label: 'WaitVbl',        insertText: 'WaitVbl',                                                                   detail: '',
-          doc: 'Wait for the next vertical blank without flipping buffers. Useful for timing-only synchronisation.' },
-        { label: 'Delay',          insertText: 'Delay ${1:50}',                                                             detail: 'frames',
-          doc: 'Pause for *frames* vertical blanks (1 frame ≈ 20 ms PAL / 17 ms NTSC).' },
-        { label: 'End',            insertText: 'End',                                                                       detail: '',
-          doc: 'Exit the program immediately and restore the OS.' },
-        // Drawing
-        { label: 'Cls',            insertText: 'Cls',                                                                       detail: '',
-          doc: 'Clear the back buffer using the blitter. Fill colour is set by **ClsColor**.' },
-        { label: 'ClsColor',       insertText: 'ClsColor ${1:0}',                                                           detail: 'colorIndex',
-          doc: 'Set the palette index used by **Cls** to fill the background. Default is 0 (black).' },
-        { label: 'Color',          insertText: 'Color ${1:1}',                                                              detail: 'paletteIndex',
-          doc: 'Set the current drawing colour to a palette index (0–31). Used by Plot, Line, Rect, Box, and Text.' },
-        { label: 'PaletteColor',   insertText: 'PaletteColor ${1:0}, ${2:15}, ${3:0}, ${4:0}',                              detail: 'n, r, g, b  (0–15 each)',
-          doc: 'Set palette entry **n**. r, g, b are OCS 4-bit values (0–15). Takes effect at the next ScreenFlip.' },
-        { label: 'CopperColor',    insertText: 'CopperColor ${1:0}, ${2:15}, ${3:0}, ${4:0}',                               detail: 'y, r, g, b  (y = scanline)',
-          doc: 'Change the background colour (COLOR00) at scanline **y** via the copper. r, g, b are 0–15. Enables raster bars.' },
-        { label: 'Plot',           insertText: 'Plot ${1:x}, ${2:y}',                                                       detail: 'x, y',
-          doc: 'Draw a single pixel at *(x, y)* in the current colour.' },
-        { label: 'Line',           insertText: 'Line ${1:x1}, ${2:y1}, ${3:x2}, ${4:y2}',                                   detail: 'x1, y1, x2, y2',
-          doc: 'Draw a line from *(x1, y1)* to *(x2, y2)* in the current colour.' },
-        { label: 'Rect',           insertText: 'Rect ${1:x}, ${2:y}, ${3:w}, ${4:h}',                                       detail: 'x, y, w, h  (outline)',
-          doc: 'Draw a hollow rectangle outline at *(x, y)* with the given width and height.' },
-        { label: 'Box',            insertText: 'Box ${1:x}, ${2:y}, ${3:w}, ${4:h}',                                        detail: 'x, y, w, h  (filled)',
-          doc: 'Draw a filled rectangle at *(x, y)* with the given width and height using the blitter.' },
-        // Text
-        { label: 'Text',           insertText: 'Text ${1:0}, ${2:0}, "${3:}"',                                              detail: 'x, y, string',
-          doc: 'Draw a string at *(x, y)* using the current font and colour. Supports `\\n` for newlines.' },
-        { label: 'LoadFont',       insertText: 'LoadFont ${1:0}, "${2:ABCDEFGHIJKLMNOPQRSTUVWXYZ}", "${3:font.raw}", ${4:8}, ${5:8}', detail: 'index, chars, file, charW, charH',
-          doc: 'Load a raw font image. **chars** defines the character set order in the image; charW/charH define glyph size in pixels.' },
-        { label: 'UseFont',        insertText: 'UseFont ${1:0}',                                                            detail: '[index]  — omit to reset to built-in',
-          doc: 'Switch to a previously loaded font. Omit index to revert to the built-in 8×8 font.' },
-        // Images & Animation
-        { label: 'LoadImage',      insertText: 'LoadImage ${1:0}, "${2:image.raw}"',                      detail: 'index, file',
-          doc: 'Load a raw planar image from disk into chip RAM. width/height must match the actual image dimensions.' },
-        { label: 'DrawImage',      insertText: 'DrawImage ${1:0}, ${2:x}, ${3:y}',                                          detail: 'index, x, y [, frame]',
-          doc: 'Draw a loaded image at *(x, y)*. Optional **frame** selects a frame from an animation strip (0-based).' },
-        { label: 'LoadAnimImage',  insertText: 'LoadAnimImage ${1:0}, "${2:anim.raw}", ${3:32}, ${4:32}, ${5:8}',           detail: 'index, file, width, height, frameCount',
-          doc: 'Load an animation strip. **frameCount** sets how many frames are in the strip; each frame is width×height pixels.' },
-        // Bobs
-        { label: 'SetBackground',  insertText: 'SetBackground ${1:0}',                                                      detail: 'imageIndex',
-          doc: 'Set the image used as the static background for Bob restore. Must be called before any DrawBob.' },
-        { label: 'LoadMask',       insertText: 'LoadMask ${1:0}, "${2:sprite.mask}"',                                       detail: 'imageIndex, file',
-          doc: 'Load a 1-bpp mask file for a Bob image. The mask determines which pixels are transparent during DrawBob.' },
-        { label: 'DrawBob',        insertText: 'DrawBob ${1:0}, ${2:x}, ${3:y}',                                            detail: 'index, x, y [, frame]',
-          doc: 'Queue a Bob (blitter object) to be drawn at *(x, y)*. Optional **frame** for animated bobs. Bobs are flushed automatically before ScreenFlip.' },
-        // Tilemap
-        { label: 'LoadTileset',    insertText: 'LoadTileset ${1:0}, "${2:tiles.iraw}", ${3:16}, ${4:16}',  detail: 'slot, file, tileW, tileH',
-          doc: 'Load an interleaved tileset (.iraw). Tiles are tileW×tileH pixels, stacked vertically (same format as LoadAnimImage).' },
-        { label: 'LoadTilemap',    insertText: 'LoadTilemap ${1:0}, "${2:map.bmap}"',                      detail: 'slot, file',
-          doc: 'Load a binary tilemap (.bmap). Header: mapW, mapH, tileW, tileH — followed by mapW×mapH tile indices (0-based words).' },
-        { label: 'DrawTilemap',    insertText: 'DrawTilemap ${1:0}, ${2:0}, ${3:scrollX}, ${4:scrollY}',  detail: 'tmSlot, tsSlot, scrollX, scrollY',
-          doc: 'Render the visible portion of the tilemap into the back buffer. scrollX/scrollY are camera position in pixels. Fine X via BPLCON1, fine Y via BPLxPT offset.' },
-        { label: 'SetTilemap',     insertText: 'SetTilemap ${1:0}, ${2:0}',                                detail: 'tmSlot, tsSlot',
-          doc: 'Register the tilemap as the Bob background. Installs _bg_restore_tilemap so DrawBob correctly redraws tiles behind bobs.' },
-        // Viewports
-        { label: 'SetViewport',    insertText: 'SetViewport ${1:0}, ${2:0}, ${3:199}',                    detail: 'index, y1, y2',
-          doc: 'Define a viewport spanning scanlines **y1** to **y2**. Each viewport has its own copper section, buffer pair, and bob queue. Must be called before any drawing.' },
-        { label: 'Viewport',       insertText: 'Viewport ${1:0}',                                         detail: 'index',
-          doc: 'Switch the active viewport context. Subsequent drawing commands (Cls, DrawBob, etc.) target this viewport.' },
-        { label: 'SetCamera',      insertText: 'SetCamera ${1:x}, ${2:y}',                                detail: 'x, y  (world coords)',
-          doc: 'Set the camera position for the active viewport. DrawBob coordinates are automatically translated from world space to screen space. Requires a viewport with scroll buffer.' },
-        // Sound
-        { label: 'LoadSample',     insertText: 'LoadSample ${1:0}, "${2:sound.raw}"',                                       detail: 'index, file',
-          doc: 'Register a raw PCM audio sample. File must be 8-bit unsigned, mono. Only declares the asset — no chip RAM is used until PlaySample.' },
-        { label: 'PlaySample',     insertText: 'PlaySample ${1:0}, ${2:0}, ${3:428}, ${4:64}',                              detail: 'index, channel, period, volume',
-          doc: 'Play a sample on Paula channel 0–3, looping continuously. **period** controls pitch (lower = higher pitch; 428 ≈ middle C). **volume** is 0–64.' },
-        { label: 'PlaySampleOnce', insertText: 'PlaySampleOnce ${1:0}, ${2:0}, ${3:428}, ${4:64}',                          detail: 'index, channel, period, volume',
-          doc: 'Play a sample once on Paula channel 0–3, then go silent. Uses the same period/volume as PlaySample.' },
-        { label: 'StopSample',     insertText: 'StopSample ${1:0}',                                                         detail: 'channel  (0–3)',
-          doc: 'Stop DMA playback on Paula channel 0–3 immediately.' },
-        // Input
-        { label: 'WaitKey',        insertText: 'WaitKey',                                                                   detail: '',
-          doc: 'Halt execution until a key is pressed. Uses interrupt-driven CIA-A keyboard input.' },
-        // Hardware access
-        { label: 'PokeB',          insertText: 'PokeB ${1:\\$DFF180}, ${2:0}',                                              detail: 'addr, val  (8-bit write)',
-          doc: 'Write an 8-bit value to an absolute hardware address. No bounds checking — direct chip register access.' },
-        { label: 'PokeW',          insertText: 'PokeW ${1:\\$DFF180}, ${2:0}',                                              detail: 'addr, val  (16-bit write)',
-          doc: 'Write a 16-bit value to an absolute hardware address. Address should be word-aligned.' },
-        { label: 'PokeL',          insertText: 'PokeL ${1:\\$DFF000}, ${2:0}',                                              detail: 'addr, val  (32-bit write)',
-          doc: 'Write a 32-bit value to an absolute hardware address. Address should be longword-aligned.' },
-        { label: 'Poke',           insertText: 'Poke ${1:\\$DFF000}, ${2:0}',                                               detail: 'addr, val  (alias for PokeL)',
-          doc: 'Alias for PokeL. Write a 32-bit value to an absolute hardware address.' },
-        // Project
-        { label: 'Include',        insertText: 'Include "${1:filename.bassm}"',                                             detail: 'filename',
-          doc: 'Include and compile another BASSM source file at this point. Path is relative to the current file.' },
-    ];
+    const _cmdRaw      = await fetch('./src/commands-map.json').then(r => r.json());
+    const _kwRaw       = await fetch('./src/keywords-map.json').then(r => r.json());
+    const _builtinsRaw = await fetch('./src/builtins-map.json').then(r => r.json());
+
+    // Defensive fallback: if a future command is added to commands-map.json
+    // without a `snippet` field, derive one from the args list so completions
+    // still work. Required args become `${N:name}` placeholders; string args
+    // get wrapped in quotes; optional args are dropped from the default form.
+    function _autoSnippet(entry) {
+        const required = entry.args.filter(a => !a.optional);
+        if (required.length === 0) return entry.name;
+        const ph = required.map((a, i) =>
+            a.type === 'string' ? `"\${${i+1}:${a.name}}"` : `\${${i+1}:${a.name}}`);
+        return `${entry.name} ${ph.join(', ')}`;
+    }
+
+    function _formatDetail(entry) {
+        if (entry.args.length === 0) return '';
+        return entry.args.map(a => a.optional ? `[${a.name}]` : a.name).join(', ');
+    }
+
+    const COMMAND_SIGS = _cmdRaw.map(entry => ({
+        label:      entry.name,
+        insertText: entry.snippet || _autoSnippet(entry),
+        detail:     _formatDetail(entry),
+        doc:        entry.description,
+    }));
+
+    // Include is a preprocessor directive (not in commands-map.json) — kept here.
+    COMMAND_SIGS.push({
+        label:      'Include',
+        insertText: 'Include "${1:filename.bassm}"',
+        detail:     'filename',
+        doc:        'Include and compile another BASSM source file at this point. Path is relative to the current file.',
+    });
 
     // ── Control-flow keyword snippets ─────────────────────────────────────────
     // Multi-line templates for structural keywords — shown alongside commands.
@@ -213,50 +159,21 @@ require(['vs/editor/editor.main'], function () {
         },
     ];
 
-    const BUILTIN_SIGS = [
-        // Hardware read
-        { label: 'PeekB',            insertText: 'PeekB(${1:addr})',                                                                    detail: '(addr) → byte  (zero-extended)',
-          doc: 'Read an 8-bit byte from an absolute hardware address. Result is zero-extended to 32 bits.' },
-        { label: 'PeekW',            insertText: 'PeekW(${1:addr})',                                                                    detail: '(addr) → word  (sign-extended)',
-          doc: 'Read a 16-bit word from an absolute hardware address. Result is sign-extended to 32 bits.' },
-        { label: 'PeekL',            insertText: 'PeekL(${1:addr})',                                                                    detail: '(addr) → long',
-          doc: 'Read a 32-bit longword from an absolute hardware address.' },
-        // Collision
-        { label: 'RectsOverlap',     insertText: 'RectsOverlap(${1:x1}, ${2:y1}, ${3:w1}, ${4:h1}, ${5:x2}, ${6:y2}, ${7:w2}, ${8:h2})', detail: '(x1,y1,w1,h1, x2,y2,w2,h2) → -1/0',
-          doc: 'Test if two axis-aligned rectangles overlap. Returns **-1** (true) or **0** (false). Width/height are exclusive.' },
-        { label: 'ImagesOverlap',    insertText: 'ImagesOverlap(${1:img1}, ${2:x1}, ${3:y1}, ${4:img2}, ${5:x2}, ${6:y2})',             detail: '(img1,x1,y1, img2,x2,y2) → -1/0',
-          doc: 'Test if two placed images overlap using their bounding boxes. Returns **-1** (true) or **0** (false).' },
-        { label: 'ImageRectOverlap', insertText: 'ImageRectOverlap(${1:img}, ${2:x}, ${3:y}, ${4:rx}, ${5:ry}, ${6:rw}, ${7:rh})',      detail: '(img,x,y, rx,ry,rw,rh) → -1/0',
-          doc: 'Test if an image\'s bounding box overlaps a given rectangle. Returns **-1** (true) or **0** (false).' },
-        // String / Math
-        { label: 'Str$',             insertText: 'Str$(${1:n})',                                                                         detail: '(n) → string pointer (shared buffer)',
-          doc: 'Convert an integer to a decimal string. Returns a pointer to a shared buffer — copy before the next call.' },
-        { label: 'Rnd',              insertText: 'Rnd(${1:n})',                                                                          detail: '(n) → random 0..n-1  (n must be 1..32767)',
-          doc: 'Return a pseudo-random integer in the range **0** to **n−1**. n must be between 1 and 32767.' },
-        { label: 'Abs',              insertText: 'Abs(${1:n})',                                                                          detail: '(n) → absolute value',
-          doc: 'Return the absolute (non-negative) value of n.' },
-        // Input functions
-        { label: 'KeyDown',          insertText: 'KeyDown(${1:scancode})',                                                               detail: '(scancode) → -1/0  (non-blocking)',
-          doc: 'Return **-1** if the key with the given Amiga raw scancode is currently held down, **0** otherwise. Non-blocking.' },
-        { label: 'JoyUp',            insertText: 'JoyUp(${1:0})',                                                                        detail: '(port) → -1/0',
-          doc: 'Return **-1** if the joystick on port 0 or 1 is pushed up.' },
-        { label: 'JoyDown',          insertText: 'JoyDown(${1:0})',                                                                      detail: '(port) → -1/0',
-          doc: 'Return **-1** if the joystick on port 0 or 1 is pushed down.' },
-        { label: 'JoyLeft',          insertText: 'JoyLeft(${1:0})',                                                                      detail: '(port) → -1/0',
-          doc: 'Return **-1** if the joystick on port 0 or 1 is pushed left.' },
-        { label: 'JoyRight',         insertText: 'JoyRight(${1:0})',                                                                     detail: '(port) → -1/0',
-          doc: 'Return **-1** if the joystick on port 0 or 1 is pushed right.' },
-        { label: 'JoyFire',          insertText: 'JoyFire(${1:0})',                                                                      detail: '(port) → -1/0  (port 0 or 1)',
-          doc: 'Return **-1** if the fire button on port 0 or 1 is pressed.' },
-        { label: 'MouseX',           insertText: 'MouseX()',                                                                             detail: '() → x position (0..screenW-1)',
-          doc: 'Return the current mouse X position in screen pixels (0 to screenWidth−1).' },
-        { label: 'MouseY',           insertText: 'MouseY()',                                                                             detail: '() → y position (0..screenH-1)',
-          doc: 'Return the current mouse Y position in screen pixels (0 to screenHeight−1).' },
-        { label: 'MouseDown',        insertText: 'MouseDown(${1:0})',                                                                    detail: '(button) → -1/0  (0=left, 1=right)',
-          doc: 'Return **-1** if the given mouse button is currently held. 0 = left button, 1 = right button.' },
-        { label: 'MouseHit',         insertText: 'MouseHit(${1:0})',                                                                     detail: '(button) → -1/0  (one-shot, clears flag)',
-          doc: 'Return **-1** if the given mouse button was pressed since the last call. Clears the flag — one-shot read.' },
-    ];
+    // M2-T07: Built-in expression-functions are now in builtins-map.json (SSOT).
+    // `detail` is the short signature/return-shape; `description` is the hover doc.
+    // Auto-snippet for entries without an explicit one (none in v1, defensive).
+    function _autoBuiltinSnippet(entry) {
+        if (entry.args.length === 0) return `${entry.name}()`;
+        const ph = entry.args.map((a, i) => `\${${i+1}:${a.name}}`);
+        return `${entry.name}(${ph.join(', ')})`;
+    }
+
+    const BUILTIN_SIGS = _builtinsRaw.map(entry => ({
+        label:      entry.name,
+        insertText: entry.snippet || _autoBuiltinSnippet(entry),
+        detail:     entry.detail || '',
+        doc:        entry.description,
+    }));
 
     // ── Blitz2D language definition ───────────────────────────────────────────
     monaco.languages.register({ id: 'blitz2d' });
@@ -268,20 +185,9 @@ require(['vs/editor/editor.main'], function () {
     monaco.languages.setMonarchTokensProvider('blitz2d', {
         ignoreCase: true,
         keywords: [
-            // Control flow & language structure
-            'For', 'Next', 'To', 'Step',
-            'While', 'Wend',
-            'Repeat', 'Until',
-            'If', 'Then', 'Else', 'ElseIf', 'EndIf',
-            'Select', 'Case', 'Default', 'EndSelect',
-            'Dim', 'Type', 'Field', 'EndType',
-            'Function', 'EndFunction', 'Return',
-            'Const', 'Data', 'Read', 'Restore',
-            'Exit', 'And', 'Or', 'Xor', 'Not', 'Mod', 'Shl', 'Shr',
-            // All commands
-            ..._kwCommands,
-            // All built-in functions
-            ..._kwBuiltins,
+            ..._kwRaw,        // Control-flow / declaration keywords from keywords-map.json
+            ..._kwCommands,   // Commands from commands-map.json
+            ..._kwBuiltins,   // Built-in functions (BUILTIN_SIGS — see M2-T07)
         ],
         tokenizer: {
             root: [

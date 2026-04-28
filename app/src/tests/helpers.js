@@ -1,44 +1,10 @@
 // ============================================================================
-// helpers.js — Shared pipeline factory for BASSM compiler tests
+// helpers.js — Re-export shim for legacy tests
 // ============================================================================
 //
-// Avoids fetch() by wiring up Lexer/Parser/CodeGen directly with the same
-// command and keyword lists that the browser loads from JSON.
+// The canonical pipeline factory now lives in tests-v2/_pipeline.js (S3-T02).
+// This shim keeps the legacy `tests/` suite compiling without churn until it is
+// fully migrated to tests-v2/ (S3-T05 / M4-T01). Anything new should import
+// directly from tests-v2/_pipeline.js.
 
-import { PreProcessor } from '../preprocessor.js';
-import { Lexer }        from '../lexer.js';
-import { Parser }       from '../parser.js';
-import { CodeGen }      from '../codegen.js';
-
-const COMMANDS = [
-    'Graphics', 'Cls', 'ClsColor', 'Color', 'PaletteColor',
-    'WaitVbl', 'Text', 'NPrint', 'End', 'Delay',
-    'Plot', 'Line', 'Rect', 'Box',
-    'WaitKey', 'ScreenFlip', 'CopperColor',
-    'LoadSample', 'PlaySample', 'PlaySampleOnce', 'StopSample',
-];
-
-const KEYWORDS = [
-    'If', 'Then', 'Else', 'ElseIf', 'EndIf',
-    'While', 'Wend', 'For', 'To', 'Step', 'Next',
-    'Select', 'Case', 'Default', 'EndSelect',
-    'Dim', 'Type', 'Field', 'EndType',
-];
-
-/**
- * Returns helper functions that run the full compiler pipeline.
- * Each function accepts a Blitz2D source string.
- */
-export function makePipeline() {
-    const pre    = new PreProcessor();
-    const lexer  = new Lexer(COMMANDS, KEYWORDS);
-    const parser = new Parser();
-    const codegen = new CodeGen();
-
-    const process = src => pre.process(src);
-    const tokenize = src => lexer.tokenize(process(src));
-    const parse    = src => parser.parse(tokenize(src));
-    const compile  = src => codegen.generate(parse(src));
-
-    return { tokenize, parse, compile };
-}
+export { makePipeline, COMMANDS, KEYWORDS } from '../tests-v2/_pipeline.js';

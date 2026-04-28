@@ -29,9 +29,10 @@
 ;     9.  Unwind stack and return to the CLI with exit code 0
 ;
 ; DEPENDENCIES (labels defined by startup.s, earlier in the output file)
-;   _saved_sp, _saved_intena, _saved_dmacon, _saved_lev3vec, _null_copper
-;   _saved_gfx_base, _saved_view
-;   CUSTOM, INTENA, INTREQ, DMACON, COP1LCH, COP1LCL, COPJMP1, VEC_LEVEL3
+;   _saved_sp, _saved_intena, _saved_dmacon, _saved_lev2vec, _saved_lev3vec,
+;   _saved_lev6vec, _null_copper, _saved_gfx_base, _saved_view
+;   CUSTOM, INTENA, INTREQ, DMACON, COP1LCH, COP1LCL, COPJMP1,
+;   VEC_LEVEL2, VEC_LEVEL3, VEC_LEVEL6
 ;   INTF_SETCLR, DMAF_SETCLR, _LVOPermit, ABSEXECBASE
 ;
 ; CODEGEN OUTPUT ORDER
@@ -42,6 +43,7 @@
 
 ; ── Graphics Library LVO Offsets ─────────────────────────────────────────────
 _LVOLoadView        EQU -222    ; graphics.library: install a View (copper list)
+_LVORethinkDisplay  EQU -390    ; graphics.library: rebuild the display from current views
 _LVOCloseLibrary    EQU -414    ; exec.library:     close / decrement open count
 
         SECTION offload_code,CODE
@@ -82,12 +84,17 @@ _exit:
         ; the correct BPLCON0 for the Workbench display.
         clr.w   BPLCON0(a5)
 
-; ── 3. Restore the Level-2 and Level-3 exception vectors ─────────────────────
+; ── 3. Restore the Level-2, Level-3 and Level-6 exception vectors ───────────
         ; Level-2 ($68) must be restored BEFORE INTENA is re-enabled (step 5),
         ; so that AROS's keyboard handler is back in place when INTF_PORTS goes live.
         move.l  _saved_lev2vec,VEC_LEVEL2.w
         ; Level-3 ($6C): puts back AROS/Exec's own VBlank dispatcher.
         move.l  _saved_lev3vec,VEC_LEVEL3.w
+        ; Level-6 ($78): CIA-B / EXTER autovector. KS 1.3 timer.device and
+        ; audio.device hang their server lists on this. Without restoring it,
+        ; an EXTER pending bit in INTREQ (Lev6) sees no handler — CPU stays
+        ; in STOP, the input.device-Tick stops, and keyboard/mouse never wake.
+        move.l  _saved_lev6vec,VEC_LEVEL6.w
 
 ; ── 4. Reinstall the null copper list ────────────────────────────────────────
         ; COP1LCH/COP1LCL are write-only — we cannot restore the OS copper
@@ -108,7 +115,7 @@ _exit:
         ; OR-ing in INTF_SETCLR turns this into a "set these bits" write,
         ; which re-enables exactly the sources that were active on entry.
         move.w  _saved_intena,d0
-        or.w    #INTF_SETCLR,d0
+        or.w    #INTF_SETCLR|$4000,d0   ; force INTEN (master) — guarantees interrupts on after restore
         move.w  d0,INTENA(a5)
 
 ; ── 6. Restore DMA ───────────────────────────────────────────────────────────
@@ -126,58 +133,83 @@ _exit:
 
 ; ── 7. Restore OS display ────────────────────────────────────────────────────
         ;
-        ; We do NOT call LoadView(NULL).  On AROS it can hang (internal
-        ; WaitTOF) and it sets GfxBase->ActiView = NULL, which prevents the
-        ; OS VBlank handler from re-installing the Workbench copper list.
+        ; KS 1.3 sequence:
+        ;   Permit()              ; unfreeze scheduler — LoadView needs it
+        ;   LoadView(NULL)        ; tell graphics.library "we're done" — without
+        ;                         ; this on KS 1.3, ActiView is unchanged and the
+        ;                         ; VBlank server has no reason to reinstall the
+        ;                         ; Workbench/CLI copper.  Empirically required.
+        ;   WaitTOF × 2 (hw poll) ; let null view propagate
+        ;   LoadView(saved_view)  ; reinstall Workbench/CLI view (skip if NULL)
+        ;   WaitTOF × 2 (hw poll) ; let new copper take hold
+        ;   CloseLibrary(GfxBase)
         ;
-        ; Instead we rely on the hardware null copper (step 4) to park the
-        ; display safely and wait two VBlanks via direct hardware polling.
-        ; Then LoadView(saved) re-installs the Workbench view.  If _saved_view
-        ; is NULL (AROS edge case), GfxBase->ActiView still points at the
-        ; original Workbench view (we never cleared it), so the OS VBlank
-        ; handler will restore the copper list automatically after Permit().
-        ;
-        ; VBlank polling disables INTF_VERTB temporarily so the restored OS
-        ; handler cannot clear the flag before our poll loop reads it.
+        ; AROS-Hinweis: LoadView(NULL) kann auf AROS hängen. Per project
+        ; priority KS 1.3 = primary; AROS-Limitation akzeptiert.
 
-        ; Hardware VBlank wait × 2 — let null copper stabilise
-        move.w  #INTF_VERTB,INTENA(a5)  ; disable VBlank interrupt (race-free poll)
+        move.l  ABSEXECBASE.w,a6
+        jsr     _LVOPermit(a6)              ; unfreeze scheduler FIRST
 
-        move.w  #INTF_VERTB,INTREQ(a5)  ; clear any pending VBlank flag
-.wait_vbl_1:
-        move.w  INTREQR(a5),d0
-        btst    #5,d0                   ; INTF_VERTB set?
-        beq.s   .wait_vbl_1
-
-        move.w  #INTF_VERTB,INTREQ(a5)
-.wait_vbl_2:
-        move.w  INTREQR(a5),d0
-        btst    #5,d0
-        beq.s   .wait_vbl_2
-
-        move.w  #(INTF_SETCLR|INTF_VERTB),INTENA(a5)  ; re-enable VBlank interrupt
-
-        ; Restore Workbench view via LoadView if we have a saved view
         move.l  _saved_gfx_base,d0
-        beq.s   .skip_loadview
+        beq     .skip_gfx                   ; OpenLibrary failed at startup
 
+        ; LoadView(NULL) — required to wake graphics.library on KS 1.3
         move.l  d0,a6
-        move.l  _saved_view,a1          ; Workbench View saved at startup
-        beq.s   .skip_savedview         ; NULL → OS handler restores via ActiView
-        jsr     _LVOLoadView(a6)        ; install Workbench view
-.skip_savedview:
+        suba.l  a1,a1                       ; a1 = NULL
+        jsr     _LVOLoadView(a6)
 
-        move.l  ABSEXECBASE.w,a6        ; CloseLibrary — matches startup.s open
+        bsr     _hw_wait_vbl_2              ; let null view propagate
+
+        ; LoadView(saved_view) — only if we actually have a saved view
+        move.l  _saved_view,d1              ; move.l→d1 sets CCR (move→An doesn't)
+        beq.s   .skip_loadsaved
+        move.l  d1,a1
+        move.l  _saved_gfx_base,a6
+        jsr     _LVOLoadView(a6)
+
+        bsr     _hw_wait_vbl_2              ; let new copper take hold
+.skip_loadsaved:
+
+        ; RethinkDisplay — reorganises Intuition's view of the existing
+        ; display.  Lighter than RemakeDisplay (which tried to re-allocate
+        ; the entire cprlist and deadlocked the half-restored scheduler).
+        ; Helps the library re-establish its VBlank-server hooks for
+        ; input.device — which is what gets keyboard/mouse alive again.
+        move.l  _saved_gfx_base,a6
+        jsr     _LVORethinkDisplay(a6)
+
+        bsr     _hw_wait_vbl_2              ; let rebuilt display propagate
+
+        move.l  ABSEXECBASE.w,a6            ; CloseLibrary — matches startup
         move.l  _saved_gfx_base,a1
         jsr     _LVOCloseLibrary(a6)
-.skip_loadview:
+.skip_gfx:
 
-; ── 8. Unfreeze AmigaOS scheduler ────────────────────────────────────────────
-        move.l  ABSEXECBASE.w,a6
-        jsr     _LVOPermit(a6)
+; ── 8. Return to CLI ─────────────────────────────────────────────────────────
+        move.l  _saved_sp,sp                ; restore stack to entry state
+        move.l  (sp)+,a5                    ; restore callee-saved a5
+        moveq   #0,d0                       ; exit code 0 = success
+        rts                                 ; return to AmigaOS
 
-; ── 9. Return to CLI ─────────────────────────────────────────────────────────
-        move.l  _saved_sp,sp            ; restore stack to entry state
-        move.l  (sp)+,a5               ; restore callee-saved a5
-        moveq   #0,d0                   ; exit code 0 = success
-        rts                             ; return to AmigaOS
+
+; ── Helper: hardware-poll 2 VBlanks ─────────────────────────────────────────
+;       Used during teardown when scheduler may not yet be fully responsive.
+;       Disables VERTB IRQ-routing for race-free polling, restores it after.
+;       Self-contained: re-establishes a5 = CUSTOM (caller may have called
+;       OS functions that clobbered a5 — a5 is scratch in the AmigaOS ABI).
+_hw_wait_vbl_2:
+        lea     CUSTOM,a5                   ; a5 = $DFF000 (clobbered by OS calls)
+        move.w  #INTF_VERTB,INTENA(a5)      ; disable VERTB IRQ (race-free poll)
+
+        move.w  #INTF_VERTB,INTREQ(a5)      ; clear pending VERTB flag
+.w1:    move.w  INTREQR(a5),d0
+        btst    #5,d0                       ; VERTB?
+        beq.s   .w1
+
+        move.w  #INTF_VERTB,INTREQ(a5)
+.w2:    move.w  INTREQR(a5),d0
+        btst    #5,d0
+        beq.s   .w2
+
+        move.w  #(INTF_SETCLR|INTF_VERTB),INTENA(a5)  ; re-enable VERTB IRQ
+        rts
