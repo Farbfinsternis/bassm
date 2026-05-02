@@ -50,7 +50,7 @@ describe('M2-T08 — budget-costs.json ↔ commands-map.json Konsistenz', () => 
         }
     });
 
-    test('Sentinel: alle 40 Commands haben einen Cost-Eintrag (keine stille Drift)', () => {
+    test('Sentinel: alle Commands haben einen Cost-Eintrag (keine stille Drift)', () => {
         // Wenn Commands fehlen, neuen Eintrag in budget-costs.json hinzufügen
         // ODER hier explizit als bewusst-ungetagged markieren. Default-Verhalten
         // (15 cycles) ist OK; das Sentinel zwingt zur bewussten Entscheidung.

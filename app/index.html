@@ -15,6 +15,7 @@
 			<button id="btn-new"            title="New Project"><i class="codicon codicon-new-folder"></i></button>
 			<button id="btn-open"           title="Open Project"><i class="codicon codicon-folder-opened"></i></button>
 			<button id="btn-save"           title="Save  (Ctrl+S)"><i class="codicon codicon-save"></i></button>
+			<button id="btn-close-project"  title="Close Project"><i class="codicon codicon-close"></i></button>
 			<span class="toolbar-sep"></span>
 			<button id="btn-run"            title="Run — compile + run  (F5)"><i class="codicon codicon-play"></i></button>
 			<button id="btn-build"          title="Build only  (F7)"><i class="codicon codicon-tools"></i></button>
@@ -49,6 +50,27 @@
 
 				<div id="editor-drop-overlay"><span id="editor-drop-hint"></span></div>
 
+				<!-- First-run modal (W-T07): shown once on the very first start
+				     after bootstrap creates <Documents>/BASSM/. Hidden by default;
+				     bassm.js displays it when bassm:get-first-run-state returns false. -->
+				<div id="first-run-modal" class="modal-overlay" style="display:none">
+					<div class="modal-card">
+						<div class="modal-title">Workspace ready</div>
+						<div class="modal-body">
+							<p>BASSM hat einen Arbeitsordner für deine Projekte angelegt:</p>
+							<div id="first-run-path" class="modal-path"></div>
+							<p>Dort findest du <strong>examples/</strong> (read-only Mirror der
+							gebündelten Beispiele) und <strong>projects/</strong> (deine
+							editierbaren Projekte). "Open Example" im Welcome-Bereich kopiert
+							ein Beispiel als eigenständiges Projekt.</p>
+						</div>
+						<div class="modal-actions">
+							<button id="first-run-btn-open">Ordner öffnen</button>
+							<button id="first-run-btn-ok" class="primary">OK</button>
+						</div>
+					</div>
+				</div>
+
 				<div id="welcome-panel">
 					<div id="welcome-inner">
 						<img id="welcome-logo" src="img/logo.png" alt="BASSM" />
@@ -60,6 +82,10 @@
 						<div id="welcome-recent-section">
 							<div id="welcome-recent-title">Recent</div>
 							<div id="welcome-recent-list"></div>
+						</div>
+						<div id="welcome-examples-section">
+							<div id="welcome-examples-title">Examples</div>
+							<div id="welcome-examples-list"></div>
 						</div>
 					</div>
 				</div>

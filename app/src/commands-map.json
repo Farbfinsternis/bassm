@@ -298,8 +298,8 @@
     },
     {
         "name": "PlaySample",
-        "description": "Play a sample on Paula channel 0–3, looping continuously. period controls pitch (lower = higher pitch; 428 ≈ middle C). volume is 0–64.",
-        "snippet": "PlaySample ${1:0}, ${2:0}, ${3:428}, ${4:64}",
+        "description": "Play a sample on Paula channel 0–3. loop = 0 (default) plays once and goes silent; nonzero loops continuously. period controls pitch (lower = higher pitch; 428 ≈ middle C). volume is 0–64.",
+        "snippet": "PlaySample ${1:0}, ${2:0}",
         "type": "global",
         "return": "void",
         "args": [
@@ -312,38 +312,19 @@
                 "type": "integer"
             },
             {
-                "name": "period",
-                "type": "integer"
-            },
-            {
-                "name": "volume",
-                "type": "integer"
-            }
-        ],
-        "zone": "any"
-    },
-    {
-        "name": "PlaySampleOnce",
-        "description": "Play a sample once on Paula channel 0–3, then go silent. Uses the same period/volume convention as PlaySample.",
-        "snippet": "PlaySampleOnce ${1:0}, ${2:0}, ${3:428}, ${4:64}",
-        "type": "global",
-        "return": "void",
-        "args": [
-            {
-                "name": "index",
-                "type": "integer"
-            },
-            {
-                "name": "channel",
-                "type": "integer"
+                "name": "loop",
+                "type": "integer",
+                "optional": true
             },
             {
                 "name": "period",
-                "type": "integer"
+                "type": "integer",
+                "optional": true
             },
             {
                 "name": "volume",
-                "type": "integer"
+                "type": "integer",
+                "optional": true
             }
         ],
         "zone": "any"
@@ -734,8 +715,8 @@
     },
     {
         "name": "LoadFont",
-        "description": "Load a raw font image. chars defines the character set order in the image; charW/charH define glyph size in pixels.",
-        "snippet": "LoadFont ${1:0}, \"${2:ABCDEFGHIJKLMNOPQRSTUVWXYZ}\", \"${3:font.raw}\", ${4:8}, ${5:8}",
+        "description": "Load a font into a slot. Two signatures: LoadFont index, \"file.bfnt\" reads charW/charH and the charCode→glyph lookup from the BFNT header (produced by the Font Editor). Legacy: LoadFont index, \"chars\", \"file.raw\", charW, charH for OCS spritesheet fonts where chars defines the character order.",
+        "snippet": "LoadFont ${1:0}, \"${2:font.bfnt}\"",
         "type": "global",
         "return": "void",
         "args": [
@@ -744,20 +725,23 @@
                 "type": "integer"
             },
             {
-                "name": "chars",
+                "name": "file_or_chars",
                 "type": "string"
             },
             {
                 "name": "file",
-                "type": "string"
+                "type": "string",
+                "optional": true
             },
             {
                 "name": "charW",
-                "type": "integer"
+                "type": "integer",
+                "optional": true
             },
             {
                 "name": "charH",
-                "type": "integer"
+                "type": "integer",
+                "optional": true
             }
         ],
         "zone": "setup"

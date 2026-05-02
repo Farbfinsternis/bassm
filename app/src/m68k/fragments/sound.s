@@ -6,13 +6,19 @@
 ;   Provides runtime helpers for playing 8-bit signed PCM samples on the
 ;   Amiga's Paula chip via hardware DMA, matching the Blitz2D interface:
 ;
-;     _PlaySample  — start one Paula channel playing a sample (loops)
-;     _StopSample  — stop a Paula channel (disables its DMA)
+;     _PlaySample      — start a Paula channel looping a sample
+;     _PlaySampleOnce  — play a sample once, then go silent
+;     _StopSample      — stop a Paula channel (disables its DMA)
+;
+;   The Blitz2D-side `PlaySample` command dispatches at compile-time
+;   (or at runtime if loop is a variable) to either _PlaySampleOnce
+;   (loop = 0, the default) or _PlaySample (loop ≠ 0).
 ;
 ; BLITZ2D SYNTAX
-;   PlaySample "file.raw", channel, period, volume
-;       file    = raw 8-bit signed PCM data (INCBIN'd into chip RAM)
+;   PlaySample index, channel [, loop [, period [, volume]]]
+;       index   = sample slot registered via LoadSample
 ;       channel = 0–3  (Paula DMA channel)
+;       loop    = 0 (default) plays once; nonzero loops continuously
 ;       period  = 3546895 / sample_rate  (PAL clock: 3.546895 MHz)
 ;                 e.g.  period 428 ≈ 8287 Hz,  period 214 ≈ 16574 Hz
 ;       volume  = 0–64 (Paula maximum)

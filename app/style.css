@@ -381,6 +381,93 @@ body.state-welcome #budget-strip  { display: none; }
 }
 .welcome-recent-empty { font-size: 11px; color: #334; padding: 4px 0; }
 
+#welcome-examples-title {
+    font-size: 10px;
+    color: #334;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #181b22;
+    margin-bottom: 4px;
+}
+.welcome-example-item {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 5px 0;
+    cursor: pointer;
+}
+.welcome-example-item:hover .example-name { color: #aab; }
+.welcome-example-item:hover .example-icon { color: #556; }
+.example-icon { font-size: 11px; color: #2a2d38; flex-shrink: 0; }
+.example-name { font-size: 12px; color: #778; flex-shrink: 0; }
+.example-hint { font-size: 10px; color: #334; flex: 1; text-align: left; }
+.welcome-examples-empty { font-size: 11px; color: #334; padding: 4px 0; }
+
+/* ── First-run modal (W-T07) ── */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+.modal-card {
+    background: #0d1117;
+    border: 1px solid #252830;
+    border-radius: 4px;
+    padding: 24px 28px;
+    min-width: 360px;
+    max-width: 520px;
+    color: #aab;
+    font-size: 12px;
+    line-height: 1.55;
+}
+.modal-title {
+    font-size: 14px;
+    color: #ccd;
+    margin-bottom: 14px;
+    letter-spacing: 0.04em;
+}
+.modal-body p { margin: 0 0 10px 0; }
+.modal-body p:last-child { margin-bottom: 0; }
+.modal-path {
+    font-family: 'Fira Code', monospace;
+    font-size: 11px;
+    color: #889;
+    background: #07090d;
+    border: 1px solid #1a1d24;
+    border-radius: 3px;
+    padding: 8px 10px;
+    margin: 6px 0 12px 0;
+    word-break: break-all;
+}
+.modal-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 18px;
+}
+.modal-actions button {
+    padding: 8px 16px;
+    background: #0d1117;
+    border: 1px solid #252830;
+    color: #778;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    border-radius: 3px;
+    transition: border-color 0.12s, color 0.12s;
+}
+.modal-actions button:hover { border-color: #4a5a7a; color: #aab; }
+.modal-actions button.primary {
+    border-color: #3a4a6a;
+    color: #aab;
+}
+.modal-actions button.primary:hover { border-color: #6a7a9a; color: #ccd; }
+
 /* ── Centre: Monaco Editor ── */
 #editor-panel {
     flex: 1;

@@ -214,11 +214,16 @@ export class CodeGen {
 
     /**
      * Returns font asset metadata for numPlanes validation in main.js.
-     * Each entry: { filename, numChars, charH }
+     * Each entry: { filename, numChars, charW, charH }. For .bfnt entries
+     * numChars comes from the BFNT header (charCount); for .raw entries it
+     * is the length of the chars-string passed to LoadFont.
      */
     getFontAssets() {
-        return [...this._fontAssets.values()].map(({ filename, chars, charW, charH }) => ({
-            filename, numChars: chars.length, charW, charH
+        return [...this._fontAssets.values()].map(e => ({
+            filename: e.filename,
+            numChars: e.kind === 'bfnt' ? e.charCount : e.chars.length,
+            charW: e.charW,
+            charH: e.charH,
         }));
     }
 
@@ -1596,23 +1601,38 @@ export class CodeGen {
             out.push('');
         }
 
-        // Font data (fast RAM — CPU renderer, no Blitter access needed)
-        for (const [, { filename, label: lbl, chars }] of this._fontAssets) {
-            const lookup = new Uint8Array(128).fill(0xFF);
-            for (let i = 0; i < chars.length; i++) {
-                const code = chars.charCodeAt(i);
-                if (code < 128) lookup[code] = i;
-            }
-            const lookupDc = Array.from(lookup).join(',');
-
+        // Font data (fast RAM — CPU renderer, no Blitter access needed).
+        // .bfnt files already carry a 12-B header + 128-B lookup + glyph-major
+        // payload — we INCBIN as-is and expose sub-labels into the file. .raw
+        // fonts have no header; we INCBIN the bytes and emit a chars→idx lookup
+        // synthesised from the LoadFont chars-string.
+        for (const [, entry] of this._fontAssets) {
+            const { filename, label: lbl, kind } = entry;
             out.push(`        SECTION ${lbl}_sec,DATA`);
             out.push(`        XDEF    ${lbl}`);
             out.push(`${lbl}:`);
             out.push(`        INCBIN  "${filename}"`);
             out.push(`        EVEN`);
-            out.push(`        XDEF    ${lbl}_lookup`);
-            out.push(`${lbl}_lookup:`);
-            out.push(`        dc.b    ${lookupDc}`);
+
+            if (kind === 'bfnt') {
+                out.push(`        XDEF    ${lbl}_lookup`);
+                out.push(`${lbl}_lookup    EQU     ${lbl}+12`);
+                out.push(`        XDEF    ${lbl}_data`);
+                out.push(`${lbl}_data      EQU     ${lbl}+12+128`);
+            } else {
+                const lookup = new Uint8Array(128).fill(0xFF);
+                for (let i = 0; i < entry.chars.length; i++) {
+                    const code = entry.chars.charCodeAt(i);
+                    if (code < 128) lookup[code] = i;
+                }
+                const lookupDc = Array.from(lookup).join(',');
+                out.push(`        XDEF    ${lbl}_lookup`);
+                out.push(`${lbl}_lookup:`);
+                out.push(`        dc.b    ${lookupDc}`);
+                out.push(`        EVEN`);
+                out.push(`        XDEF    ${lbl}_data`);
+                out.push(`${lbl}_data     EQU     ${lbl}`);
+            }
             out.push('');
         }
     }
@@ -2348,7 +2368,6 @@ export class CodeGen {
             rect:       (stmt, lines) => this._cmd_rect(stmt, lines),
             box:        (stmt, lines) => this._cmd_box(stmt, lines),
             playsample:     (stmt, lines) => this._cmd_playsample(stmt, lines),
-            playsampleonce: (stmt, lines) => this._cmd_playsampleonce(stmt, lines),
             stopsample:     (stmt, lines) => this._cmd_stopsample(stmt, lines),
             loadsample:     (stmt, lines) => this._cmd_loadsample(stmt, lines),
             loadfont:       (stmt, lines) => this._cmd_loadfont(stmt, lines),
@@ -2504,7 +2523,9 @@ export class CodeGen {
     }
 
     _cmd_playsample(stmt, lines) {
-        // PlaySample index, channel [, period [, volume]]
+        // PlaySample index, channel [, loop [, period [, volume]]]
+        //   loop = 0 (default, false) → one-shot via _PlaySampleOnce
+        //   loop ≠ 0 (true)            → looping via _PlaySample
         const idxArg = stmt.args[0];
         if (!idxArg || idxArg.type !== 'int')
             throw new Error(`PlaySample: index must be an integer literal (line ${stmt.line})`);
@@ -2513,48 +2534,44 @@ export class CodeGen {
             throw new Error(`PlaySample: sample index ${idxArg.value} not loaded — use LoadSample first (line ${stmt.line})`);
         const { label: lbl } = entry;
 
-        const volArg = stmt.args[3] ?? { type: 'int', value: 64 };
-        const perArg = stmt.args[2] ?? { type: 'int', value: 428 };
+        const loopArg = stmt.args[2] ?? null;
+        const perArg  = stmt.args[3] ?? { type: 'int', value: 428 };
+        const volArg  = stmt.args[4] ?? { type: 'int', value: 64 };
 
-        this._genExpr(volArg, lines);
-        lines.push('        move.l  d0,-(sp)');
-        this._genExpr(perArg, lines);
-        lines.push('        move.l  d0,-(sp)');
-        this._genExprArg(stmt, 1, 'PlaySample channel', lines);
-        lines.push('        move.l  d0,-(sp)');
+        const pushArgsAndCall = (target) => {
+            this._genExpr(volArg, lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExpr(perArg, lines);
+            lines.push('        move.l  d0,-(sp)');
+            this._genExprArg(stmt, 1, 'PlaySample channel', lines);
+            lines.push('        move.l  d0,-(sp)');
+            lines.push(`        lea     ${lbl},a0`);
+            lines.push(`        move.l  #(${lbl}_end-${lbl})/2,d1`);
+            lines.push('        movem.l (sp)+,d0/d2-d3');
+            lines.push(`        jsr     ${target}`);
+        };
 
-        lines.push(`        lea     ${lbl},a0`);
-        lines.push(`        move.l  #(${lbl}_end-${lbl})/2,d1`);
+        // Compile-time dispatch when loop is a literal (or omitted)
+        if (loopArg === null || (loopArg.type === 'int' && loopArg.value === 0)) {
+            pushArgsAndCall('_PlaySampleOnce');
+            return;
+        }
+        if (loopArg.type === 'int' && loopArg.value !== 0) {
+            pushArgsAndCall('_PlaySample');
+            return;
+        }
 
-        lines.push('        movem.l (sp)+,d0/d2-d3');
-        lines.push('        jsr     _PlaySample');
-    }
-
-    _cmd_playsampleonce(stmt, lines) {
-        // PlaySampleOnce index, channel [, period [, volume]]
-        const idxArg = stmt.args[0];
-        if (!idxArg || idxArg.type !== 'int')
-            throw new Error(`PlaySampleOnce: index must be an integer literal (line ${stmt.line})`);
-        const entry = this._audioSamples.get(idxArg.value);
-        if (!entry)
-            throw new Error(`PlaySampleOnce: sample index ${idxArg.value} not loaded — use LoadSample first (line ${stmt.line})`);
-        const { label: lbl } = entry;
-
-        const volArg = stmt.args[3] ?? { type: 'int', value: 64 };
-        const perArg = stmt.args[2] ?? { type: 'int', value: 428 };
-
-        this._genExpr(volArg, lines);
-        lines.push('        move.l  d0,-(sp)');
-        this._genExpr(perArg, lines);
-        lines.push('        move.l  d0,-(sp)');
-        this._genExprArg(stmt, 1, 'PlaySampleOnce channel', lines);
-        lines.push('        move.l  d0,-(sp)');
-
-        lines.push(`        lea     ${lbl},a0`);
-        lines.push(`        move.l  #(${lbl}_end-${lbl})/2,d1`);
-
-        lines.push('        movem.l (sp)+,d0/d2-d3');
-        lines.push('        jsr     _PlaySampleOnce');
+        // Runtime dispatch — loop is a variable / expression
+        const loopLbl = this._nextLabel();
+        const doneLbl = this._nextLabel();
+        this._genExpr(loopArg, lines);
+        lines.push('        tst.l   d0');
+        lines.push(`        bne.s   ${loopLbl}`);
+        pushArgsAndCall('_PlaySampleOnce');
+        lines.push(`        bra.s   ${doneLbl}`);
+        lines.push(`${loopLbl}:`);
+        pushArgsAndCall('_PlaySample');
+        lines.push(`${doneLbl}:`);
     }
 
     _cmd_stopsample(stmt, lines) {
@@ -2798,7 +2815,7 @@ export class CodeGen {
             lines.push(`        move.w  #${charW},_active_font_charW`);
             lines.push(`        move.w  #${charH},_active_font_charH`);
             lines.push(`        move.w  #${charH - 1},_active_font_charH_m1`);
-            lines.push(`        move.l  #${lbl},_active_font_data`);
+            lines.push(`        move.l  #${lbl}_data,_active_font_data`);
             lines.push(`        lea     ${lbl}_lookup,a0`);
             lines.push('        lea     _active_font_lookup,a1');
             lines.push('        moveq   #31,d0');
@@ -3242,19 +3259,73 @@ export class CodeGen {
             },
 
             loadfont: (stmt) => {
-                const idxArg   = stmt.args[0];
-                const charsArg = stmt.args[1];
-                const fileArg  = stmt.args[2];
-                const wArg     = stmt.args[3];
-                const hArg     = stmt.args[4];
+                // Two valid signatures (file extension wins, not arg count):
+                //   .bfnt: LoadFont index, "file.bfnt"             — header carries charW/H + lookup
+                //   .raw : LoadFont index, "chars", "file.raw", charW, charH
+                // 5-arg form pointing at a .bfnt file is accepted too: chars/charW/charH
+                // are taken from the BFNT header; redundant source values are ignored
+                // (charW/charH are validated for consistency if given).
+                const idxArg = stmt.args[0];
                 if (idxArg?.type !== 'int')
                     throw new Error(`LoadFont: erstes Argument (Index) muss ein Integer-Literal sein — Zeile ${stmt.line}`);
+
+                let fileArg = null;
+                let srcCharW = null;
+                let srcCharH = null;
+                if (stmt.args.length === 2 && stmt.args[1]?.type === 'string') {
+                    fileArg = stmt.args[1];
+                } else if (stmt.args.length === 5 && stmt.args[2]?.type === 'string') {
+                    fileArg = stmt.args[2];
+                    if (stmt.args[3]?.type === 'int') srcCharW = stmt.args[3].value;
+                    if (stmt.args[4]?.type === 'int') srcCharH = stmt.args[4].value;
+                }
+                if (!fileArg)
+                    throw new Error(`LoadFont: Signatur ist LoadFont index, "file.bfnt"  oder  LoadFont index, "chars", "file.raw", charW, charH — Zeile ${stmt.line}`);
+
+                const isBfntFile = fileArg.value.toLowerCase().endsWith('.bfnt');
+
+                if (isBfntFile) {
+                    if (this._fontAssets.has(idxArg.value)) return;
+                    if (!this._readAssetHeader)
+                        throw new Error(`LoadFont: kein Projekt-Verzeichnis — .bfnt-Header nicht lesbar (Zeile ${stmt.line})`);
+                    const result = this._readAssetHeader(fileArg.value, 12);
+                    if (!result.ok)
+                        throw new Error(`LoadFont: "${fileArg.value}" nicht lesbar — ${result.error} (Zeile ${stmt.line})`);
+                    const hdr = result.data;
+                    if (hdr[0] !== 0x42 || hdr[1] !== 0x46 || hdr[2] !== 0x4E || hdr[3] !== 0x54)
+                        throw new Error(`LoadFont: "${fileArg.value}" hat keinen BFNT-Header (Zeile ${stmt.line})`);
+                    const charW     = (hdr[4] << 8) | hdr[5];
+                    const charH     = (hdr[6] << 8) | hdr[7];
+                    const charCount = (hdr[8] << 8) | hdr[9];
+                    const flags     = hdr[10];
+                    if (charW < 1 || charW > 8)
+                        throw new Error(`LoadFont: "${fileArg.value}" charW=${charW} außerhalb 1..8 (Zeile ${stmt.line})`);
+                    if (charH < 1)
+                        throw new Error(`LoadFont: "${fileArg.value}" charH=${charH} ungültig (Zeile ${stmt.line})`);
+                    if (flags & 1)
+                        throw new Error(`LoadFont: "${fileArg.value}" 256-Byte-Lookup (flags Bit 0) wird vom Renderer noch nicht unterstützt — bitte ASCII-Lookup speichern (Zeile ${stmt.line})`);
+                    if (srcCharW !== null && srcCharW !== charW)
+                        throw new Error(`LoadFont: "${fileArg.value}" charW im Header (${charW}) ≠ Quelle (${srcCharW}). Bei .bfnt entfallen charW/charH — bitte 2-Arg-Form benutzen (Zeile ${stmt.line})`);
+                    if (srcCharH !== null && srcCharH !== charH)
+                        throw new Error(`LoadFont: "${fileArg.value}" charH im Header (${charH}) ≠ Quelle (${srcCharH}). Bei .bfnt entfallen charW/charH — bitte 2-Arg-Form benutzen (Zeile ${stmt.line})`);
+                    const lbl = `_font_${this._fontAssets.size}`;
+                    this._fontAssets.set(idxArg.value, {
+                        filename: fileArg.value, label: lbl,
+                        kind: 'bfnt', charW, charH, charCount,
+                    });
+                    return;
+                }
+
+                // Legacy 5-arg signature for .raw fonts
+                if (stmt.args.length !== 5)
+                    throw new Error(`LoadFont: für .raw-Fonts Signatur LoadFont index, "chars", "file.raw", charW, charH — Zeile ${stmt.line}`);
+                const charsArg = stmt.args[1];
+                const wArg     = stmt.args[3];
+                const hArg     = stmt.args[4];
                 if (charsArg?.type !== 'string')
                     throw new Error(`LoadFont: zweites Argument (Zeichensatz) muss ein String-Literal sein — Zeile ${stmt.line}`);
-                if (fileArg?.type !== 'string')
-                    throw new Error(`LoadFont: drittes Argument (Dateiname) muss ein String-Literal sein — Zeile ${stmt.line}`);
                 if (wArg?.type !== 'int' || hArg?.type !== 'int')
-                    throw new Error(`LoadFont: Syntax ist LoadFont index, "chars", "file.raw", charW, charH — charW/charH fehlen oder sind keine Ganzzahlen (Zeile ${stmt.line})`);
+                    throw new Error(`LoadFont: charW/charH fehlen oder sind keine Ganzzahlen (Zeile ${stmt.line})`);
                 const charW = wArg.value;
                 const charH = hArg.value;
                 if (charW > 8)
@@ -3263,7 +3334,7 @@ export class CodeGen {
                     const lbl = `_font_${this._fontAssets.size}`;
                     this._fontAssets.set(idxArg.value, {
                         filename: fileArg.value, label: lbl,
-                        chars: charsArg.value, charW, charH
+                        kind: 'raw', chars: charsArg.value, charW, charH
                     });
                 }
             },

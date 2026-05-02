@@ -1,6 +1,6 @@
 Graphics 320, 256, 4
 
-LoadFont 0, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789", "images/font.bfnt", 8, 8
+LoadFont 0, "images/font.bfnt"
 UseFont 0
 
 ; ── Functions ────────────────────────────────────────────────────────────────

@@ -109,7 +109,7 @@ let _lastBinary   = null;   // cached from last successful build — used by F6
 
 // ── View System ──────────────────────────────────────────────────────────────
 // All valid view names. Each corresponds to a CSS class `state-<name>` on <body>.
-const _VIEW_NAMES = ['code', 'node-editor', 'tileset-editor', 'image-editor', 'font-editor', 'sound-editor', 'tilemap-editor'];
+const _VIEW_NAMES = ['welcome', 'code', 'node-editor', 'tileset-editor', 'image-editor', 'font-editor', 'sound-editor', 'tilemap-editor'];
 let _currentView = 'code';
 
 /**
@@ -746,6 +746,7 @@ async function loadProjectFile(filename) {
         const source = await window.electronAPI.readFile({ projectDir: _projectDir, filename });
         _currentFile = filename;
         window._monacoEditor.setValue(source);
+        switchView('code');
         renderProjectTree();
         renderOutline(buildOutline(source));
     } catch (err) {
@@ -1025,18 +1026,46 @@ document.addEventListener('keydown', async e => {
 })();
 
 // ── Welcome Panel & Recent Projects ───────────────────────────────────────────
+//
+// Recent-project state lives in <workspace>/bassm.json now (W-T05). The
+// localStorage key 'bassm-recent' is migrated once on first run and then
+// cleared. _getRecent/_addRecent are async; callers must await.
 
-const _RECENT_KEY = 'bassm-recent';
-const _RECENT_MAX = 8;
+const _RECENT_LEGACY_KEY = 'bassm-recent';
+let   _recentMigrated    = false;
 
-function _getRecent() {
-    try { return JSON.parse(localStorage.getItem(_RECENT_KEY) || '[]'); } catch { return []; }
+async function _migrateLegacyRecentOnce() {
+    if (_recentMigrated) return;
+    _recentMigrated = true;
+    let legacy = [];
+    try { legacy = JSON.parse(localStorage.getItem(_RECENT_LEGACY_KEY) || '[]'); } catch { legacy = []; }
+    if (!Array.isArray(legacy) || legacy.length === 0) {
+        localStorage.removeItem(_RECENT_LEGACY_KEY);
+        return;
+    }
+    // Only migrate if the workspace recent list is empty — otherwise we'd
+    // re-introduce stale entries on every fresh dev session (the workspace
+    // is the source of truth post-migration).
+    const current = await window.electronAPI.getRecentProjects();
+    if (current.length === 0) {
+        // Push oldest-first so the freshest legacy entry ends up at the front.
+        for (const e of [...legacy].reverse()) {
+            if (e && typeof e.name === 'string' && typeof e.dir === 'string') {
+                await window.electronAPI.addRecentProject({ name: e.name, dir: e.dir });
+            }
+        }
+    }
+    localStorage.removeItem(_RECENT_LEGACY_KEY);
 }
 
-function _addRecent(name, dir) {
-    const list = _getRecent().filter(r => r.dir !== dir);
-    list.unshift({ name, dir });
-    localStorage.setItem(_RECENT_KEY, JSON.stringify(list.slice(0, _RECENT_MAX)));
+async function _getRecent() {
+    await _migrateLegacyRecentOnce();
+    return window.electronAPI.getRecentProjects();
+}
+
+async function _addRecent(name, dir) {
+    await _migrateLegacyRecentOnce();
+    await window.electronAPI.addRecentProject({ name, dir });
 }
 
 function _showWelcome() {
@@ -1048,11 +1077,11 @@ function _showEditor() {
     setTimeout(() => window._monacoEditor?.layout(), 0);
 }
 
-function _renderWelcomeRecent(openFn) {
+async function _renderWelcomeRecent(openFn) {
     const el = document.getElementById('welcome-recent-list');
     if (!el) return;
     el.innerHTML = '';
-    const list = _getRecent();
+    const list = await _getRecent();
     if (list.length === 0) {
         const empty = document.createElement('div');
         empty.className   = 'welcome-recent-empty';
@@ -1081,6 +1110,50 @@ function _renderWelcomeRecent(openFn) {
         item.appendChild(nameSpan);
         item.appendChild(pathSpan);
         item.addEventListener('click', () => openFn(dir));
+        el.appendChild(item);
+    }
+}
+
+// Render the Examples list in the welcome panel (W-T06). Click clones the
+// example into projects/ and opens it; if a copy already exists, the user
+// is asked whether to open it or create a fresh numbered copy.
+async function _renderWelcomeExamples(cloneFn) {
+    const el = document.getElementById('welcome-examples-list');
+    if (!el) return;
+    el.innerHTML = '';
+    let list;
+    try { list = await window.electronAPI.listExamples(); }
+    catch (_) { list = []; }
+    if (!list || list.length === 0) {
+        const empty = document.createElement('div');
+        empty.className   = 'welcome-examples-empty';
+        empty.textContent = 'No examples available';
+        el.appendChild(empty);
+        return;
+    }
+    for (const ex of list) {
+        const item = document.createElement('div');
+        item.className = 'welcome-example-item';
+        item.title     = ex.cloned
+            ? `Open or re-clone "${ex.name}"`
+            : `Clone "${ex.name}" into projects/`;
+
+        const icon = document.createElement('span');
+        icon.className   = 'example-icon';
+        icon.textContent = ex.cloned ? '\u25C8' : '\u25C7';
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className   = 'example-name';
+        nameSpan.textContent = ex.name;
+
+        const hint = document.createElement('span');
+        hint.className   = 'example-hint';
+        hint.textContent = ex.cloned ? 'cloned' : '';
+
+        item.appendChild(icon);
+        item.appendChild(nameSpan);
+        item.appendChild(hint);
+        item.addEventListener('click', () => cloneFn(ex));
         el.appendChild(item);
     }
 }
@@ -1117,7 +1190,7 @@ bassm.init()
             _isVBEProject = result.isVBE || false;
             _currentFile = _isVBEProject ? 'main.bnode' : 'main.bassm';
             _loadTreeState();
-            _addRecent(result.projectName, result.projectDir);
+            await _addRecent(result.projectName, result.projectDir);
             projectName.textContent = result.projectName;
             document.title = `${result.projectName} — BASSM ${_version}`;
             
@@ -1139,16 +1212,84 @@ bassm.init()
             _showEditor();
         }
 
-        _renderWelcomeRecent(async (dir) => {
+        async function _onRecentClick(dir) {
             const result = await window.electronAPI.openProjectDir({ dir });
             if (!result) { logLine(`Projekt nicht gefunden: ${dir}`, 'warn'); return; }
             await _openProjectResult(result);
-        });
+        }
+
+        async function _onExampleClick(ex) {
+            // Conflict path: a clone already exists. Ask whether to open it
+            // or make a fresh numbered copy. The OS save dialog handles the
+            // copy-name choice in the latter case (main.js).
+            let mode;
+            if (ex.cloned) {
+                const openExisting = window.confirm(
+                    `A copy of "${ex.name}" already exists in your projects.\n\n` +
+                    `OK     — Open the existing copy.\n` +
+                    `Cancel — Create a new copy with a different name.`
+                );
+                mode = openExisting ? 'open-existing' : 'copy-new';
+            }
+            let result;
+            try {
+                result = await window.electronAPI.cloneExample({ exampleName: ex.name, mode });
+            } catch (err) {
+                logLine(`Clone failed: ${err.message}`, 'error');
+                return;
+            }
+            if (!result) return; // user cancelled the SaveDialog
+            await _openProjectResult(result);
+        }
+
+        _renderWelcomeRecent(_onRecentClick);
+        _renderWelcomeExamples(_onExampleClick);
+
+        // First-run modal (W-T07): show once on the very first boot after
+        // bootstrap created <Documents>/BASSM/. Hidden on every subsequent
+        // start because firstRunCompleted is flipped on OK.
+        (async () => {
+            try {
+                const completed = await window.electronAPI.getFirstRunState();
+                if (completed) return;
+                const root  = await window.electronAPI.getWorkspaceRoot();
+                const modal = document.getElementById('first-run-modal');
+                const path  = document.getElementById('first-run-path');
+                const btnOk = document.getElementById('first-run-btn-ok');
+                const btnFolder = document.getElementById('first-run-btn-open');
+                if (!modal || !btnOk || !btnFolder || !path) return;
+                path.textContent = root || '(unknown)';
+                modal.style.display = 'flex';
+                btnFolder.addEventListener('click', async () => {
+                    const err = await window.electronAPI.openWorkspaceFolder();
+                    if (err) logLine(`Could not open folder: ${err}`, 'warn');
+                });
+                btnOk.addEventListener('click', async () => {
+                    modal.style.display = 'none';
+                    try { await window.electronAPI.markFirstRunComplete(); }
+                    catch (e) { logLine(`First-run state save failed: ${e.message}`, 'warn'); }
+                });
+            } catch (_) { /* no-op: workspace not ready, modal stays hidden */ }
+        })();
 
         document.getElementById('welcome-btn-new').addEventListener('click',
             () => document.getElementById('btn-new').click());
         document.getElementById('welcome-btn-open').addEventListener('click',
             () => btnOpen.click());
+
+        document.getElementById('btn-close-project').addEventListener('click', () => {
+            _projectDir = null;
+            _currentFile = 'main.bassm';
+            _projectFiles = [];
+            _lastBinary = null;
+            document.getElementById('project-name').textContent = '';
+            document.getElementById('project-tree-content').innerHTML = '';
+            document.getElementById('outliner-content').innerHTML = '';
+            if (window._monacoEditor) window._monacoEditor.setValue('');
+            switchView('welcome');
+            _renderWelcomeRecent(_onRecentClick);
+            _renderWelcomeExamples(_onExampleClick);
+        });
 
         document.getElementById('btn-toggle-editor').addEventListener('click', () => {
             if (!_projectDir) return;
@@ -1392,6 +1533,7 @@ bassm.init()
             const name = projectName.textContent || 'bassm';
             const result = await window.electronAPI.createAdf({
                 projectName: name,
+                projectDir:  _projectDir,
                 exeData:     Array.from(_lastBinary),
             });
             if (result.ok) {

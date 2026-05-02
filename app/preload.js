@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Returns { ok: true, data: number[] } | { ok: false, error: string }
   assemble: (payload) => ipcRenderer.invoke('bassm:assemble', payload),
   // Create bootable ADF, show save dialog, write to disk
-  // { projectName, exeData: number[] } → { ok, filePath?, error?, cancelled? }
+  // { projectName, projectDir?, exeData: number[] } → { ok, filePath?, error?, cancelled? }
   createAdf: (payload) => ipcRenderer.invoke('bassm:create-adf', payload),
   // Load AROS ROM bytes from disk
   // Returns { main: number[], ext: number[] }
@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openProject: () => ipcRenderer.invoke('bassm:open-project'),
   // Open a project by path (recent list); returns { projectDir, projectName, source } or null
   openProjectDir: ({ dir }) => ipcRenderer.invoke('bassm:open-project-dir', { dir }),
+  // List clonable examples; returns Array<{ name, isVBE }>.
+  listExamples: () => ipcRenderer.invoke('bassm:list-examples'),
+  // Clone (or open) an example. mode: undefined=auto-clone, 'open-existing'=open
+  // the already-cloned copy, 'copy-new'=force a fresh copy via SaveDialog.
+  // Returns { projectDir, projectName, source, isVBE } or null on cancel.
+  cloneExample: (payload) => ipcRenderer.invoke('bassm:clone-example', payload),
   // Save source text to <projectDir>/main.bassm
   saveSource: (payload) => ipcRenderer.invoke('bassm:save-source', payload),
   // Read an included source file from the project directory (for Include "file.bassm")
@@ -51,4 +57,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onFilesChanged: (callback) => {
     ipcRenderer.on('project:files-changed', (_e, data) => callback(data));
   },
+
+  // ── Settings IPC (W-T05) — talks to <workspace>/bassm.json ──────────
+  // Recent projects: array of { name, dir, openedAt? }, freshest first, max 8.
+  getRecentProjects: () => ipcRenderer.invoke('bassm:get-recent-projects'),
+  addRecentProject:  (payload) => ipcRenderer.invoke('bassm:add-recent-project', payload),
+  // Preferences: free-form object merged on set (patch semantics).
+  getPreferences:    () => ipcRenderer.invoke('bassm:get-preferences'),
+  setPreferences:    (patch) => ipcRenderer.invoke('bassm:set-preferences', patch),
+  // First-run modal hooks (consumed by W-T07).
+  getFirstRunState:        () => ipcRenderer.invoke('bassm:get-first-run-state'),
+  markFirstRunComplete:    () => ipcRenderer.invoke('bassm:mark-first-run-complete'),
+  // Where the workspace lives — useful for the first-run modal and "open folder" buttons.
+  getWorkspaceRoot:  () => ipcRenderer.invoke('bassm:get-workspace-root'),
+  // Reveal the workspace root in the OS file manager (W-T07).
+  openWorkspaceFolder: () => ipcRenderer.invoke('bassm:open-workspace-folder'),
 });

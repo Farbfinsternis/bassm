@@ -1,6 +1,6 @@
 const {
   app, BrowserWindow, WebContentsView,
-  ipcMain, protocol, net, dialog, Menu
+  ipcMain, protocol, net, dialog, Menu, shell
 } = require('electron/main');
 
 // Allow AudioContext without user gesture (needed for Paula audio in the emulator view)
@@ -9,6 +9,65 @@ const path = require('node:path');
 const fs   = require('node:fs');
 const os   = require('node:os');
 const { execFile } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
+
+// Project package.json — read once for version etc.
+const PKG = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8'));
+
+// ── Workspace bootstrap (W-T01/T02/T05) ────────────────────────────────────
+// workspace.js / workspace-bootstrap.js / workspace-settings.js live in
+// app/src ("type": "module"), so we load them via dynamic import the same
+// way adf.js is loaded later. Bootstrap must run inside app.whenReady()
+// because app.getPath() needs the app to be ready. Other handlers can
+// `await _workspacePromise` to make sure the workspace is configured before
+// they touch any path helper.
+let _workspaceModule  = null;   // resolved after configure+bootstrap
+let _settingsModule   = null;   // resolved alongside
+const _workspacePromise = app.whenReady().then(async () => {
+  const wsUrl       = pathToFileURL(path.join(__dirname, 'app', 'src', 'workspace.js')).href;
+  const bootUrl     = pathToFileURL(path.join(__dirname, 'app', 'src', 'workspace-bootstrap.js')).href;
+  const settingsUrl = pathToFileURL(path.join(__dirname, 'app', 'src', 'workspace-settings.js')).href;
+  const ws       = await import(wsUrl);
+  const settings = await import(settingsUrl);
+  const { bootstrapWorkspace } = await import(bootUrl);
+
+  // In dev mode, redirect the settings file out of <Documents>/BASSM/ —
+  // the dev-isolation rule says nothing of ours lands in Documents during
+  // `npm start`. <repoRoot>/.bassm-dev/ is gitignored alongside dist/.
+  const settingsPathOverride = app.isPackaged
+    ? null
+    : path.join(__dirname, '.bassm-dev', 'bassm.json');
+
+  ws.configure({
+    documentsDir:         app.getPath('documents'),
+    isPackaged:           app.isPackaged,
+    resourcesPath:        process.resourcesPath || null,
+    repoRoot:             __dirname,
+    settingsPathOverride,
+  });
+
+  const report = bootstrapWorkspace({ appVersion: PKG.version });
+  if (report.skipped) {
+    console.log('[workspace] dev mode — bootstrap skipped');
+    // Make sure the dev settings file's parent exists so saves don't ENOENT.
+    if (settingsPathOverride) {
+      fs.mkdirSync(path.dirname(settingsPathOverride), { recursive: true });
+    }
+  } else {
+    const c = report.created;
+    const fresh = c.root || c.settings;
+    console.log(`[workspace] root: ${report.root}${fresh ? ' (first run)' : ''}`);
+    if (c.settings) console.log('[workspace]   created bassm.json');
+  }
+
+  _workspaceModule = ws;
+  _settingsModule  = settings;
+  return ws;
+}).catch(err => {
+  // Fatal: without a working workspace we can't open or save projects.
+  console.error('[workspace] bootstrap failed:', err);
+  throw err;
+});
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 const IS_WIN    = process.platform === 'win32';
@@ -59,8 +118,38 @@ if (!IS_WIN) {
 const FRAGMENTS = path.join(__dirname, 'app', 'src', 'm68k', 'fragments');
 const ROM_MAIN  = path.join(__dirname, 'emulator', 'vAmigaWeb', 'roms', 'aros.bin');
 const ROM_EXT   = path.join(__dirname, 'emulator', 'vAmigaWeb', 'roms', 'aros_ext.bin');
-const OUT_DIR   = path.join(__dirname, 'out');
-const ASSETS    = path.join(__dirname, 'app', 'assets');
+
+// Bundled-examples fallback (dev mode dialog default; in packaged mode the
+// workspace mirror is the authoritative source).
+const REPO_EXAMPLES = path.join(__dirname, 'examples');
+
+/**
+ * Resolve the directory dialogs ("Open Project", "New Project") should
+ * default to. Packaged → <workspace>/projects/. Dev → repo's examples/.
+ * Caller must `await _workspacePromise` first.
+ */
+function _projectsDirForDialog() {
+  if (!_workspaceModule) return REPO_EXAMPLES;
+  return _workspaceModule.isDevMode()
+    ? REPO_EXAMPLES
+    : _workspaceModule.getProjectsDir();
+}
+
+/**
+ * Resolve the build-tmp directory for an assemble pass.
+ * - With projectDir → <projectDir>/.tmp/  (per-project cache, dev + packaged).
+ * - Without projectDir (welcome demo, no project loaded) →
+ *     packaged: <workspace>/tmp/, dev: os.tmpdir().
+ */
+function _buildTmpDir(projectDir) {
+  if (projectDir && _workspaceModule) {
+    return _workspaceModule.getProjectTmpDir(projectDir);
+  }
+  if (_workspaceModule && !_workspaceModule.isDevMode()) {
+    return _workspaceModule.getTmpDir();
+  }
+  return os.tmpdir();
+}
 
 // ── Protocol: serve emulator/preview/ with correct MIME types ─────────────
 // WASM files need application/wasm — Electron's file:// doesn't set this.
@@ -164,14 +253,23 @@ ipcMain.on('emulator:status', (_event, text) => {
 // Renderer → main: assemble m68k source with vasmm68k_mot
 // Accepts { asm: string, assetFiles: string[], fontAssets?: [...], projectDir?: string }
 // Returns { ok: true, data: Buffer, warnings: string[] } or { ok: false, error: string }
-ipcMain.handle('bassm:assemble', (_event, payload) => {
+ipcMain.handle('bassm:assemble', async (_event, payload) => {
+  await _workspacePromise;
   return new Promise((resolve) => {
     const { asm: asmText, assetFiles = [], fontAssets = [], projectDir } = payload;
-    // Asset root: project folder when open, app/assets/ for the built-in demo.
-    // Filenames may be relative paths (e.g. "sounds/boing.raw") — directory
-    // structure is mirrored into tmpDir so INCBIN resolves them correctly.
-    const assetSrcDir = projectDir || ASSETS;
-    const tmpDir = os.tmpdir();
+    // Asset-bearing builds require an open project — we have nowhere to
+    // resolve relative INCBIN paths from otherwise. Pure-code builds
+    // (welcome demo etc.) still work without a project.
+    if ((assetFiles.length > 0 || fontAssets.length > 0) && !projectDir) {
+      resolve({ ok: false, error: 'Asset references require an open project — Open or create a project before building.' });
+      return;
+    }
+    // Asset root is the project folder. Filenames may be relative paths
+    // (e.g. "sounds/boing.raw") — directory structure is mirrored into
+    // tmpDir so INCBIN resolves them correctly.
+    const assetSrcDir = projectDir;
+    const tmpDir = _buildTmpDir(projectDir);
+    fs.mkdirSync(tmpDir, { recursive: true });
     const srcFile = path.join(tmpDir, 'bassm_src.s');
     const objFile = path.join(tmpDir, 'bassm_out.o');
     const outFile = path.join(tmpDir, 'bassm_out.exe');
@@ -198,12 +296,25 @@ ipcMain.handle('bassm:assemble', (_event, payload) => {
     // Detection: if (fileSize - paletteSize) is divisible by (charH × rowbytes)
     // and the resulting plane count equals depth → it's OCS format → convert.
     // Otherwise the file is assumed to already be in glyph-major format.
+    //
+    // .bfnt files are pre-converted by the Font Editor (BFNT magic + 12-B header
+    // + lookup + glyph-major data) — they are copied as-is and the codegen
+    // emits sub-labels that skip the header.
     const warnings = [];
     for (const { filename, numChars, charW, charH } of fontAssets) {
       try {
         const src      = path.join(assetSrcDir, filename);
         const dst      = path.join(tmpDir, filename);
         const fileData = fs.readFileSync(src);
+
+        // .bfnt: skip OCS conversion entirely — file already has the layout
+        // text.s expects (after the 12-B header that codegen sub-labels past).
+        if (fileData.length >= 4 &&
+            fileData[0] === 0x42 && fileData[1] === 0x46 &&
+            fileData[2] === 0x4E && fileData[3] === 0x54) {
+          continue;
+        }
+
         const rowbytes = Math.ceil((numChars * charW) / 16) * 2;
 
         // Auto-detect OCS palette size
@@ -264,9 +375,8 @@ ipcMain.handle('bassm:assemble', (_event, payload) => {
         }
         try {
           const data = fs.readFileSync(outFile);
-          fs.mkdirSync(OUT_DIR, { recursive: true });
-          fs.copyFileSync(outFile, path.join(OUT_DIR, 'bassm_out.exe'));
-          
+          // Mirror the executable next to the project's main.bassm so users
+          // can grab it for transfer to a real Amiga without diving into .tmp/.
           if (projectDir) {
             fs.copyFileSync(outFile, path.join(projectDir, 'bassm_out.exe'));
           }
@@ -283,16 +393,25 @@ ipcMain.handle('bassm:assemble', (_event, payload) => {
 // Renderer → main: create bootable ADF disk image, show save dialog, write to disk.
 // Accepts { projectName: string, exeData: number[] | Buffer }
 // Returns { ok: true, filePath: string } | { ok: false, error: string } | { ok: false, cancelled: true }
-ipcMain.handle('bassm:create-adf', async (_event, { projectName, exeData }) => {
+ipcMain.handle('bassm:create-adf', async (_event, { projectName, projectDir, exeData }) => {
   try {
-    const { pathToFileURL } = require('url');
+    await _workspacePromise;
     const adfUrl = pathToFileURL(path.join(__dirname, 'app', 'src', 'adf.js'));
     const { createADF } = await import(adfUrl.href);
     const adf = createADF(projectName, 'bassm_out', new Uint8Array(exeData));
 
+    // Default save path: <projectDir>/adf/<name>.adf if a project is open,
+    // otherwise plain <name>.adf in whatever directory the dialog opens to.
+    let defaultPath = `${projectName}.adf`;
+    if (projectDir && _workspaceModule) {
+      const adfDir = _workspaceModule.getProjectAdfDir(projectDir);
+      fs.mkdirSync(adfDir, { recursive: true });
+      defaultPath = path.join(adfDir, `${projectName}.adf`);
+    }
+
     const win = BrowserWindow.getFocusedWindow();
     const result = await dialog.showSaveDialog(win, {
-      defaultPath: `${projectName}.adf`,
+      defaultPath,
       filters: [{ name: 'Amiga Disk File', extensions: ['adf'] }],
     });
     if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
@@ -316,8 +435,10 @@ ipcMain.handle('bassm:rom', () => {
 // Renderer → main: open project folder dialog
 // Returns { projectDir, projectName, source, isVBE } or null if cancelled
 ipcMain.handle('bassm:open-project', async (_event) => {
+  await _workspacePromise;
   const result = await dialog.showOpenDialog({
     title: 'Open BASSM Project Folder',
+    defaultPath: _projectsDirForDialog(),
     properties: ['openDirectory'],
   });
   if (result.canceled || result.filePaths.length === 0) return null;
@@ -341,10 +462,11 @@ ipcMain.handle('bassm:open-project', async (_event) => {
 // Accepts { type: 'code' | 'vbe' }
 // Returns { projectDir, projectName, source: '', isVBE } or null if cancelled.
 ipcMain.handle('bassm:new-project', async (_event, { type }) => {
+  await _workspacePromise;
   const result = await dialog.showSaveDialog({
     title: 'Choose Folder for New BASSM Project',
     buttonLabel: 'Create Project',
-    defaultPath: 'my-game',
+    defaultPath: path.join(_projectsDirForDialog(), 'my-game'),
     properties: ['createDirectory', 'showOverwriteConfirmation'],
   });
   if (result.canceled || !result.filePath) return null;
@@ -367,7 +489,7 @@ ipcMain.handle('bassm:open-project-dir', async (_event, { dir }) => {
   if (!fs.existsSync(dir)) return null;
   const projectDir  = dir;
   const projectName = path.basename(projectDir);
-  
+
   let source = '';
   let isVBE  = false;
   if (fs.existsSync(path.join(projectDir, 'main.bnode'))) {
@@ -379,6 +501,217 @@ ipcMain.handle('bassm:open-project-dir', async (_event, { dir }) => {
 
   startProjectWatcher(projectDir);
   return { projectDir, projectName, source, isVBE };
+});
+
+// ── Examples mirror (W-T06) ────────────────────────────────────────────────
+// Examples live read-only in <workspace>/examples/ (packaged) or
+// <repoRoot>/examples/ (dev). To edit one, the user clones it into
+// <projects>/<name>/, where it becomes a regular project.
+
+/**
+ * Source directory the example listing/clone reads from.
+ * Packaged: workspace mirror (kept in sync by W-T03 bootstrap).
+ * Dev:      repo's examples/ — the workspace mirror doesn't exist
+ *           in dev because bootstrap is skipped.
+ */
+function _examplesSourceDir() {
+  if (!_workspaceModule) return REPO_EXAMPLES;
+  return _workspaceModule.isDevMode()
+    ? _workspaceModule.getBundledExamplesDir()
+    : _workspaceModule.getExamplesDir();
+}
+
+/**
+ * Where Clone-Example writes the editable copy.
+ * Packaged: <workspace>/projects/.
+ * Dev:      <repoRoot>/.bassm-dev/projects/ (gitignored, parallels the
+ *           dev settings file under .bassm-dev/).
+ */
+function _cloneTargetDir() {
+  if (_workspaceModule && !_workspaceModule.isDevMode()) {
+    return _workspaceModule.getProjectsDir();
+  }
+  return path.join(__dirname, '.bassm-dev', 'projects');
+}
+
+/**
+ * Recursive directory copy. Strips any read-only flag the source might
+ * carry (the W-T03 plan envisioned chmod 0444 on mirror files; W-T03 did
+ * not actually set it, but this keeps the workflow robust if it's added
+ * later or if a user marked a bundled file read-only manually).
+ */
+function _copyDirRecursive(srcDir, dstDir) {
+  fs.mkdirSync(dstDir, { recursive: true });
+  for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
+    const src = path.join(srcDir, entry.name);
+    const dst = path.join(dstDir, entry.name);
+    if (entry.isDirectory()) {
+      _copyDirRecursive(src, dst);
+    } else if (entry.isFile()) {
+      fs.copyFileSync(src, dst);
+      try { fs.chmodSync(dst, 0o644); } catch (_) { /* Windows: noop */ }
+    }
+    // symlinks etc. are intentionally skipped (the mirror sync also
+    // skips them, so they shouldn't appear here in practice).
+  }
+}
+
+// Renderer → main: list example projects available for cloning.
+// Returns [{ name, isVBE, cloned }] — only directories with a
+// main.bassm or main.bnode are reported. Hidden / underscore-prefixed
+// directories are filtered. `cloned` means a copy already lives in the
+// projects dir under the same name; the renderer uses it to prompt the
+// user before re-cloning.
+ipcMain.handle('bassm:list-examples', async () => {
+  await _workspacePromise;
+  const sourceDir   = _examplesSourceDir();
+  const projectsDir = _cloneTargetDir();
+  if (!fs.existsSync(sourceDir)) return [];
+  let entries;
+  try { entries = fs.readdirSync(sourceDir, { withFileTypes: true }); }
+  catch (_) { return []; }
+
+  const out = [];
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    if (e.name.startsWith('.') || e.name.startsWith('_')) continue;
+    const dir       = path.join(sourceDir, e.name);
+    const hasBassm  = fs.existsSync(path.join(dir, 'main.bassm'));
+    const hasBnode  = fs.existsSync(path.join(dir, 'main.bnode'));
+    if (!hasBassm && !hasBnode) continue;
+    const cloned = fs.existsSync(path.join(projectsDir, e.name));
+    out.push({ name: e.name, isVBE: hasBnode && !hasBassm, cloned });
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+});
+
+// Renderer → main: clone an example into the projects dir.
+//
+// Three flows:
+//  1. Default-target free → copy straight to <projects>/<exampleName>.
+//  2. Default-target exists, mode='open-existing' → open the existing
+//     project, no copy.
+//  3. Default-target exists, mode='copy-new' → SaveDialog defaulting to
+//     <exampleName>-copy lets the user choose a unique destination.
+//
+// Returns the same shape as bassm:open-project — { projectDir,
+// projectName, source, isVBE } — so the renderer can route it through
+// _openProjectResult unchanged. Returns null when the user cancels.
+ipcMain.handle('bassm:clone-example', async (_event, { exampleName, mode }) => {
+  await _workspacePromise;
+  if (!exampleName || typeof exampleName !== 'string') {
+    throw new Error('clone-example: exampleName required');
+  }
+  // Guard against path traversal — exampleName is a single directory
+  // name from the listing, never a path.
+  if (exampleName.includes('/') || exampleName.includes('\\') || exampleName.startsWith('.')) {
+    throw new Error(`clone-example: invalid exampleName "${exampleName}"`);
+  }
+
+  const sourceRoot = _examplesSourceDir();
+  const sourceDir  = path.join(sourceRoot, exampleName);
+  if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
+    throw new Error(`clone-example: example "${exampleName}" not found`);
+  }
+
+  const projectsDir   = _cloneTargetDir();
+  fs.mkdirSync(projectsDir, { recursive: true });
+  const defaultTarget = path.join(projectsDir, exampleName);
+  const targetExists  = fs.existsSync(defaultTarget);
+
+  let projectDir;
+
+  if (targetExists && mode === 'open-existing') {
+    projectDir = defaultTarget;
+  } else if (targetExists || mode === 'copy-new') {
+    // User wants a fresh copy; let them pick the destination name.
+    const result = await dialog.showSaveDialog({
+      title:        `Clone Example "${exampleName}"`,
+      buttonLabel:  'Create Copy',
+      defaultPath:  path.join(projectsDir, `${exampleName}-copy`),
+      properties:   ['createDirectory', 'showOverwriteConfirmation'],
+    });
+    if (result.canceled || !result.filePath) return null;
+    projectDir = result.filePath;
+    if (fs.existsSync(projectDir)) {
+      // showOverwriteConfirmation already asked the user. Wipe and recopy.
+      fs.rmSync(projectDir, { recursive: true, force: true });
+    }
+    _copyDirRecursive(sourceDir, projectDir);
+  } else {
+    // Fresh clone, no conflict — straight copy.
+    _copyDirRecursive(sourceDir, defaultTarget);
+    projectDir = defaultTarget;
+  }
+
+  const projectName = path.basename(projectDir);
+  let source = '';
+  let isVBE  = false;
+  if (fs.existsSync(path.join(projectDir, 'main.bnode'))) {
+    source = fs.readFileSync(path.join(projectDir, 'main.bnode'), 'utf8');
+    isVBE  = true;
+  } else {
+    try { source = fs.readFileSync(path.join(projectDir, 'main.bassm'), 'utf8'); } catch (_) {}
+  }
+
+  startProjectWatcher(projectDir);
+  return { projectDir, projectName, source, isVBE };
+});
+
+// ── Settings IPC (W-T05) ───────────────────────────────────────────────────
+// All settings handlers wait on _workspacePromise so the settings module is
+// guaranteed loaded; renderer-side calls return defaults if the workspace
+// hasn't been configured yet (shouldn't happen — the renderer only loads
+// after createWindow which awaits _workspacePromise).
+
+ipcMain.handle('bassm:get-recent-projects', async () => {
+  await _workspacePromise;
+  return _settingsModule.getRecent();
+});
+
+ipcMain.handle('bassm:add-recent-project', async (_event, { name, dir }) => {
+  await _workspacePromise;
+  return _settingsModule.addRecent(name, dir);
+});
+
+ipcMain.handle('bassm:get-preferences', async () => {
+  await _workspacePromise;
+  return _settingsModule.getPreferences();
+});
+
+ipcMain.handle('bassm:set-preferences', async (_event, prefsPatch) => {
+  await _workspacePromise;
+  return _settingsModule.setPreferences(prefsPatch || {});
+});
+
+ipcMain.handle('bassm:get-first-run-state', async () => {
+  await _workspacePromise;
+  return _settingsModule.getFirstRunState();
+});
+
+ipcMain.handle('bassm:mark-first-run-complete', async () => {
+  await _workspacePromise;
+  _settingsModule.markFirstRunCompleted();
+  return true;
+});
+
+ipcMain.handle('bassm:get-workspace-root', async () => {
+  await _workspacePromise;
+  return _workspaceModule.getWorkspaceRoot();
+});
+
+// Renderer → main: reveal the workspace root in the OS file manager.
+// Used by the first-run modal's "Open Folder" button (W-T07).
+// Returns '' on success, or an error string from shell.openPath.
+ipcMain.handle('bassm:open-workspace-folder', async () => {
+  await _workspacePromise;
+  const root = _workspaceModule.getWorkspaceRoot();
+  // In dev mode the workspace root may not exist on disk; create it on
+  // demand so shell.openPath has a target. Packaged builds always have
+  // it (bootstrap created it).
+  try { fs.mkdirSync(root, { recursive: true }); } catch (_) {}
+  return shell.openPath(root);
 });
 
 // Renderer → main: read an included source file from projectDir
@@ -571,14 +904,20 @@ function createWindow() {
 
   win.on('closed', () => {});
 
-  // DevTools for both views — remove or guard with isDev check for production
-  win.webContents.openDevTools({ mode: 'detach' });
-  emulatorView.webContents.openDevTools({ mode: 'detach' });
+  // DevTools only in dev (`npm start`). The packaged build must not auto-open
+  // them — users hit Ctrl+Shift+I if they need to inspect.
+  if (!app.isPackaged) {
+    win.webContents.openDevTools({ mode: 'detach' });
+    emulatorView.webContents.openDevTools({ mode: 'detach' });
+  }
 
   return win;
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Workspace must be set up before the renderer starts hitting any path.
+  await _workspacePromise;
+
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     {
       label: 'File',

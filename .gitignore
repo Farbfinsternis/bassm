@@ -11,4 +11,6 @@ EMULATOR.md
 CHANGELOG.dev.md
 examples/**/*.s
 examples/**/*.exe
+examples/**/.tmp/
 plans/
+.bassm-dev/

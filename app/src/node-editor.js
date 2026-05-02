@@ -912,7 +912,7 @@ export class BASSMNodeEditor {
              'loadmask','loadimage','loadanimimage','loadtileset','loadtilemap',
              'drawtilemap','setviewport','viewport','setcamera','settilemap',
              'loadfont','usefont'].includes(n)) return 'graphics';
-        if (['loadsample','playsample','playsampleonce','stopsample'].includes(n)) return 'audio';
+        if (['loadsample','playsample','stopsample'].includes(n)) return 'audio';
         if (['waitkey'].includes(n)) return 'input';
         if (['delay','waitvbl','end'].includes(n)) return 'flow';
         return 'math';

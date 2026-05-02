@@ -7,7 +7,7 @@
 Graphics 320,256,3
 
 LoadSample 0, "sounds/boing.raw"
-LoadImage  0, "images/blob.raw", 16, 16
+LoadImage  0, "images/blob.iraw"
 
 bx  = 64
 by  = 96
@@ -22,19 +22,19 @@ While 1
 
   If bx < 0
     bx = 0 : bdx = -bdx
-    PlaySampleOnce 0, 0
+    PlaySample 0, 0
   EndIf
   If bx > 304
     bx = 304 : bdx = -bdx
-    PlaySampleOnce 0, 0
+    PlaySample 0, 0
   EndIf
   If by < 0
     by = 0 : bdy = -bdy
-    PlaySampleOnce 0, 0
+    PlaySample 0, 0
   EndIf
   If by > 240
     by = 240 : bdy = -bdy
-    PlaySampleOnce 0, 0
+    PlaySample 0, 0
   EndIf
 
   DrawImage 0, bx, by
