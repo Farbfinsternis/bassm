@@ -286,74 +286,12 @@ ipcMain.handle('bassm:assemble', async (_event, payload) => {
       }
     }
 
-    // Convert font .raw files from OCS spritesheet format to glyph-major format.
-    //
-    // Legacy OCS planar .raw files have this layout:
-    //   [palette: (1<<depth)*2 bytes] [plane0: rows×rowbytes] [plane1: ...] ...
-    // text.s expects glyph-major packed data (no palette, 1 byte/row per glyph):
-    //   [glyph0_row0, glyph0_row1, ..., glyph0_rowH-1, glyph1_row0, ...]
-    //
-    // Detection: if (fileSize - paletteSize) is divisible by (charH × rowbytes)
-    // and the resulting plane count equals depth → it's OCS format → convert.
-    // Otherwise the file is assumed to already be in glyph-major format.
-    //
-    // .bfnt files are pre-converted by the Font Editor (BFNT magic + 12-B header
-    // + lookup + glyph-major data) — they are copied as-is and the codegen
-    // emits sub-labels that skip the header.
+    // M3-T04: .bfnt-Files werden durch die generische assetFiles-Schleife
+    // oben kopiert; codegen.js INCBIN-pfad inkludiert sie unverändert.
+    // Die ehemalige .raw → glyph-major-Konversion und numPlanes-Warnung
+    // (fontAssets-Spezialschleife) ist entfallen — Legacy-.raw-Fonts werden
+    // vom Compiler nicht mehr akzeptiert.
     const warnings = [];
-    for (const { filename, numChars, charW, charH } of fontAssets) {
-      try {
-        const src      = path.join(assetSrcDir, filename);
-        const dst      = path.join(tmpDir, filename);
-        const fileData = fs.readFileSync(src);
-
-        // .bfnt: skip OCS conversion entirely — file already has the layout
-        // text.s expects (after the 12-B header that codegen sub-labels past).
-        if (fileData.length >= 4 &&
-            fileData[0] === 0x42 && fileData[1] === 0x46 &&
-            fileData[2] === 0x4E && fileData[3] === 0x54) {
-          continue;
-        }
-
-        const rowbytes = Math.ceil((numChars * charW) / 16) * 2;
-
-        // Auto-detect OCS palette size
-        let paletteSize = 0;
-        for (let d = 1; d <= 5; d++) {
-          const palSize   = (1 << d) * 2;
-          const remaining = fileData.length - palSize;
-          if (remaining > 0 && remaining % (charH * rowbytes) === 0) {
-            const planes = remaining / (charH * rowbytes);
-            if (planes === d) { paletteSize = palSize; break; }
-          }
-        }
-
-        if (paletteSize > 0) {
-          // OCS spritesheet → glyph-major conversion (plane 0 only)
-          const converted = Buffer.alloc(numChars * charH);
-          for (let i = 0; i < numChars; i++) {
-            for (let r = 0; r < charH; r++) {
-              // For charW ≤ 8: extract charW bits starting at pixel column (i * charW)
-              let val = 0;
-              for (let b = 0; b < charW; b++) {
-                const pixelIdx = i * charW + b;
-                const srcByte  = fileData[paletteSize + r * rowbytes + (pixelIdx >> 3)];
-                if (srcByte & (1 << (7 - (pixelIdx & 7)))) val |= (1 << (7 - b));
-              }
-              converted[i * charH + r] = val;
-            }
-          }
-          fs.mkdirSync(path.dirname(dst), { recursive: true });
-          fs.writeFileSync(dst, converted);
-
-          // Warn if font has > 2 planes (we only use plane 0; extra planes are wasted)
-          const numPlanes = (fileData.length - paletteSize) / (charH * rowbytes);
-          if (numPlanes > 2) {
-            warnings.push(`LoadFont "${filename}": ${numPlanes}-Plane-Font — nur Plane 0 wird für Text verwendet. Für bunten Text lieber LoadImage + DrawImage nutzen.`);
-          }
-        }
-      } catch (_) { /* file not found — vasm wird den Fehler melden */ }
-    }
 
     fs.writeFileSync(srcFile, asmText, 'utf8');
 

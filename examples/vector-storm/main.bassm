@@ -1,0 +1,61 @@
+; ============================================================================
+; Vector Storm — M0 (Skeleton + Pipeline)
+; ============================================================================
+;
+; Stock A500 / OCS, 320x256 Lores, 5 Bitplanes (32 Farben).
+; Direct-Move Asteroids-Variante. Diese Iteration legt nur das Gerüst:
+; Graphics-Setup, Palette-Slots, leerer Hauptloop, ESC zum Beenden.
+;
+; Asset-Pfade (folgen ab M1):
+;   assets/gfx/ship.iraw + ship.imask
+;   assets/gfx/asteroid_big/med/small.iraw + .imask
+;   assets/gfx/explosion.iraw + .imask
+;   assets/sfx/shoot.8svx, hit.8svx, explode.8svx
+;
+; Vollständiger Plan: plans/vector-storm-gdd.md + vector-storm-impl.md
+; ============================================================================
+
+Graphics 320, 256, 5
+
+; ── Palette (5 Planes = 32 Indices) ─────────────────────────────────────────
+; Index 0 = Hintergrund (schwarz)
+; Index 1 = Sterne / Plot-Schüsse (weiß)
+; Index 2 = HUD-Text (gelb)
+; Index 3..7 = Schiff (Cyan-Verlauf, später vom Asset-Designer überstimmt)
+; Index 8..14 = Asteroiden (Grau-Verlauf, später überstimmt)
+; Index 15..22 = Explosion (Gelb→Rot, später überstimmt)
+; Index 23..31 = Reserve / Title-Logo / Polish
+;
+; OCS-Werte: r/g/b je 0..15 (4 Bit pro Komponente).
+PaletteColor 0,  0,  0,  0   ; schwarz
+PaletteColor 1, 15, 15, 15   ; weiß  (Sterne, Schüsse)
+PaletteColor 2, 15, 15,  8   ; gelb  (HUD)
+PaletteColor 3,  3,  8, 12   ; Schiff dunkel
+PaletteColor 4,  4, 10, 14   ; Schiff
+PaletteColor 5,  6, 12, 15   ; Schiff
+PaletteColor 6,  9, 13, 15   ; Schiff
+PaletteColor 7, 12, 14, 15   ; Schiff hell
+PaletteColor 8,  4,  4,  4   ; Asteroid dunkel
+PaletteColor 9,  6,  6,  6
+PaletteColor 10, 8,  8,  8
+PaletteColor 11, 9,  9,  8
+PaletteColor 12, 10, 10, 8
+PaletteColor 13, 12, 11, 9
+PaletteColor 14, 13, 12, 10  ; Asteroid hell
+
+; ── Hauptloop-Skelett ───────────────────────────────────────────────────────
+; ESC (Keycode 69) beendet sauber zur Workbench / CLI zurück.
+; In M0 ist der Loop minimal: Bildschirm löschen, Status-Text zeichnen, flippen.
+; Spätere Milestones erweitern Update + Render.
+
+Color 2
+While 1
+  If KeyDown(69) Then End
+
+  Cls
+  Text  80, 116, "VECTOR STORM"
+  Text  64, 132, "M0 SKELETON OK"
+  Text  72, 148, "ESC TO QUIT"
+
+  ScreenFlip
+Wend

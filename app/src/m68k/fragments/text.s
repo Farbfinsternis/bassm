@@ -58,16 +58,18 @@
 ; REGISTER USE  (saves d2-d7/a1-a4; d0,d1,a0 are trashed/input)
 ;   d0 = plane loop counter (dbra; set to GFXDEPTH-1 per char)
 ;   d1 = glyph byte / shift scratch
-;   d2 = current x  (advances +8 per char)
+;   d2 = current x  (advances per char by _active_font_advance);
+;        M2-T06: im Inner-Byte-Loop als bpr-Counter recycled; vor Plane-Loop
+;        nach _text_x_save gesichert, danach von dort restored.
 ;   d3 = y          (constant per _Text call)
-;   d4 = row counter (dbra 7..0 = 8 rows)
+;   d4 = row counter (dbra charH-1..0)
 ;   d5 = byte_offset (y*GFXBPR + x>>3)
 ;   d6 = shift       (x & 7)
 ;   d7 = draw_color bits  (lsr.w #1 per plane)
 ;   a0 = string pointer   (advances with (a0)+)
 ;   a1 = glyph row ptr    (reset to a4 each plane)
 ;   a2 = plane base ptr   (advances by GFXPSIZE per plane)
-;   a3 = row dest ptr     (advances by GFXBPR per row)
+;   a3 = row dest ptr     (advances by GFXBPR per row, +1 per inner byte)
 ;   a4 = glyph base       (constant per character)
 ;
 ; DEPENDENCY
@@ -126,6 +128,11 @@ _text_init:
         move.w  #8,_active_font_charW
         move.w  #8,_active_font_charH
         move.w  #7,_active_font_charH_m1
+        move.w  #1,_active_font_bpr            ; M2-T05: built-in 8x8 → 1 Byte/Row
+        move.w  #8,_active_font_glyph_size     ; M2-T05: charH × bpr = 8
+        move.w  #128,_active_font_lookup_size  ; built-in is ASCII (128 codes)
+        move.w  #9,_active_font_advance        ; M1-T09: charW + 1 (default tracking)
+        move.w  #8,_active_font_space_w        ; M1-T09: space defaults to charW
         move.l  #_font8x8,_active_font_data
         ; Copy built-in lookup table (128 bytes = 32 longs) to active descriptor
         lea     _builtin_font_lookup,a0
@@ -155,14 +162,21 @@ _Text:
         cmp.b   #10,d4
         bne.s   .txt_not_nl
         moveq   #0,d2                  ; x = 0
-        addq.l  #8,d3                  ; y += font height (8 px)
+        add.w   _active_font_charH,d3  ; y += font height (M1-T09: not hardcoded 8)
         bra.w   .txt_char
 
 .txt_not_nl:
+        ; ── Space: skip rendering, advance by space-width (M1-T09) ───────────
+        cmp.b   #' ',d4
+        bne.s   .txt_not_space
+        add.w   _active_font_space_w,d2
+        bra.w   .txt_char
+.txt_not_space:
         ; ── Lookup: charCode → glyph index via active font table ─────────
-        ; d4 = char code (0–127); table[d4] = glyph index, $FF = not in font
-        cmp.b   #127,d4
-        bgt.w   .txt_advance           ; > 127 → skip (non-ASCII)
+        ; d4 = char code (0–255); table[d4] = glyph index, $FF = not in font.
+        ; Bounds-Check gegen die aktuelle Lookup-Größe (128 ASCII oder 256 full).
+        cmp.w   _active_font_lookup_size,d4
+        bge.w   .txt_advance           ; code outside lookup → skip
         lea     _active_font_lookup,a4
         move.b  (a4,d4.w),d4          ; d4 = glyph index (byte)
         cmp.b   #$FF,d4
@@ -174,18 +188,24 @@ _Text:
         cmp.l   #GFXHEIGHT,d3
         bge.w   .txt_done              ; y >= height → stop (all further chars off screen)
 
-        ; ── x bounds check ───────────────────────────────────────────────
+        ; ── x bounds check (M2-T07) ──────────────────────────────────────
+        ; Glyph belegt Spalten [x .. x+charW-1]. Schreib-Bereich des shifted
+        ; Renderers reicht bis Byte (x+charW-1)>>3 + 1 = (x+charW+7)>>3 Bytes.
+        ; Konservative Schwelle: x + charW > GFXWIDTH → skip.
         tst.l   d2
         blt.w   .txt_advance           ; x < 0 → skip this char
-        cmp.l   #GFXWIDTH,d2
-        bge.w   .txt_advance           ; x >= width → skip this char
+        move.l  d2,d6
+        add.w   _active_font_charW,d6
+        cmp.l   #GFXWIDTH,d6
+        bgt.w   .txt_advance           ; x + charW > width → skip this char
 
-        ; ── Glyph pointer: a4 = _active_font_data + idx * charH ──────────
+        ; ── Glyph pointer: a4 = _active_font_data + idx * glyph_size ─────
+        ; M2-T05: glyph_size = charH × bpr (vorberechnet); ein muls statt charH×bpr.
         ; d4.b holds the glyph index (0-extended to long via move.b above)
         and.l   #$FF,d4                ; zero-extend byte → long
-        muls.w  _active_font_charH,d4  ; d4 = idx × charH  (bytes to glyph start)
+        muls.w  _active_font_glyph_size,d4  ; d4 = idx × glyph_size (bytes to glyph start)
         move.l  _active_font_data,a4
-        add.l   d4,a4                  ; a4 = base of charH glyph row bytes
+        add.l   d4,a4                  ; a4 = base of glyph row bytes
 
         ; ── byte_offset = y * GFXBPR + (x >> 3) ──────────────────────────
         move.l  d3,d5
@@ -199,6 +219,9 @@ _Text:
         and.l   #7,d6                  ; d6 = pixel shift within byte (0-7)
 
         ; ── Plane loop ─────────────────────────────────────────────────────
+        ; M2-T06: d2 (current x) wird im Inner-Loop als bpr-Counter recycled.
+        ; d2 nach BSS sichern; nach Plane-Loop direkt vor .txt_plane_done laden.
+        move.l  d2,_text_x_save
         move.w  _draw_color,d7         ; d7 = colour index bits (1 bit per plane)
         move.l  _back_planes_ptr,a2   ; a2 = plane 0 base
         moveq   #GFXDEPTH-1,d0        ; d0 = plane counter (dbra)
@@ -212,7 +235,13 @@ _Text:
         beq.s   .txt_plane_clr
 
 ; ── Plane bit SET: OR glyph rows into screen ─────────────────────────────────
+; M2-T06: Inner-Schleife über bpr Bytes pro Row. Für bpr=1 macht dbra einen Pass
+; (≈+10 Cyc/Row Overhead). Bei bpr=2 wandert a3 zwei Bytes weiter; danach via
+; sub.w _active_font_bpr,a3 + lea GFXIBPR(a3),a3 zur nächsten Row.
 .txt_row_set:
+        move.w  _active_font_bpr,d2
+        subq.w  #1,d2                  ; inner dbra-counter (bpr-1)
+.txt_byte_set:
         moveq   #0,d1
         move.b  (a1)+,d1               ; d1 = glyph row byte
         lsl.w   #8,d1                  ; d1.w = [gg, 00]
@@ -220,13 +249,19 @@ _Text:
         or.b    d1,1(a3)               ; lo_part → next byte (0 when shift=0 → no-op)
         lsr.w   #8,d1                  ; d1.byte[0] = hi_part
         or.b    d1,(a3)                ; hi_part → dest byte
-        lea     GFXIBPR(a3),a3        ; advance dest to next pixel row (interleaved)
+        addq.l  #1,a3                  ; advance to next column-byte
+        dbra    d2,.txt_byte_set
+        sub.w   _active_font_bpr,a3    ; restore a3 to row start
+        lea     GFXIBPR(a3),a3         ; advance dest to next pixel row (interleaved)
         dbra    d4,.txt_row_set
         bra.s   .txt_plane_next
 
 ; ── Plane bit CLR: AND NOT glyph rows into screen ────────────────────────────
 .txt_plane_clr:
 .txt_row_clr:
+        move.w  _active_font_bpr,d2
+        subq.w  #1,d2
+.txt_byte_clr:
         moveq   #0,d1
         move.b  (a1)+,d1               ; d1 = glyph row byte
         lsl.w   #8,d1                  ; d1.w = [gg, 00]
@@ -235,7 +270,10 @@ _Text:
         and.b   d1,1(a3)               ; ~lo → AND next byte ($FF when shift=0 → no-op)
         lsr.w   #8,d1                  ; d1.byte[0] = ~hi_part
         and.b   d1,(a3)                ; ~hi → AND dest byte
-        lea     GFXIBPR(a3),a3        ; advance dest to next pixel row (interleaved)
+        addq.l  #1,a3                  ; advance to next column-byte
+        dbra    d2,.txt_byte_clr
+        sub.w   _active_font_bpr,a3    ; restore a3 to row start
+        lea     GFXIBPR(a3),a3         ; advance dest to next pixel row (interleaved)
         dbra    d4,.txt_row_clr
 
 .txt_plane_next:
@@ -243,8 +281,13 @@ _Text:
         lsr.w   #1,d7                  ; next plane's colour bit → LSB
         dbra    d0,.txt_plane          ; loop over all planes
 
+        ; M2-T06: d2 wurde im Inner-Loop als bpr-Counter recycled — restoren.
+        move.l  _text_x_save,d2
+
 .txt_advance:
-        add.w   _active_font_charW,d2  ; advance x by font cell width
+        ; Bounds-Skip-Pfade springen hier hin OHNE d2 zu touchieren —
+        ; d2 hält dort noch die unveränderte x-Position.
+        add.w   _active_font_advance,d2 ; M1-T09: advance = charW + tracking
         bra.w   .txt_char              ; fetch next character
 
 .txt_done:
@@ -358,8 +401,10 @@ _IntToStr:
 
         XDEF    _str_buf
         XDEF    _text_y
+        XDEF    _text_x_save
 _str_buf:       ds.b    12              ; max "-2147483648\0"
 _text_y:        ds.l    1               ; Y scratch for multi-part Text calls
+_text_x_save:   ds.l    1               ; M2-T06: d2 (current x) save during Plane-Loop
 
 ; ── Active font descriptor ────────────────────────────────────────────────────
 ; Initialised to built-in font values by _text_init (called from startup.s).
@@ -368,11 +413,20 @@ _text_y:        ds.l    1               ; Y scratch for multi-part Text calls
         XDEF    _active_font_charW
         XDEF    _active_font_charH
         XDEF    _active_font_charH_m1
+        XDEF    _active_font_bpr
+        XDEF    _active_font_glyph_size
+        XDEF    _active_font_lookup_size
+        XDEF    _active_font_advance
+        XDEF    _active_font_space_w
         XDEF    _active_font_data
         XDEF    _active_font_lookup
-_active_font_charW:     ds.w    1       ; character width  in pixels (1–8)
-_active_font_charH:     ds.w    1       ; character height in pixels
-_active_font_charH_m1:  ds.w    1       ; charH - 1  (for dbra row loop)
-                        ds.w    1       ; padding — keeps _active_font_data long-aligned
-_active_font_data:      ds.l    1       ; pointer to glyph data (byte-padded, 1 byte/row)
-_active_font_lookup:    ds.l    32      ; 128-byte lookup: charCode → glyph index ($FF=skip)
+_active_font_charW:        ds.w    1    ; character width  in pixels (1–16)
+_active_font_charH:        ds.w    1    ; character height in pixels
+_active_font_charH_m1:     ds.w    1    ; charH - 1  (for dbra row loop)
+_active_font_bpr:          ds.w    1    ; M2-T05: bytes per glyph row (1 für charW≤8, 2 für 9..16)
+_active_font_glyph_size:   ds.w    1    ; M2-T05: charH × bpr (Bytes pro Glyph; spart muls)
+_active_font_lookup_size:  ds.w    1    ; 128 (ASCII) or 256 (full) — bounds-check in _Text
+_active_font_advance:      ds.w    1    ; M1-T09: charW + tracking (added per non-space char)
+_active_font_space_w:      ds.w    1    ; M1-T09: pixel width of the space character (32)
+_active_font_data:         ds.l    1    ; pointer to glyph data (bpr × charH bytes per glyph)
+_active_font_lookup:       ds.l    64   ; up to 256-byte lookup: charCode → glyph index ($FF=skip)

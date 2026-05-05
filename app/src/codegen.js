@@ -213,15 +213,15 @@ export class CodeGen {
     }
 
     /**
-     * Returns font asset metadata for numPlanes validation in main.js.
-     * Each entry: { filename, numChars, charW, charH }. For .bfnt entries
-     * numChars comes from the BFNT header (charCount); for .raw entries it
-     * is the length of the chars-string passed to LoadFont.
+     * Returns font asset metadata for the build pipeline. Each entry:
+     * { filename, numChars, charW, charH }. Used by main.js to copy `.bfnt`
+     * files into the assemble-tmpdir; the `.raw`-Konversion-Pipeline ist mit
+     * M3-T04 entfallen, dieses Objekt bleibt aus Kompatibilität bestehen.
      */
     getFontAssets() {
         return [...this._fontAssets.values()].map(e => ({
             filename: e.filename,
-            numChars: e.kind === 'bfnt' ? e.charCount : e.chars.length,
+            numChars: e.charCount,
             charW: e.charW,
             charH: e.charH,
         }));
@@ -1602,37 +1602,22 @@ export class CodeGen {
         }
 
         // Font data (fast RAM — CPU renderer, no Blitter access needed).
-        // .bfnt files already carry a 12-B header + 128-B lookup + glyph-major
-        // payload — we INCBIN as-is and expose sub-labels into the file. .raw
-        // fonts have no header; we INCBIN the bytes and emit a chars→idx lookup
-        // synthesised from the LoadFont chars-string.
+        // .bfnt files carry a 16-B header + 128|256-B lookup + glyph-major payload.
+        // We INCBIN as-is and expose sub-labels (_lookup, _data) into the file.
         for (const [, entry] of this._fontAssets) {
-            const { filename, label: lbl, kind } = entry;
+            const { filename, label: lbl } = entry;
+            // M1-T08: lookup size is 128 (ASCII flags=0) or 256 (full flags Bit 0 set).
+            // M1-T10: header is 16 bytes (was 12 — added tracking + spaceW + reserved).
+            const ls = entry.lookupSize ?? 128;
             out.push(`        SECTION ${lbl}_sec,DATA`);
             out.push(`        XDEF    ${lbl}`);
             out.push(`${lbl}:`);
             out.push(`        INCBIN  "${filename}"`);
             out.push(`        EVEN`);
-
-            if (kind === 'bfnt') {
-                out.push(`        XDEF    ${lbl}_lookup`);
-                out.push(`${lbl}_lookup    EQU     ${lbl}+12`);
-                out.push(`        XDEF    ${lbl}_data`);
-                out.push(`${lbl}_data      EQU     ${lbl}+12+128`);
-            } else {
-                const lookup = new Uint8Array(128).fill(0xFF);
-                for (let i = 0; i < entry.chars.length; i++) {
-                    const code = entry.chars.charCodeAt(i);
-                    if (code < 128) lookup[code] = i;
-                }
-                const lookupDc = Array.from(lookup).join(',');
-                out.push(`        XDEF    ${lbl}_lookup`);
-                out.push(`${lbl}_lookup:`);
-                out.push(`        dc.b    ${lookupDc}`);
-                out.push(`        EVEN`);
-                out.push(`        XDEF    ${lbl}_data`);
-                out.push(`${lbl}_data     EQU     ${lbl}`);
-            }
+            out.push(`        XDEF    ${lbl}_lookup`);
+            out.push(`${lbl}_lookup    EQU     ${lbl}+16`);
+            out.push(`        XDEF    ${lbl}_data`);
+            out.push(`${lbl}_data      EQU     ${lbl}+16+${ls}`);
             out.push('');
         }
     }
@@ -2794,14 +2779,19 @@ export class CodeGen {
         const idxArg = stmt.args[0];
         const lc = this._labelCount++;
         if (!idxArg) {
-            lines.push('        ; UseFont — built-in font');
+            lines.push('        ; UseFont — built-in font (128-byte ASCII lookup)');
             lines.push('        move.w  #8,_active_font_charW');
             lines.push('        move.w  #8,_active_font_charH');
             lines.push('        move.w  #7,_active_font_charH_m1');
+            lines.push('        move.w  #1,_active_font_bpr');         // M2-T05: 8x8 → 1 Byte/Row
+            lines.push('        move.w  #8,_active_font_glyph_size');  // M2-T05: charH × bpr
+            lines.push('        move.w  #128,_active_font_lookup_size');
+            lines.push('        move.w  #9,_active_font_advance');     // M1-T09: 8 + tracking 1
+            lines.push('        move.w  #8,_active_font_space_w');     // M1-T09: spaceW = charW
             lines.push('        move.l  #_font8x8,_active_font_data');
             lines.push('        lea     _builtin_font_lookup,a0');
             lines.push('        lea     _active_font_lookup,a1');
-            lines.push('        moveq   #31,d0');
+            lines.push('        moveq   #31,d0');                       // 128 / 4 = 32 longs
             lines.push(`.uf_${lc}:  move.l  (a0)+,(a1)+`);
             lines.push(`        dbra    d0,.uf_${lc}`);
         } else {
@@ -2811,14 +2801,29 @@ export class CodeGen {
             if (!fontEntry)
                 throw new Error(`UseFont: Font ${idxArg.value} nicht geladen — LoadFont zuerst aufrufen (Zeile ${stmt.line})`);
             const { label: lbl, charW, charH } = fontEntry;
-            lines.push(`        ; UseFont ${idxArg.value} — ${fontEntry.filename}`);
+            const ls    = fontEntry.lookupSize ?? 128;
+            const longs = ls / 4;                                       // 32 oder 64
+            // M1-T09: tracking + spaceW kommen ab M1-T10 aus dem .bfnt-Header.
+            // Solange der Header die Felder nicht trägt, defaulten wir auf charW+1 / charW.
+            const tracking = fontEntry.tracking ?? 1;
+            const advance  = fontEntry.advance  ?? (charW + tracking);
+            const spaceW   = fontEntry.spaceW   ?? charW;
+            // M2-T05: bpr/glyphSize aus dem Asset-Eintrag; Fallback für Legacy-Pfade.
+            const bpr        = fontEntry.bpr        ?? ((charW + 7) >> 3);
+            const glyphSize  = fontEntry.glyphSize  ?? (charH * bpr);
+            lines.push(`        ; UseFont ${idxArg.value} — ${fontEntry.filename} (${ls}-byte lookup, bpr=${bpr})`);
             lines.push(`        move.w  #${charW},_active_font_charW`);
             lines.push(`        move.w  #${charH},_active_font_charH`);
             lines.push(`        move.w  #${charH - 1},_active_font_charH_m1`);
+            lines.push(`        move.w  #${bpr},_active_font_bpr`);
+            lines.push(`        move.w  #${glyphSize},_active_font_glyph_size`);
+            lines.push(`        move.w  #${ls},_active_font_lookup_size`);
+            lines.push(`        move.w  #${advance},_active_font_advance`);
+            lines.push(`        move.w  #${spaceW},_active_font_space_w`);
             lines.push(`        move.l  #${lbl}_data,_active_font_data`);
             lines.push(`        lea     ${lbl}_lookup,a0`);
             lines.push('        lea     _active_font_lookup,a1');
-            lines.push('        moveq   #31,d0');
+            lines.push(`        moveq   #${longs - 1},d0`);
             lines.push(`.uf_${lc}:  move.l  (a0)+,(a1)+`);
             lines.push(`        dbra    d0,.uf_${lc}`);
         }
@@ -3259,84 +3264,60 @@ export class CodeGen {
             },
 
             loadfont: (stmt) => {
-                // Two valid signatures (file extension wins, not arg count):
-                //   .bfnt: LoadFont index, "file.bfnt"             — header carries charW/H + lookup
-                //   .raw : LoadFont index, "chars", "file.raw", charW, charH
-                // 5-arg form pointing at a .bfnt file is accepted too: chars/charW/charH
-                // are taken from the BFNT header; redundant source values are ignored
-                // (charW/charH are validated for consistency if given).
+                // M3-T01: einzige gültige Signatur — LoadFont index, "file.bfnt".
+                // Legacy .raw-Fonts werden nicht mehr unterstützt (im Font-Editor neu konvertieren).
                 const idxArg = stmt.args[0];
                 if (idxArg?.type !== 'int')
                     throw new Error(`LoadFont: erstes Argument (Index) muss ein Integer-Literal sein — Zeile ${stmt.line}`);
+                if (stmt.args.length !== 2 || stmt.args[1]?.type !== 'string')
+                    throw new Error(`LoadFont: Signatur ist LoadFont index, "file.bfnt". Legacy .raw-Fonts werden nicht mehr unterstützt — bitte mit dem Font-Editor in .bfnt konvertieren (Zeile ${stmt.line})`);
+                const fileArg = stmt.args[1];
+                if (!fileArg.value.toLowerCase().endsWith('.bfnt'))
+                    throw new Error(`LoadFont: "${fileArg.value}" — nur .bfnt-Dateien werden unterstützt. Legacy .raw-Fonts wurden entfernt (Zeile ${stmt.line})`);
 
-                let fileArg = null;
-                let srcCharW = null;
-                let srcCharH = null;
-                if (stmt.args.length === 2 && stmt.args[1]?.type === 'string') {
-                    fileArg = stmt.args[1];
-                } else if (stmt.args.length === 5 && stmt.args[2]?.type === 'string') {
-                    fileArg = stmt.args[2];
-                    if (stmt.args[3]?.type === 'int') srcCharW = stmt.args[3].value;
-                    if (stmt.args[4]?.type === 'int') srcCharH = stmt.args[4].value;
-                }
-                if (!fileArg)
-                    throw new Error(`LoadFont: Signatur ist LoadFont index, "file.bfnt"  oder  LoadFont index, "chars", "file.raw", charW, charH — Zeile ${stmt.line}`);
-
-                const isBfntFile = fileArg.value.toLowerCase().endsWith('.bfnt');
-
-                if (isBfntFile) {
-                    if (this._fontAssets.has(idxArg.value)) return;
-                    if (!this._readAssetHeader)
-                        throw new Error(`LoadFont: kein Projekt-Verzeichnis — .bfnt-Header nicht lesbar (Zeile ${stmt.line})`);
-                    const result = this._readAssetHeader(fileArg.value, 12);
-                    if (!result.ok)
-                        throw new Error(`LoadFont: "${fileArg.value}" nicht lesbar — ${result.error} (Zeile ${stmt.line})`);
-                    const hdr = result.data;
-                    if (hdr[0] !== 0x42 || hdr[1] !== 0x46 || hdr[2] !== 0x4E || hdr[3] !== 0x54)
-                        throw new Error(`LoadFont: "${fileArg.value}" hat keinen BFNT-Header (Zeile ${stmt.line})`);
-                    const charW     = (hdr[4] << 8) | hdr[5];
-                    const charH     = (hdr[6] << 8) | hdr[7];
-                    const charCount = (hdr[8] << 8) | hdr[9];
-                    const flags     = hdr[10];
-                    if (charW < 1 || charW > 8)
-                        throw new Error(`LoadFont: "${fileArg.value}" charW=${charW} außerhalb 1..8 (Zeile ${stmt.line})`);
-                    if (charH < 1)
-                        throw new Error(`LoadFont: "${fileArg.value}" charH=${charH} ungültig (Zeile ${stmt.line})`);
-                    if (flags & 1)
-                        throw new Error(`LoadFont: "${fileArg.value}" 256-Byte-Lookup (flags Bit 0) wird vom Renderer noch nicht unterstützt — bitte ASCII-Lookup speichern (Zeile ${stmt.line})`);
-                    if (srcCharW !== null && srcCharW !== charW)
-                        throw new Error(`LoadFont: "${fileArg.value}" charW im Header (${charW}) ≠ Quelle (${srcCharW}). Bei .bfnt entfallen charW/charH — bitte 2-Arg-Form benutzen (Zeile ${stmt.line})`);
-                    if (srcCharH !== null && srcCharH !== charH)
-                        throw new Error(`LoadFont: "${fileArg.value}" charH im Header (${charH}) ≠ Quelle (${srcCharH}). Bei .bfnt entfallen charW/charH — bitte 2-Arg-Form benutzen (Zeile ${stmt.line})`);
-                    const lbl = `_font_${this._fontAssets.size}`;
-                    this._fontAssets.set(idxArg.value, {
-                        filename: fileArg.value, label: lbl,
-                        kind: 'bfnt', charW, charH, charCount,
-                    });
-                    return;
-                }
-
-                // Legacy 5-arg signature for .raw fonts
-                if (stmt.args.length !== 5)
-                    throw new Error(`LoadFont: für .raw-Fonts Signatur LoadFont index, "chars", "file.raw", charW, charH — Zeile ${stmt.line}`);
-                const charsArg = stmt.args[1];
-                const wArg     = stmt.args[3];
-                const hArg     = stmt.args[4];
-                if (charsArg?.type !== 'string')
-                    throw new Error(`LoadFont: zweites Argument (Zeichensatz) muss ein String-Literal sein — Zeile ${stmt.line}`);
-                if (wArg?.type !== 'int' || hArg?.type !== 'int')
-                    throw new Error(`LoadFont: charW/charH fehlen oder sind keine Ganzzahlen (Zeile ${stmt.line})`);
-                const charW = wArg.value;
-                const charH = hArg.value;
-                if (charW > 8)
-                    throw new Error(`LoadFont: charW darf maximal 8 sein (${charW} angegeben) — Zeile ${stmt.line}`);
-                if (!this._fontAssets.has(idxArg.value)) {
-                    const lbl = `_font_${this._fontAssets.size}`;
-                    this._fontAssets.set(idxArg.value, {
-                        filename: fileArg.value, label: lbl,
-                        kind: 'raw', chars: charsArg.value, charW, charH
-                    });
-                }
+                if (this._fontAssets.has(idxArg.value)) return;
+                if (!this._readAssetHeader)
+                    throw new Error(`LoadFont: kein Projekt-Verzeichnis — .bfnt-Header nicht lesbar (Zeile ${stmt.line})`);
+                // M1-T10: 16-Byte-Header (war 12). Tracking + SpaceW persistiert.
+                const result = this._readAssetHeader(fileArg.value, 16);
+                if (!result.ok)
+                    throw new Error(`LoadFont: "${fileArg.value}" nicht lesbar — ${result.error} (Zeile ${stmt.line})`);
+                const hdr = result.data;
+                if (hdr[0] !== 0x42 || hdr[1] !== 0x46 || hdr[2] !== 0x4E || hdr[3] !== 0x54)
+                    throw new Error(`LoadFont: "${fileArg.value}" hat keinen BFNT-Header (Zeile ${stmt.line})`);
+                const charW     = (hdr[4] << 8) | hdr[5];
+                const charH     = (hdr[6] << 8) | hdr[7];
+                const charCount = (hdr[8] << 8) | hdr[9];
+                const flags     = hdr[10];
+                const tracking  = hdr[11];
+                const spaceWHdr = (hdr[12] << 8) | hdr[13];
+                const reserved  = (hdr[14] << 8) | hdr[15];
+                // M2-T04: charW > 8 erlaubt (1..16) — Renderer behandelt bpr=2 ab M2-T06.
+                if (charW < 1 || charW > 16)
+                    throw new Error(`LoadFont: "${fileArg.value}" charW=${charW} außerhalb 1..16 (Zeile ${stmt.line})`);
+                if (charH < 1)
+                    throw new Error(`LoadFont: "${fileArg.value}" charH=${charH} ungültig (Zeile ${stmt.line})`);
+                // M1-T10 v1→v2 detection: alte 12-B-Header beginnen direkt mit dem Lookup
+                // ab Offset 12, sodass hdr[14..15] Lookup-Bytes ($FF) sind und
+                // hdr[12..13] eine sinnlose "Space-Width" ergeben.
+                if (reserved !== 0 || spaceWHdr > 4096)
+                    throw new Error(`LoadFont: "${fileArg.value}" hat veralteten 12-Byte-Header. Bitte im Font-Editor neu speichern (Zeile ${stmt.line})`);
+                // M1-T08: 256-Byte-Lookup (flags Bit 0) wird unterstützt — _active_font_lookup_size
+                // im Renderer steuert den Bounds-Check pro Char.
+                const lookupSize = (flags & 1) ? 256 : 128;
+                // M1-T10: SpaceW=0 im Header bedeutet "use charW".
+                const spaceW  = spaceWHdr === 0 ? charW : spaceWHdr;
+                const advance = charW + tracking;
+                // M2-T05: bpr aus charW abgeleitet (1 für ≤8, 2 für 9..16).
+                // glyphSize = charH × bpr (vorberechnet; spart muls/lsl im Renderer).
+                const bpr       = (charW + 7) >> 3;
+                const glyphSize = charH * bpr;
+                const lbl = `_font_${this._fontAssets.size}`;
+                this._fontAssets.set(idxArg.value, {
+                    filename: fileArg.value, label: lbl,
+                    charW, charH, charCount, lookupSize,
+                    tracking, spaceW, advance, bpr, glyphSize,
+                });
             },
 
             setbackground: () => { this._usesBobs = true; this._usesImage = true; },

@@ -331,31 +331,29 @@
 				<div id="font-editor-panel">
 					<div class="view-toolbar">
 						<span class="view-title">Font Editor</span>
-						<label>Char W
-							<select id="fnt-sel-charw">
-								<option value="8" selected>8</option>
-								<option value="16">16</option>
-							</select>
+						<label title="Glyph-Breite in Pixel (1..16). Sheet-Breite muss durch diesen Wert teilbar sein.">Char W
+							<input type="number" id="fnt-sel-charw" min="1" max="16" value="8" style="width:3em">
 						</label>
-						<label>Char H
-							<select id="fnt-sel-charh">
-								<option value="8" selected>8</option>
-								<option value="16">16</option>
-							</select>
+						<label title="Glyph-Höhe in Pixel (1..32). Sheet-Höhe muss durch diesen Wert teilbar sein.">Char H
+							<input type="number" id="fnt-sel-charh" min="1" max="32" value="8" style="width:3em">
 						</label>
-						<label>Depth
-							<select id="fnt-sel-depth">
-								<option value="1" selected>1</option>
-								<option value="2">2</option>
-								<option value="3">3</option>
-								<option value="4">4</option>
-								<option value="5">5</option>
-							</select>
+						<label title="Reihenfolge der Glyphen im Sheet — Glyph 0 = erstes Zeichen, Glyph 1 = zweites, …">Charset
+							<input type="text" id="fnt-charset-string" value="1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ,.-;:_&lt;&gt;|!&quot;§$%&amp;/()=?@\}][{" spellcheck="false">
 						</label>
-						<label>Charset
-							<select id="fnt-sel-charset">
-								<option value="ascii" selected>ASCII (32–127)</option>
-								<option value="full">Full (0–255)</option>
+						<label title="Pixel zwischen zwei Zeichen (zusätzlich zur Glyph-Breite)">Tracking
+							<input type="number" id="fnt-sel-tracking" min="0" max="16" value="1" style="width:3em">
+						</label>
+						<label title="Pixelbreite des Leerzeichens. Leer = Char-Breite verwenden.">Space W
+							<input type="number" id="fnt-sel-spacew" min="0" max="64" value="" placeholder="charW" style="width:3.5em">
+						</label>
+						<label title="Hintergrund-Farben-Konvention. Auto verwendet die Fallback-Kette (PLTE→Magenta→Alpha→Schwarz). Pick erlaubt Klick auf das Sheet, um die Farbe zu wählen.">Background
+							<select id="fnt-sel-bg">
+								<option value="auto" selected>Auto</option>
+								<option value="index0">Palette Index 0</option>
+								<option value="magenta">Magic Magenta</option>
+								<option value="alpha">Transparent</option>
+								<option value="black">Black</option>
+								<option value="pick">Pick from Sheet…</option>
 							</select>
 						</label>
 						<span class="view-status" id="fnt-status">No font loaded</span>
@@ -387,6 +385,9 @@
 								<div class="view-prop-row"><span>Sheet</span><span id="fnt-prop-sheet">—</span></div>
 								<div class="view-prop-row"><span>Char Size</span><span id="fnt-prop-charsize">—</span></div>
 								<div class="view-prop-row"><span>Characters</span><span id="fnt-prop-chars">—</span></div>
+								<div class="view-prop-row"><span>Tracking</span><span id="fnt-prop-tracking">1 px</span></div>
+								<div class="view-prop-row"><span>Space Width</span><span id="fnt-prop-spacew">—</span></div>
+								<div class="view-prop-row"><span>Background</span><span id="fnt-prop-bg">—</span></div>
 							</div>
 							<div class="view-section">
 								<div class="view-section-title">Budget</div>

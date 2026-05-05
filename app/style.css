@@ -1301,6 +1301,19 @@ body.state-tilemap-editor #btn-tilemap-editor { color: #7ac5ff; background: #1a2
     background: #141414;
     overflow-y: auto;
 }
+/* M1-T05: BG-Swatch in der Properties-Sidebar (font editor). */
+.fnt-bg-swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-right: 4px;
+    vertical-align: middle;
+    border: 1px solid #555;
+    background-image: linear-gradient(45deg, #444 25%, transparent 25%, transparent 75%, #444 75%),
+                      linear-gradient(45deg, #444 25%, transparent 25%, transparent 75%, #444 75%);
+    background-size: 6px 6px;
+    background-position: 0 0, 3px 3px;
+}
 .fnt-actions {
     display: flex;
     flex-direction: column;

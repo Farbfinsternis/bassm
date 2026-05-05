@@ -26,7 +26,7 @@ While 1
   EndIf
   If bx > 304
     bx = 304 : bdx = -bdx
-    PlaySample 0, 0
+    PlaySample 0, 1
   EndIf
   If by < 0
     by = 0 : bdy = -bdy

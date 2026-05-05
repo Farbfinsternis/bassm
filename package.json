@@ -1,6 +1,6 @@
 {
   "name": "bassm",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Blitz2D to m68k executable toolchain",
   "license": "MIT",
   "author": "Farbfinsternis",
@@ -42,6 +42,7 @@
       "!examples/**/bassm_out.exe",
       "!examples/**/bassm_out.o",
       "!examples/**/main.s",
+      "!examples/**/_work/**",
       "!examples/_drafts/**",
       "node_modules/monaco-editor/**/*",
       "!node_modules/monaco-editor/esm/**/*",

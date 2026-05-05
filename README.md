@@ -10,7 +10,7 @@ Generated executables are standard **AmigaOS hunk binaries**, compatible with re
 
 ---
 
-## Early Access — Version 0.9.0
+## Early Access — Version 0.9.1
 
 BASSM is in **Early Access**. The compiler, IDE and emulator preview are usable end-to-end, but expect rough edges, breaking changes between versions, and missing features. **Not production-ready** — please don't ship commercial games on this version yet, and back up your projects (the project format may change before 1.0).
 

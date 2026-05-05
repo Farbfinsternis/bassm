@@ -715,7 +715,7 @@
     },
     {
         "name": "LoadFont",
-        "description": "Load a font into a slot. Two signatures: LoadFont index, \"file.bfnt\" reads charW/charH and the charCode→glyph lookup from the BFNT header (produced by the Font Editor). Legacy: LoadFont index, \"chars\", \"file.raw\", charW, charH for OCS spritesheet fonts where chars defines the character order.",
+        "description": "Load a font into a slot. Signature: LoadFont index, \"file.bfnt\" — charW/charH, tracking, space width and the charCode→glyph lookup are read from the BFNT header (produced by the Font Editor). Legacy .raw-Fonts werden nicht mehr unterstützt.",
         "snippet": "LoadFont ${1:0}, \"${2:font.bfnt}\"",
         "type": "global",
         "return": "void",
@@ -725,23 +725,8 @@
                 "type": "integer"
             },
             {
-                "name": "file_or_chars",
-                "type": "string"
-            },
-            {
                 "name": "file",
-                "type": "string",
-                "optional": true
-            },
-            {
-                "name": "charW",
-                "type": "integer",
-                "optional": true
-            },
-            {
-                "name": "charH",
-                "type": "integer",
-                "optional": true
+                "type": "string"
             }
         ],
         "zone": "setup"

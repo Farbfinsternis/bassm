@@ -67,6 +67,20 @@ export function makeIrawHeader(width, height, depth) {
     ];
 }
 
+/** Build a 16-byte .bfnt header for tests (font-chain-fix M1-T10 layout). */
+export function makeBfntHeader(charW, charH, charCount, flags = 0, tracking = 1, spaceW = 0) {
+    return [
+        0x42, 0x46, 0x4E, 0x54,                       // 'BFNT'
+        (charW     >> 8) & 0xFF, charW     & 0xFF,
+        (charH     >> 8) & 0xFF, charH     & 0xFF,
+        (charCount >> 8) & 0xFF, charCount & 0xFF,
+        flags & 0xFF,
+        tracking & 0xFF,
+        (spaceW >> 8) & 0xFF, spaceW & 0xFF,
+        0, 0,                                          // reserved
+    ];
+}
+
 /** Build a 24-byte .bmap v2 fixed header (no path bytes) for tests. */
 export function makeBmapHeader(mapW, mapH, tileW, tileH, tilesetLen = 0) {
     return [
