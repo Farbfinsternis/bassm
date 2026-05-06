@@ -11,9 +11,9 @@ npm install
 
 echo
 echo "[2/2] Erstelle Electron-App fuer Linux..."
-npx electron-builder --linux --x64 --publish never --config.directories.output=dist/linux
+npx electron-builder --linux --x64 --publish never --config.directories.output=../bassm-dist/linux
 
 echo
 echo "============================================================"
-echo " Build fertig: dist/linux/BASSM-linux-x64.AppImage"
+echo " Build fertig: ../bassm-dist/linux/BASSM-linux-x64.AppImage"
 echo "============================================================"

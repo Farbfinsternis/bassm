@@ -15,7 +15,7 @@ if %ERRORLEVEL% neq 0 (
 
 echo.
 echo [2/2] Erstelle Electron-App fuer Windows...
-call npx electron-builder --win --x64 --publish never --config.directories.output=dist\windows
+call npx electron-builder --win --x64 --publish never --config.directories.output=..\bassm-dist\windows
 if %ERRORLEVEL% neq 0 (
     echo FEHLER: electron-builder fehlgeschlagen.
     exit /b 1
@@ -23,6 +23,6 @@ if %ERRORLEVEL% neq 0 (
 
 echo.
 echo ============================================================
-echo  Build fertig: dist\windows\BASSM-win-x64.exe
+echo  Build fertig: ..\bassm-dist\windows\BASSM-win-x64.exe
 echo ============================================================
 endlocal

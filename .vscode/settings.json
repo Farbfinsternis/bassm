@@ -17,6 +17,7 @@
     "**/emulator/vAmigaWeb/build": true
   },
   "files.exclude": {
-    "**/.bassm-dev": true
+    "**/.bassm-dev": true,
+    "**/dist": true
   }
 }
