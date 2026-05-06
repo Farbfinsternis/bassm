@@ -1,6 +1,6 @@
 {
   "name": "bassm",
-  "version": "0.9.1",
+  "version": "0.9.12",
   "description": "Blitz2D to m68k executable toolchain",
   "license": "MIT",
   "author": "Farbfinsternis",

@@ -421,6 +421,43 @@ ipcMain.handle('bassm:new-project', async (_event, { type }) => {
   return { projectDir, projectName, source: initialContent, isVBE };
 });
 
+// Renderer → main: create a temporary scratch project under <workspace>/tmp/.
+// No SaveDialog — the renderer triggers this directly when "New File" is
+// clicked without an open project. Folder name is `tmp-YYYYMMDD-HHMMSS`,
+// entry file is main.bassm with a working Graphics boilerplate so the first
+// Run produces visible output instead of the no-Graphics hint.
+// Returns { projectDir, projectName, source, isVBE: false, isScratch: true }.
+ipcMain.handle('bassm:new-scratch-project', async (_event) => {
+  await _workspacePromise;
+  if (!_workspaceModule) throw new Error('workspace not ready');
+  const tmpRoot = _workspaceModule.getTmpDir();
+  fs.mkdirSync(tmpRoot, { recursive: true });
+
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-`
+              + `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  const projectDir  = path.join(tmpRoot, `tmp-${stamp}`);
+  const projectName = path.basename(projectDir);
+  fs.mkdirSync(projectDir, { recursive: true });
+
+  const boilerplate =
+    'Graphics 320,256,3\n' +
+    'PaletteColor 0,0,0,0\n' +
+    'PaletteColor 1,15,15,15\n' +
+    '\n' +
+    'While 1\n' +
+    '    Cls\n' +
+    '    Color 1\n' +
+    '    Text 100,120,"HELLO BASSM"\n' +
+    '    ScreenFlip\n' +
+    'Wend\n';
+  fs.writeFileSync(path.join(projectDir, 'main.bassm'), boilerplate, 'utf8');
+
+  startProjectWatcher(projectDir);
+  return { projectDir, projectName, source: boilerplate, isVBE: false, isScratch: true };
+});
+
 // Renderer → main: open a project by directory path (used by recent projects list)
 // Returns { projectDir, projectName, source, isVBE } or null if directory not found
 ipcMain.handle('bassm:open-project-dir', async (_event, { dir }) => {

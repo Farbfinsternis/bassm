@@ -106,7 +106,10 @@ export class CodeGen {
         // ── Locate and validate the Graphics statement ────────────────────────
         const gfxStmt = ast.find(s => s && s.type === 'command' && s.name === 'graphics');
         if (!gfxStmt) {
-            throw new Error('Every BASSM program must begin with a Graphics statement.');
+            const err = new Error('Every BASSM program must begin with a Graphics statement.');
+            err.code = 'E_NO_GRAPHICS';
+            err.line = 1;
+            throw err;
         }
 
         const W = this._intArg(gfxStmt, 0, 'Graphics width');

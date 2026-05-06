@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadRom: () => ipcRenderer.invoke('bassm:rom'),
   // Create a new project folder via Save dialog; returns { projectDir, projectName, source } or null
   newProject: (payload) => ipcRenderer.invoke('bassm:new-project', payload),
+  // Create a temporary scratch project under <workspace>/tmp/ (no dialog).
+  // Returns { projectDir, projectName, source, isVBE, isScratch: true }.
+  newScratchProject: () => ipcRenderer.invoke('bassm:new-scratch-project'),
   // Open a project folder; returns { projectDir, projectName, source } or null
   openProject: () => ipcRenderer.invoke('bassm:open-project'),
   // Open a project by path (recent list); returns { projectDir, projectName, source } or null

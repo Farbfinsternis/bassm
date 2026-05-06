@@ -13,6 +13,7 @@
 	<body class="state-welcome">
 		<div id="toolbar">
 			<button id="btn-new"            title="New Project"><i class="codicon codicon-new-folder"></i></button>
+			<button id="btn-new-file"       title="New File"><i class="codicon codicon-new-file"></i></button>
 			<button id="btn-open"           title="Open Project"><i class="codicon codicon-folder-opened"></i></button>
 			<button id="btn-save"           title="Save  (Ctrl+S)"><i class="codicon codicon-save"></i></button>
 			<button id="btn-close-project"  title="Close Project"><i class="codicon codicon-close"></i></button>
@@ -21,7 +22,10 @@
 			<button id="btn-build"          title="Build only  (F7)"><i class="codicon codicon-tools"></i></button>
 			<button id="btn-create-adf"     title="Create ADF" disabled><i class="codicon codicon-archive"></i></button>
 			<span class="toolbar-sep"></span>
-			<button id="btn-toggle-editor"  title="Node Editor"><i class="codicon codicon-circuit-board"></i></button>
+			<!-- Node-Editor button & New-Project type modal are intentionally hidden:
+			     the visual blueprint editor is on hold but kept in the codebase
+			     for a future iteration. Do not delete the markup. -->
+			<button id="btn-toggle-editor"  title="Node Editor" style="display:none"><i class="codicon codicon-circuit-board"></i></button>
 			<button id="btn-tilemap-editor" title="Tilemap Editor"><i class="codicon codicon-layout"></i></button>
 			<button id="btn-emulator-exit"  title="Exit fullscreen  (F11 / ESC)"><i class="codicon codicon-screen-normal"></i></button>
 			<span id="project-name"></span>

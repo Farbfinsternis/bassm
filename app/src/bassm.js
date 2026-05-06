@@ -157,6 +157,32 @@ function logLine(text, cls = '') {
 // ── Monaco error markers ───────────────────────────────────────────────────────
 
 let _currentErrors = [];
+let _noGraphicsHint = false;
+let _noGraphicsHoverDisposable = null;
+
+function _docsBaseUrl() {
+    const locale = (localStorage.getItem('bassm-locale')
+        || (navigator.language || 'en').slice(0, 2)).toLowerCase();
+    const lang = locale === 'de' ? 'de' : 'en';
+    return `https://basm-amiga.com/${lang}/docs/system`;
+}
+
+function _ensureNoGraphicsHover() {
+    if (_noGraphicsHoverDisposable || !window.monaco) return;
+    _noGraphicsHoverDisposable = window.monaco.languages.registerHoverProvider('bassm', {
+        provideHover(model, position) {
+            if (!_noGraphicsHint || position.lineNumber !== 1) return null;
+            const url = _docsBaseUrl();
+            const msg = (localStorage.getItem('bassm-locale') === 'de')
+                ? `**Der erste Befehl muss \`Graphics\` sein!**\n\n[Dokumentation öffnen](${url})`
+                : `**The first command must be \`Graphics\`!**\n\n[Open documentation](${url})`;
+            return {
+                range: new window.monaco.Range(1, 1, 1, model.getLineMaxColumn(1)),
+                contents: [{ value: msg, isTrusted: true, supportHtml: false }],
+            };
+        },
+    });
+}
 
 function _setErrorMarker(message) {
     const ed = window._monacoEditor;
@@ -184,6 +210,7 @@ function _setErrorMarker(message) {
 
 function _clearMarkers() {
     _currentErrors = [];
+    _noGraphicsHint = false;
     const ed = window._monacoEditor;
     if (!ed || !window.monaco) return;
     const model = ed.getModel();
@@ -1190,7 +1217,11 @@ bassm.init()
             _isVBEProject = result.isVBE || false;
             _currentFile = _isVBEProject ? 'main.bnode' : 'main.bassm';
             _loadTreeState();
-            await _addRecent(result.projectName, result.projectDir);
+            // Scratch projects (tmp/tmp-<stamp>/) intentionally skip Recent —
+            // they are throwaway and would otherwise clutter the list.
+            if (!result.isScratch) {
+                await _addRecent(result.projectName, result.projectDir);
+            }
             projectName.textContent = result.projectName;
             document.title = `${result.projectName} — BASSM ${_version}`;
             
@@ -1425,8 +1456,33 @@ bassm.init()
         const showNewProjectModal = () => { modalOverlay.style.display = 'flex'; };
         const hideNewProjectModal = () => { modalOverlay.style.display = 'none'; };
 
-        document.getElementById('btn-new').addEventListener('click', showNewProjectModal);
+        // New-Project type modal is on hold along with the Node Editor —
+        // for now "New Project" goes straight to a code project.
+        // showNewProjectModal/hideNewProjectModal and the modal markup are
+        // kept for a future iteration when the Visual Blueprint Editor returns.
+        document.getElementById('btn-new').addEventListener('click', async () => {
+            const result = await window.electronAPI.newProject({ type: 'code' });
+            if (!result) return;
+            await _openProjectResult(result);
+        });
         document.getElementById('btn-modal-cancel').addEventListener('click', hideNewProjectModal);
+
+        // New File: with an open project, mirror the tree's right-click "New File…".
+        // Without an open project, spawn a temporary scratch project under tmp/.
+        document.getElementById('btn-new-file').addEventListener('click', async () => {
+            if (_projectDir) {
+                const content = document.getElementById('project-tree-content');
+                _startInlineInput(content, 'file', '', 0);
+                return;
+            }
+            try {
+                const result = await window.electronAPI.newScratchProject();
+                if (!result) return;
+                await _openProjectResult(result);
+            } catch (err) {
+                logLine(`Could not create scratch project: ${err.message}`, 'error');
+            }
+        });
 
         document.getElementById('btn-create-code').addEventListener('click', async () => {
             hideNewProjectModal();
@@ -1503,9 +1559,21 @@ bassm.init()
                     status.textContent = 'Build OK';
                 }
             } catch (err) {
+                if (err && err.code === 'E_NO_GRAPHICS') {
+                    _noGraphicsHint = true;
+                    _ensureNoGraphicsHover();
+                }
                 _setErrorMarker(err.message);
                 logLine(err.message, 'error');
                 status.textContent = 'Error';
+                if (err && err.code === 'E_NO_GRAPHICS') {
+                    const ed = window._monacoEditor;
+                    if (ed) {
+                        ed.revealLineInCenter(1);
+                        ed.setPosition({ lineNumber: 1, column: 1 });
+                        ed.trigger('bassm', 'editor.action.showHover', {});
+                    }
+                }
             } finally {
                 btnRun.disabled = false;
                 document.getElementById('btn-build').disabled = false;
