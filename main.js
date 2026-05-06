@@ -115,7 +115,14 @@ if (!IS_WIN) {
   try { fs.chmodSync(VASM,  0o755); } catch (_) {}
   try { fs.chmodSync(VLINK, 0o755); } catch (_) {}
 }
-const FRAGMENTS = path.join(__dirname, 'app', 'src', 'm68k', 'fragments');
+// Fragments are read by the external vasm process via the `-I` flag.
+// In the packaged build __dirname points inside app.asar (a virtual path
+// only Electron's patched fs APIs understand). vasm — being a native
+// process — cannot read inside ASAR, so we point it at app.asar.unpacked.
+// Listed in package.json `build.asarUnpack` so electron-builder mirrors
+// the directory next to the asar.
+const FRAGMENTS = path.join(__dirname, 'app', 'src', 'm68k', 'fragments')
+  .replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
 const ROM_MAIN  = path.join(__dirname, 'emulator', 'vAmigaWeb', 'roms', 'aros.bin');
 const ROM_EXT   = path.join(__dirname, 'emulator', 'vAmigaWeb', 'roms', 'aros_ext.bin');
 

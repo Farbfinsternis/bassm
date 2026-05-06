@@ -1,0 +1,22 @@
+{
+  "files.watcherExclude": {
+    "**/dist/**": true,
+    "**/node_modules/**": true,
+    "**/.bassm-dev/**": true,
+    "**/.tmp/**": true,
+    "**/site/node_modules/**": true,
+    "**/site/dist/**": true
+  },
+  "search.exclude": {
+    "**/dist": true,
+    "**/node_modules": true,
+    "**/.bassm-dev": true,
+    "**/.tmp": true,
+    "**/site/node_modules": true,
+    "**/site/dist": true,
+    "**/emulator/vAmigaWeb/build": true
+  },
+  "files.exclude": {
+    "**/.bassm-dev": true
+  }
+}
