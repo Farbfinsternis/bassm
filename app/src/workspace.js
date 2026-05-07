@@ -123,9 +123,12 @@ function _requireAbsolute(p, fn) {
 
 /**
  * Absolute source path of the bundled examples folder.
- * - Packaged build: `<resourcesPath>/app/examples` (with `asar: false`,
- *   electron-builder extracts the project tree to `resources/app/`,
- *   so examples live one level deeper than `resourcesPath` itself).
+ * - Packaged build: `<resourcesPath>/app.asar.unpacked/examples`. Examples
+ *   are listed in `asarUnpack` (package.json), so electron-builder
+ *   extracts them physically next to the ASAR archive. Reading from inside
+ *   `app.asar` directly is unreliable (ASAR fs-patch + readdir
+ *   `withFileTypes` interactions in some Electron builds), so we always
+ *   sync from the unpacked copy.
  * - Dev mode:      `<repoRoot>/examples`.
  *
  * The bootstrap step (W-T03) syncs from this location into
@@ -137,7 +140,7 @@ export function getBundledExamplesDir() {
         if (!c.resourcesPath) {
             throw new Error('workspace.getBundledExamplesDir: resourcesPath required in packaged mode');
         }
-        return path.join(c.resourcesPath, 'app', 'examples');
+        return path.join(c.resourcesPath, 'app.asar.unpacked', 'examples');
     }
     if (!c.repoRoot) {
         throw new Error('workspace.getBundledExamplesDir: repoRoot required in dev mode');

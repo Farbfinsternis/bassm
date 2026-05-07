@@ -39,16 +39,16 @@ function cleanup(dir) {
 
 /**
  * Build a fake `resourcesPath` directory under `tmpHome` that mirrors the
- * packaged bundle layout: `<resourcesPath>/app/examples/` points at the
- * real repo's examples via a directory junction (no admin needed on
- * Windows). Returns the fake resourcesPath. Used by tests that exercise
- * the examples-mirror sync.
+ * packaged bundle layout: `<resourcesPath>/app.asar.unpacked/examples/`
+ * points at the real repo's examples via a directory junction (no admin
+ * needed on Windows). Returns the fake resourcesPath. Used by tests that
+ * exercise the examples-mirror sync.
  */
 function makeFakeResourcesPath(tmpHome) {
     const resourcesPath = path.join(tmpHome, 'fake-resources');
-    fs.mkdirSync(path.join(resourcesPath, 'app'), { recursive: true });
+    fs.mkdirSync(path.join(resourcesPath, 'app.asar.unpacked'), { recursive: true });
     const target = path.join(REPO_ROOT, 'examples');
-    const link   = path.join(resourcesPath, 'app', 'examples');
+    const link   = path.join(resourcesPath, 'app.asar.unpacked', 'examples');
     if (fs.existsSync(link)) return resourcesPath; // idempotent — second configure() in same test
     try {
         fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
@@ -61,7 +61,7 @@ function makeFakeResourcesPath(tmpHome) {
 
 /** Reset workspace.js context and reconfigure with packaged + tmpHome.
  *  Defaults `resourcesPath` to a fake bundle so the examples-mirror sync
- *  finds `<resourcesPath>/app/examples/`. */
+ *  finds `<resourcesPath>/app.asar.unpacked/examples/`. */
 function configurePackaged(tmpHome, extra = {}) {
     ws._resetForTests();
     ws.configure({

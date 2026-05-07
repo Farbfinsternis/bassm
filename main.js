@@ -448,17 +448,7 @@ ipcMain.handle('bassm:new-scratch-project', async (_event) => {
   const projectName = path.basename(projectDir);
   fs.mkdirSync(projectDir, { recursive: true });
 
-  const boilerplate =
-    'Graphics 320,256,3\n' +
-    'PaletteColor 0,0,0,0\n' +
-    'PaletteColor 1,15,15,15\n' +
-    '\n' +
-    'While 1\n' +
-    '    Cls\n' +
-    '    Color 1\n' +
-    '    Text 100,120,"HELLO BASSM"\n' +
-    '    ScreenFlip\n' +
-    'Wend\n';
+  const { helloWorld: boilerplate } = require('./app/src/boilerplate.json');
   fs.writeFileSync(path.join(projectDir, 'main.bassm'), boilerplate, 'utf8');
 
   startProjectWatcher(projectDir);

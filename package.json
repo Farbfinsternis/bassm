@@ -1,6 +1,6 @@
 {
   "name": "bassm",
-  "version": "0.9.13",
+  "version": "0.9.14",
   "description": "Blitz2D to m68k executable toolchain",
   "license": "MIT",
   "author": "Farbfinsternis",
@@ -29,7 +29,8 @@
     "asar": true,
     "asarUnpack": [
       "bin/**/*",
-      "app/src/m68k/fragments/**/*"
+      "app/src/m68k/fragments/**/*",
+      "examples/**/*"
     ],
     "files": [
       "main.js",

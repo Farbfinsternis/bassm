@@ -1,0 +1,4 @@
+{
+  "_comment": "Canonical Hello-BASSM boilerplate. Used by main.js (IDE 'New File' writes `helloWorld` into the scratch project). Plain JSON so CommonJS `require()` from main.js works without interop friction. Snippet content for the website lives in site/src/content/snippets/*.bassm — that is the docs SSOT.",
+  "helloWorld": "Graphics 320,256,3\nPaletteColor 0,0,0,0\nPaletteColor 1,15,15,15\n\nRepeat\n    Cls\n    Color 1\n    Text 100,120,\"HELLO BASSM\"\n    Text 80,140,\"PRESS ESC TO EXIT\"\n    ScreenFlip\nUntil KeyDown($45)\n"
+}
