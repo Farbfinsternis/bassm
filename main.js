@@ -158,6 +158,123 @@ function _buildTmpDir(projectDir) {
   return os.tmpdir();
 }
 
+// ── Sprite-sheet reorder ────────────────────────────────────────────────────
+// .iraw files store frames as the user painted them (horizontal strip or
+// grid).  The runtime engine, however, is built around a single layout:
+// `count` frames stacked vertically, each fw × fh.  At build time we read
+// the source file, walk the sheet in row-major order, and emit a copy where
+// the frames are stacked.  The original asset in the project is untouched —
+// only the build copy in tmpDir is rewritten.
+//
+// Entry args (for both): xform = { fileW, fileH, fw, fh, cols, rows, count }
+// Output bytes: header (12) + palette + interleaved bitplanes for `count`
+// vertically-stacked frames, depth carried over from the source header.
+
+function _frameRowbytes(fw) {
+  return Math.ceil(Math.ceil(fw / 8) / 2) * 2;
+}
+
+function _reorderIrawSheet(buf, xform) {
+  const { fileW, fileH, fw, fh, cols, count } = xform;
+  if (buf.length < 12 ||
+      buf[0] !== 0x49 || buf[1] !== 0x52 || buf[2] !== 0x41 || buf[3] !== 0x57)
+    throw new Error('not an IRAW v2 file');
+  const hdrW    = (buf[4] << 8) | buf[5];
+  const hdrH    = (buf[6] << 8) | buf[7];
+  const depth   = (buf[8] << 8) | buf[9];
+  const srcRb   = (buf[10] << 8) | buf[11];
+  if (hdrW !== fileW || hdrH !== fileH)
+    throw new Error(`IRAW header dims ${hdrW}×${hdrH} disagree with reader (${fileW}×${fileH})`);
+
+  const palBytes  = (1 << depth) * 2;
+  const palOffset = 12;
+  const dataOffset = palOffset + palBytes;
+  const expectedPx = srcRb * fileH * depth;
+  if (dataOffset + expectedPx > buf.length)
+    throw new Error(`IRAW pixel block truncated (need ${expectedPx} bytes after palette)`);
+
+  const dstFw = fw;
+  const dstFh = fh * count;
+  const dstRb = _frameRowbytes(dstFw);
+  const frameRb = _frameRowbytes(fw);
+  if (frameRb !== dstRb) throw new Error('frame rowbytes mismatch (internal)');
+
+  const dstPx = dstRb * dstFh * depth;
+  const out = Buffer.alloc(12 + palBytes + dstPx);
+  out[0] = 0x49; out[1] = 0x52; out[2] = 0x41; out[3] = 0x57;
+  out[4] = (dstFw >> 8) & 0xFF; out[5] = dstFw & 0xFF;
+  out[6] = (dstFh >> 8) & 0xFF; out[7] = dstFh & 0xFF;
+  out[8] = (depth >> 8) & 0xFF; out[9] = depth & 0xFF;
+  out[10] = (dstRb >> 8) & 0xFF; out[11] = dstRb & 0xFF;
+  buf.copy(out, palOffset, palOffset, dataOffset);
+
+  // Walk frames in row-major order. Each frame is fh pixel-rows; in the
+  // interleaved layout each pixel row holds `depth` plane-rows, each
+  // `srcRb` bytes wide in the source and `dstRb` bytes in the destination.
+  // The source X offset for column c is `c * frameRb` bytes.
+  let dstCursor = dataOffset;
+  for (let f = 0; f < count; f++) {
+    const col = f % cols;
+    const row = Math.floor(f / cols);
+    const srcXBytes = col * frameRb;
+    for (let py = 0; py < fh; py++) {
+      const srcPixelRow = row * fh + py;
+      // depth plane-rows for this pixel row, each row is srcRb in source
+      let srcRowBase = dataOffset + (srcPixelRow * depth) * srcRb + srcXBytes;
+      for (let p = 0; p < depth; p++) {
+        buf.copy(out, dstCursor, srcRowBase, srcRowBase + frameRb);
+        dstCursor  += frameRb;
+        srcRowBase += srcRb;
+      }
+    }
+  }
+  return out;
+}
+
+// .imask is interleaved 1-bit-per-pixel: same row geometry as the .iraw, but
+// each "row" is the mask repeated `depth` times so a single blit feeds all
+// planes.  Layout-wise it behaves like an IRAW with no header and depth=1
+// per visible row but the row repeated `depth` times — so the easiest way
+// to reorder is to treat the mask as having "depth=1" rows and `fh×depth`
+// total mask-rows per source pixel-row.  In effect: the mask file is just
+// `depth × fileH` rows of `srcRb` bytes, no header, no palette.
+//
+// We rebuild the mask the same way: walk frames in row-major order; for
+// each frame copy `fh × depth` mask-rows out of the source, taking the
+// `frameRb`-wide column slice.
+function _reorderImaskSheet(buf, xform) {
+  const { fileW, fileH, fw, fh, cols, count } = xform;
+  // The .imask has no header — depth must be inferred. Since the sibling
+  // .iraw is what drives the geometry, we derive it from the mask size:
+  // total bytes = srcRb × fileH × depth, where srcRb is for fileW.
+  const srcRb = _frameRowbytes(fileW);
+  if (buf.length % (srcRb * fileH) !== 0)
+    throw new Error(`.imask size ${buf.length} not a multiple of ${srcRb}×${fileH}`);
+  const depth = buf.length / (srcRb * fileH);
+  if (depth < 1 || depth > 6)
+    throw new Error(`.imask implied depth ${depth} out of range (1..6)`);
+
+  const frameRb = _frameRowbytes(fw);
+  const dstSize = frameRb * fh * depth * count;
+  const out = Buffer.alloc(dstSize);
+  let dstCursor = 0;
+  for (let f = 0; f < count; f++) {
+    const col = f % cols;
+    const row = Math.floor(f / cols);
+    const srcXBytes = col * frameRb;
+    for (let py = 0; py < fh; py++) {
+      const srcPixelRow = row * fh + py;
+      let srcRowBase = (srcPixelRow * depth) * srcRb + srcXBytes;
+      for (let p = 0; p < depth; p++) {
+        buf.copy(out, dstCursor, srcRowBase, srcRowBase + frameRb);
+        dstCursor  += frameRb;
+        srcRowBase += srcRb;
+      }
+    }
+  }
+  return out;
+}
+
 // ── Protocol: serve emulator/preview/ with correct MIME types ─────────────
 // WASM files need application/wasm — Electron's file:// doesn't set this.
 app.whenReady().then(() => {
@@ -263,7 +380,8 @@ ipcMain.on('emulator:status', (_event, text) => {
 ipcMain.handle('bassm:assemble', async (_event, payload) => {
   await _workspacePromise;
   return new Promise((resolve) => {
-    const { asm: asmText, assetFiles = [], fontAssets = [], projectDir } = payload;
+    const { asm: asmText, assetFiles = [], fontAssets = [], assetTransforms = [], projectDir } = payload;
+    const transformsByFile = new Map(assetTransforms.map(t => [t.filename, t]));
     // Asset-bearing builds require an open project — we have nowhere to
     // resolve relative INCBIN paths from otherwise. Pure-code builds
     // (welcome demo etc.) still work without a project.
@@ -284,11 +402,21 @@ ipcMain.handle('bassm:assemble', async (_event, payload) => {
     for (const filename of assetFiles) {
       const src = path.join(assetSrcDir, filename);
       const dst = path.join(tmpDir, filename);
+      const xform = transformsByFile.get(filename);
       try {
         fs.mkdirSync(path.dirname(dst), { recursive: true });
-        fs.copyFileSync(src, dst);
+        if (xform) {
+          const buf = fs.readFileSync(src);
+          let out;
+          if (xform.kind === 'iraw-sheet')      out = _reorderIrawSheet(buf, xform);
+          else if (xform.kind === 'imask-sheet') out = _reorderImaskSheet(buf, xform);
+          else                                   out = buf;
+          fs.writeFileSync(dst, out);
+        } else {
+          fs.copyFileSync(src, dst);
+        }
       } catch (e) {
-        resolve({ ok: false, error: `Asset not found: ${filename} (expected at ${src})` });
+        resolve({ ok: false, error: `Asset error (${filename}): ${e.message}` });
         return;
       }
     }
@@ -746,9 +874,9 @@ ipcMain.handle('bassm:read-asset', (_event, { projectDir, path: relPath }) => {
 });
 
 // Renderer → main: write to an absolute path without a dialog.
-// Accepts { filePath: string, data: number[] }
+// Accepts { path: string, data: number[] }
 // Used to auto-save companion files (e.g. .pal/.imask alongside .iraw).
-ipcMain.handle('bassm:save-asset-path', (_event, { filePath, data }) => {
+ipcMain.handle('bassm:save-asset-path', (_event, { path: filePath, data }) => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, Buffer.from(data));
 });

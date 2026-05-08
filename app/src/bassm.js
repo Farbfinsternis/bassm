@@ -80,12 +80,13 @@ class BASSM {
             : null);
 
         // 2. Blitz2D → m68k assembly
-        const asm        = this.compile(expanded);
-        const assetFiles = this._codegen.getAssetRefs();
-        const fontAssets = this._codegen.getFontAssets();
+        const asm             = this.compile(expanded);
+        const assetFiles      = this._codegen.getAssetRefs();
+        const fontAssets      = this._codegen.getFontAssets();
+        const assetTransforms = this._codegen.getAssetTransforms();
 
         // 2. Assemble with vasmm68k_mot via Electron IPC
-        const result = await window.electronAPI.assemble({ asm, assetFiles, fontAssets, projectDir });
+        const result = await window.electronAPI.assemble({ asm, assetFiles, fontAssets, assetTransforms, projectDir });
         if (!result.ok) throw new Error(result.error);
         for (const w of (result.warnings || [])) logLine(`Warnung: ${w}`, 'warn');
 

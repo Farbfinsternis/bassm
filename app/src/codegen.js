@@ -92,6 +92,7 @@ export class CodeGen {
         this._bobVPs               = new Set();    // VP indices that use DrawBob/SetBackground (T29)
         this._tilemapVPs           = new Set();    // VP indices that use SetTilemap/DrawTilemap (T29)
         this._gfxHeight            = 0;            // set after Graphics validation; used by T32
+        this._gfxDepth             = 0;            // set after Graphics validation; used to reject image/depth mismatches
 
         this._initStatementHandlers();
         this._initCommandHandlers();
@@ -126,6 +127,7 @@ export class CodeGen {
             throw new Error(`Graphics depth ${D} out of range — must be 1–5 bitplanes.`);
         }
         this._gfxHeight = H;
+        this._gfxDepth  = D;
 
         // ── Display timing constants ──────────────────────────────────────────
         const colors  = 1 << D;
@@ -213,6 +215,38 @@ export class CodeGen {
             ...[...this._tilesetAssets.values()].map(e => e.filename),
             ...[...this._tilemapAssets.values()].map(e => e.filename),
         ];
+    }
+
+    /**
+     * Returns asset-transform jobs for the build pipeline.  Currently emits
+     * sprite-sheet reorder jobs for `.iraw` (and the matching `.imask` if a
+     * `LoadMask` was issued for the same index): the file's frames are laid
+     * out horizontally / as a grid, but the engine expects them stacked
+     * vertically, so the build copies a transformed file into tmpDir.
+     *
+     * Each entry: { filename, kind: "iraw-sheet" | "imask-sheet", fileW, fileH,
+     *               fw, fh, cols, rows, count, depth? }
+     */
+    getAssetTransforms() {
+        const jobs = [];
+        for (const [idx, entry] of this._imageAssets) {
+            if (!entry.sheet) continue;
+            const s = entry.sheet;
+            jobs.push({
+                filename: entry.filename, kind: 'iraw-sheet',
+                fileW: s.fileW, fileH: s.fileH,
+                fw: s.fw, fh: s.fh, cols: s.cols, rows: s.rows, count: s.count,
+            });
+            const mask = this._maskAssets.get(idx);
+            if (mask) {
+                jobs.push({
+                    filename: mask.filename, kind: 'imask-sheet',
+                    fileW: s.fileW, fileH: s.fileH,
+                    fw: s.fw, fh: s.fh, cols: s.cols, rows: s.rows, count: s.count,
+                });
+            }
+        }
+        return jobs;
     }
 
     /**
@@ -1111,7 +1145,7 @@ export class CodeGen {
             out.push(`${pad('GFXRASTER',12)} EQU ${maxLines}`);
         }
         if (this._usesBobs) {
-            out.push(`${pad('BOBS_MAX',12)} EQU 32`);
+            out.push(`${pad('BOBS_MAX',12)} EQU 64`);
         }
         // T4: Viewport Copper-Section offsets — only when explicit viewports are used.
         // Offsets are relative to the section-base label (_vpN_cop_a/b:).
@@ -3209,6 +3243,9 @@ export class CodeGen {
                     throw new Error(`LoadImage: "${fileArg.value}" hat keinen IRAW-Header (legacy v1). Bitte mit dem Image-Editor neu exportieren (Zeile ${stmt.line})`);
                 const width    = (hdr[4] << 8) | hdr[5];
                 const height   = (hdr[6] << 8) | hdr[7];
+                const imgDepth = (hdr[8] << 8) | hdr[9];
+                if (imgDepth !== this._gfxDepth)
+                    throw new Error(`LoadImage: "${fileArg.value}" hat Tiefe ${imgDepth}, Graphics-Modus ist Tiefe ${this._gfxDepth}. Bilder müssen die gleiche Bitplane-Tiefe wie der Graphics-Modus haben — entweder das Bild im Image-Editor mit ${this._gfxDepth} Bitplanes neu konvertieren oder Graphics auf Tiefe ${imgDepth} ändern (Zeile ${stmt.line})`);
                 const rowbytes = Math.ceil(Math.ceil(width / 8) / 2) * 2;
 
                 const lbl = `_img_${this._imageAssets.size}`;
@@ -3230,16 +3267,39 @@ export class CodeGen {
                     countArg?.type === 'int') {
                     if (!this._imageAssets.has(idxArg.value)) {
                         const isInterleaved = fileArg.value.toLowerCase().endsWith('.iraw');
-                        // Reject legacy v1 .iraw files — INCBIN skip 12 would corrupt palette data.
+                        let sheet = null;
+                        // .iraw v2 header: parse magic + width/height to detect sprite-sheet layout.
+                        // If file dims != frame dims, the build pipeline rewrites the file in tmpDir
+                        // so frames end up vertically stacked (engine sees the simple layout).
                         if (isInterleaved) {
                             if (!this._readAssetHeader)
                                 throw new Error(`LoadAnimImage: kein Projekt-Verzeichnis — .iraw-Header nicht lesbar (Zeile ${stmt.line})`);
-                            const result = this._readAssetHeader(fileArg.value, 4);
+                            const result = this._readAssetHeader(fileArg.value, 12);
                             if (!result.ok)
                                 throw new Error(`LoadAnimImage: "${fileArg.value}" nicht lesbar — ${result.error} (Zeile ${stmt.line})`);
                             const hdr = result.data;
                             if (hdr[0] !== 0x49 || hdr[1] !== 0x52 || hdr[2] !== 0x41 || hdr[3] !== 0x57)
                                 throw new Error(`LoadAnimImage: "${fileArg.value}" hat keinen IRAW-Header (legacy v1). Bitte mit dem Image-Editor neu exportieren (Zeile ${stmt.line})`);
+                            const fileW    = (hdr[4] << 8) | hdr[5];
+                            const fileH    = (hdr[6] << 8) | hdr[7];
+                            const imgDepth = (hdr[8] << 8) | hdr[9];
+                            if (imgDepth !== this._gfxDepth)
+                                throw new Error(`LoadAnimImage: "${fileArg.value}" hat Tiefe ${imgDepth}, Graphics-Modus ist Tiefe ${this._gfxDepth}. Bilder müssen die gleiche Bitplane-Tiefe wie der Graphics-Modus haben — entweder das Bild im Image-Editor mit ${this._gfxDepth} Bitplanes neu konvertieren oder Graphics auf Tiefe ${imgDepth} ändern (Zeile ${stmt.line})`);
+                            const fw    = wArg.value;
+                            const fh    = hArg.value;
+                            const cnt   = countArg.value;
+                            const stackedH = fw === fileW && fh * cnt === fileH;
+                            if (!stackedH) {
+                                if (fileW % fw !== 0)
+                                    throw new Error(`LoadAnimImage: "${fileArg.value}" — Datei-Breite ${fileW} ist nicht durch Frame-Breite ${fw} teilbar (Zeile ${stmt.line})`);
+                                if (fileH % fh !== 0)
+                                    throw new Error(`LoadAnimImage: "${fileArg.value}" — Datei-Höhe ${fileH} ist nicht durch Frame-Höhe ${fh} teilbar (Zeile ${stmt.line})`);
+                                const cols = fileW / fw;
+                                const rows = fileH / fh;
+                                if (cols * rows < cnt)
+                                    throw new Error(`LoadAnimImage: "${fileArg.value}" — ${cols}×${rows} Frames im Sheet, aber count=${cnt} angefordert (Zeile ${stmt.line})`);
+                                sheet = { fileW, fileH, fw, fh, cols, rows, count: cnt };
+                            }
                         }
                         const lbl        = `_img_${this._imageAssets.size}`;
                         const width      = wArg.value;
@@ -3248,7 +3308,7 @@ export class CodeGen {
                         const rowbytes   = Math.ceil(Math.ceil(width / 8) / 2) * 2;
                         this._imageAssets.set(idxArg.value, {
                             filename: fileArg.value, label: lbl, width, height, rowbytes,
-                            isAnim: true, frameCount, isInterleaved
+                            isAnim: true, frameCount, isInterleaved, sheet
                         });
                     }
                 }

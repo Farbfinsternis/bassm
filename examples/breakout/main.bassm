@@ -1,13 +1,18 @@
-Graphics 320, 256, 4
+Graphics 320, 256, 5
 
 LoadFont 0, "images/font.bfnt"
 UseFont 0
 
+; Brick sprite-sheet (32×8, 10 frames horizontal). Image 0 → palette is
+; applied at runtime. Each frame is one brick color (red, blue, green,
+; grey, orange, purple, light blue, brown, oliv, pink).
+LoadAnimImage 0, "images/bricks.iraw", 32, 8, 10
+
 ; ── Functions ────────────────────────────────────────────────────────────────
 
-; Returns the palette color index for a given brick row (0..4)
-Function BrickColor(row)
-  Return (row Mod 4) + 3
+; Returns the brick frame index (= color) for a given row (0..4)
+Function BrickFrame(row)
+  Return row Mod 10
 End Function
 
 ; Returns the left X pixel position for a brick column (0..9)
@@ -27,20 +32,20 @@ Function ClampPaddle(mx)
   Return mx
 End Function
 
-; Draws one brick (by flat index i) using its row color
+; Draws one brick (by flat index i) using DrawImage with the row's frame
 Function DrawBrick i
   Local row = i / 10
   Local col = i Mod 10
-  Color BrickColor(row)
-  Box BrickX(col) + 1, BrickY(row) + 1, 30, 8
+  DrawImage 0, BrickX(col), BrickY(row), BrickFrame(row)
 End Function
 
-; Erases one brick (by flat index i) by painting it black
+; Erases one brick (by flat index i) by painting it black — the Copper
+; gradient shows through Color 0
 Function EraseBrick i
   Local row = i / 10
   Local col = i Mod 10
   Color 0
-  Box BrickX(col) + 1, BrickY(row) + 1, 30, 8
+  Box BrickX(col), BrickY(row), 32, 8
 End Function
 
 ; ── Initialise game state ─────────────────────────────────────────────────────
