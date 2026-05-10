@@ -1144,7 +1144,11 @@ export class CodeGen {
             const maxLines = Math.min(H, 256 - vStart);
             out.push(`${pad('GFXRASTER',12)} EQU ${maxLines}`);
         }
-        if (this._usesBobs) {
+        // M-BOB-SHIFT T4: bobs.s wird auch bei _usesImage eingebunden
+        // (Sub-Pixel-DrawImage ruft _BltBobMaskedFrame mit _bob_allones_mask).
+        // BOBS_MAX wird vom Bob-State-Block in bobs.s gebraucht — daher in
+        // beiden Fällen emittieren.
+        if (this._usesBobs || this._usesImage) {
             out.push(`${pad('BOBS_MAX',12)} EQU 64`);
         }
         // T4: Viewport Copper-Section offsets — only when explicit viewports are used.
@@ -1202,10 +1206,11 @@ export class CodeGen {
         if (this._usesSound) {
             out.push('        INCLUDE "sound.s"');
         }
+        // M-BOB-SHIFT T4: image.s nutzt _BltBobMaskedFrame + _bob_allones_mask
+        // aus bobs.s für Sub-Pixel-X im Direct-Copy-Pfad. bobs.s muss daher
+        // immer mit image.s zusammen eingebunden werden.
         if (this._usesImage || this._usesBobs) {
             out.push('        INCLUDE "image.s"');
-        }
-        if (this._usesBobs) {
             out.push('        INCLUDE "bobs.s"');
         }
         if (this._usesRnd) {
@@ -1413,7 +1418,11 @@ export class CodeGen {
             // T10: Global active-state variables
             out.push('_active_vp_idx:      ds.w    1');   // index of currently active viewport
             out.push('_active_cop_base:    ds.l    1');   // copper section base of active VP (back-copper)
-            if (this._usesBobs) {
+            // M-BOB-SHIFT T4: bobs.s wird auch bei _usesImage assembliert
+            // (Sub-Pixel-DrawImage springt zu _BltBobMaskedFrame). Symbole aus
+            // bobs.s müssen daher in beiden Fällen existieren — der Bob-Code
+            // wird zwar mitassembliert aber nie aufgerufen wenn _usesBobs=false.
+            if (this._usesBobs || this._usesImage) {
                 out.push('_active_bob_state:  ds.l    1');   // ptr to active VP Bob-State-Block (T26)
             }
             // Arrays: Dim arr(n) → n+1 longwords (indices 0..n, Blitz2D-compatible)
@@ -1520,7 +1529,10 @@ export class CodeGen {
         }
 
         // ── T26: Per-viewport Bob-State-Block (regular BSS, not chip RAM) ────
-        if (this._usesBobs) {
+        // M-BOB-SHIFT T4: auch bei _usesImage emittieren — _AddBob/_FlushBobs
+        // referenzieren die State-Blocks. Bob-Code wird bei _usesImage
+        // mitassembliert aber nicht aufgerufen.
+        if (this._usesBobs || this._usesImage) {
             for (const [vpIdx] of this._viewports) {
                 out.push(`        SECTION vp_${vpIdx}_bob_state_sec,BSS`);
                 out.push(`        XDEF    _vp${vpIdx}_bob_state`);
@@ -1704,7 +1716,9 @@ export class CodeGen {
         // Legacy mode: initialise _active_cop_base to VP0 back-copper (B) section
         out.push('        move.l  _vp0_cop_b_base,_active_cop_base');
         // T26: initialise _active_bob_state to VP0
-        if (this._usesBobs) {
+        // M-BOB-SHIFT T4: auch bei _usesImage initialisieren — _AddBob/_FlushBobs
+        // assemblieren den Zugriff, auch wenn nie aufgerufen.
+        if (this._usesBobs || this._usesImage) {
             out.push('        lea     _vp0_bob_state,a0');
             out.push('        move.l  a0,_active_bob_state');
         }

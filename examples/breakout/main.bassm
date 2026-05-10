@@ -8,6 +8,10 @@ UseFont 0
 ; grey, orange, purple, light blue, brown, oliv, pink).
 LoadAnimImage 0, "images/bricks.iraw", 32, 8, 10
 
+; Paddle bob (64×8). Drawn via DrawBob to test sub-pixel-X bob movement
+; (M-BOB-SHIFT). No LoadMask — direct-copy path uses _bob_allones_mask (T4).
+LoadImage 1, "images/paddle-big.iraw"
+
 ; ── Functions ────────────────────────────────────────────────────────────────
 
 ; Returns the brick frame index (= color) for a given row (0..4)
@@ -25,10 +29,10 @@ Function BrickY(row)
   Return row * 10 + 20
 End Function
 
-; Clamps the paddle X so the 40-px paddle stays within the screen
+; Clamps the paddle X so the 64-px paddle stays within the screen
 Function ClampPaddle(mx)
   If mx < 0 Then mx = 0
-  If mx > 280 Then mx = 280
+  If mx > 256 Then mx = 256
   Return mx
 End Function
 
@@ -58,7 +62,7 @@ For i = 0 To 49
   erase_brick(i) = 0
 Next i
 
-px = 140
+px = 128
 bx = 160 : by = 120
 bdx = 2 : bdy = 3
 
@@ -94,10 +98,13 @@ While 1
   ; Escape exits the program and returns to the shell
   If KeyDown(69) Then End
 
-  ; Erase ball and paddle from 2 frames ago (double-buffer safe)
+  ; Erase ball + paddle from 2 frames ago (double-buffer safe).
+  ; No SetBackground available (Copper gradient is dynamic), so we do
+  ; classic black-box erase. Paddle erase needs +1 word of slack on the
+  ; right to cover the M-BOB-SHIFT extra-word.
   Color 0
   Box bx_h1, by_h1, 4, 4
-  Box px_h1, 240, 40, 8
+  Box px_h1, 240, 80, 8
 
   ; Erase destroyed bricks — each brick needs 2 erase passes (one per buffer)
   For i = 0 To 49
@@ -107,8 +114,8 @@ While 1
     EndIf
   Next i
 
-  ; Paddle follows mouse
-  px = ClampPaddle(MouseX() - 20)
+  ; Paddle follows mouse (pixel-precise via M-BOB-SHIFT sub-pixel-X)
+  px = ClampPaddle(MouseX() - 32)
 
   ; Ball movement
   bx = bx + bdx
@@ -142,12 +149,12 @@ While 1
   EndIf
 
   ; Paddle collision — reflect ball with spin depending on hit position
-  If by + 4 >= 240 And by <= 248 And bx + 4 >= px And bx <= px + 40
+  If by + 4 >= 240 And by <= 248 And bx + 4 >= px And bx <= px + 64
     by = 236
     bdy = -bdy
-    If bx < px + 10
+    If bx < px + 16
       bdx = -3
-    ElseIf bx > px + 30
+    ElseIf bx > px + 48
       bdx = 3
     ElseIf bdx < 0
       bdx = -2
@@ -173,9 +180,8 @@ While 1
     EndIf
   Next i
 
-  ; Draw paddle and ball
-  Color 2
-  Box px, 240, 40, 8
+  ; Draw paddle as BOB (sub-pixel-X) and ball
+  DrawBob 1, px, 240
   Color 1
   Box bx, by, 4, 4
 

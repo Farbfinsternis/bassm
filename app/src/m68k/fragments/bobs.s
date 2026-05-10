@@ -38,7 +38,7 @@
 ; BOB SLOT FORMAT (BOBS_SLOT_SZ = 16 bytes)
 ;   +0   imgptr.l    pointer to image data (8-byte header + palette + planes)
 ;   +4   maskptr.l   pointer to mask data (raw 1bpp, chip RAM); 0 = no mask
-;   +8   x.w         horizontal position (word-aligned: x % 16 == 0)
+;   +8   x.w         horizontal position (any pixel; A-Shift handles sub-word)
 ;   +10  y.w         vertical position
 ;   +12  frame.w     animation frame index (0 = first frame; same as non-animated)
 ;   +14  padding.w   reserved (must be 0)
@@ -49,13 +49,25 @@
 ;     B = bob     (bitplane pixels)
 ;     C = D       (back buffer plane — read then written back)
 ;   Minterm $CA = D = A?B:C  (if mask bit: D = bob pixel; else: D = background)
-;   BLTCON0 = $0FCA  (USEA | USEB | USEC | USED)
+;   BLTCON0 = $0FCA | (shift << 12)  with shift = x & 15  (M-BOB-SHIFT)
+;
+; SUB-PIXEL X (M-BOB-SHIFT)
+;   X is pixel-precise via Blitter A-Shift. Per blit:
+;     - BLTSIZE width  = (rowbytes/2) + 1   (1 extra word for shift overflow)
+;     - BLTAMOD/BLTBMOD = -2                (source advances real rowbytes per row)
+;     - BLTCMOD/BLTDMOD = (GFXIBPR-rowbytes) - 2
+;     - BLTAFWM = $FFFF >> shift            (mask leftmost shift-bits = junk)
+;     - BLTALWM = $FFFF << (16-shift)       (only first shift-bits of extra word)
+;     - shift=0 special: FWM=$FFFF, LWM=$0000 (lsl/lsr count 16 undefined)
+;   Direct-copy bobs (no LoadMask) use _bob_allones_mask as A in Cookie-Cut
+;   to keep the extra-word neutral (size limit: bob ≤ 128×128).
 ;
 ; BACKGROUND RESTORE
 ;   _bg_restore_static blits from the static background image (_bg_bpl_ptr)
 ;   to the back buffer using the bob's own w/h/rowbytes to define the area.
-;   BLTCON0 = $09F0  (USEA | USED, D = A — plain copy)
-;   Both BLTAMOD and BLTDMOD = GFXBPR - bob_rowbytes (both are full-width).
+;   BLTCON0 = $09F0  (USEA | USED, D = A — plain copy, no shift here)
+;   Width is (rowbytes/2)+1 to cover the shifted bob's right edge.
+;   BLTAMOD = (GFXBPR-rowbytes)-2, BLTDMOD = (GFXIBPR-rowbytes)-2.
 ;
 ; DEPENDENCY
 ;   startup.s  — Blitter EQUs, _WaitBlit, _back_planes_ptr, a5=$DFF000.
@@ -77,9 +89,15 @@
         XDEF    _bobs_new
         XDEF    _bobs_old_a
         XDEF    _bobs_old_b
+        XDEF    _bob_fwm_save
+        XDEF    _bob_lwm_save
+        XDEF    _bob_bcon1_save
 
 _bg_restore_fn:  ds.l    1               ; fn ptr: 0=none, else _bg_restore_static
 _bg_bpl_ptr:     ds.l    1               ; ptr to bg image bitplane-0 data start
+_bob_fwm_save:   ds.w    1               ; M-BOB-SHIFT T1.5: BLTAFWM-Wert über Plane-Loop
+_bob_lwm_save:   ds.w    1               ; M-BOB-SHIFT T1.5: BLTALWM-Wert über Plane-Loop
+_bob_bcon1_save: ds.w    1               ; M-BOB-SHIFT BUG-FIX 2026-05-11: BLTCON1-Wert (BSH-Nibble) über Plane-Loop
 _bobs_new_cnt:   ds.w    1               ; bobs queued this frame (filled by DrawBob)
 _bobs_old_cnt_a: ds.w    1               ; old bob count for buffer A
 _bobs_old_cnt_b: ds.w    1               ; old bob count for buffer B
@@ -157,7 +175,7 @@ _SetBackground:
 ;
 ; Args:   a0 = image pointer (image label: 8-byte header + palette + planes)
 ;         a1 = mask pointer  (raw 1bpp data in chip RAM; 0 = direct-copy)
-;         d0 = x  (word-aligned pixel position, x % 16 == 0)
+;         d0 = x  (any pixel position; A-Shift handles sub-word X)
 ;         d1 = y
 ;         d2 = frame index  (0 = first frame / non-animated)
 ; Trashes: nothing (saves/restores d0-d2/a0-a4)
@@ -324,7 +342,7 @@ _FlushBobs:
 ; BLTAMOD and BLTDMOD equal (GFXBPR - bob_rowbytes).
 ;
 ; Args:   a0 = bob image pointer (8-byte header: width.w, height.w, depth.w, rowbytes.w)
-;         d0 = x  (word-aligned pixel position)
+;         d0 = x  (any pixel position; restore covers shifted bob box +1 word)
 ;         d1 = y
 ; Trashes: nothing (saves/restores d0-d6/a0-a2)
 
@@ -341,32 +359,46 @@ _bg_restore_static:
         ; ── Bounds check — skip if position is outside the overscan buffer ──────
         ; Pixel width is not available here (header was partially read).
         ; We allow negative coords into the overscan border (±GFXBORDER).
+        ; M-BOB-SHIFT T5: Restore-Bereich ist 1 Word (16px) breiter als der Bob,
+        ; um den Sub-Pixel-Shift-Bereich abzudecken.
         ; d2 is free at this point — use it as scratch for y+height.
         cmp.l   #-GFXBORDER,d0
         blt.w   .bg_done                ; x < -GFXBORDER
         cmp.l   #-GFXBORDER,d1
         blt.w   .bg_done                ; y < -GFXBORDER
-        cmp.l   #(GFXWIDTH+GFXBORDER),d0
-        bge.w   .bg_done                ; x >= GFXWIDTH+GFXBORDER
+        ; Rechte Grenze: x + 16 (extra word) muss noch im Buffer sein.
+        ; Konservativ: x >= GFXWIDTH+GFXBORDER-16 → skip.
+        ; Da Pixel-Width nicht verfügbar ist, prüfen wir mit dem rohen x:
+        ; bei x ≥ GFXWIDTH+GFXBORDER−16 würde das Extra-Word über die Grenze laufen.
+        move.l  d0,d2
+        add.w   #16,d2                  ; d2 = x + 16 (Extra-Word-Reservierung)
+        cmp.l   #(GFXWIDTH+GFXBORDER),d2
+        bge.w   .bg_done                ; x + 16 >= GFXWIDTH+GFXBORDER
         move.l  d1,d2
         add.w   d4,d2                   ; d2 = y + height
         cmp.l   #(GFXHEIGHT+GFXBORDER),d2
         bgt.w   .bg_done                ; y + height > GFXHEIGHT+GFXBORDER
 
-        ; ── BLTSIZE = (height << 6) | (rowbytes / 2) ─────────────────────────
+        ; ── BLTSIZE = (height << 6) | (rowbytes/2 + 1) ───────────────────────
+        ; M-BOB-SHIFT T5: Width +1 Word für Sub-Pixel-Shift-Restore-Bereich.
         move.w  d4,d2
         lsl.w   #6,d2                   ; d2 = height << 6   (d4 free after this)
         move.w  d6,d3
         lsr.w   #1,d3                   ; d3 = rowbytes / 2
+        addq.w  #1,d3                   ; +1 Word für Shift-Restore
         or.w    d3,d2                   ; d2.w = BLTSIZE
 
-        ; ── BG modulo (BLTAMOD): GFXBPR - rowbytes (non-interleaved source) ──
+        ; ── BG modulo (BLTAMOD): GFXBPR - rowbytes - 2 (non-interleaved source) ──
+        ; M-BOB-SHIFT T5: −2 für Extra-Word.
         move.w  #GFXBPR,d4
-        sub.w   d6,d4                   ; d4.w = GFXBPR - rowbytes (d6 free after this)
+        sub.w   d6,d4                   ; d4.w = GFXBPR - rowbytes
+        subq.w  #2,d4                   ; M-BOB-SHIFT T5: −2 für Extra-Word
 
-        ; ── Screen modulo (BLTDMOD): GFXIBPR - rowbytes (interleaved dest) ───
+        ; ── Screen modulo (BLTDMOD): GFXIBPR - rowbytes - 2 (interleaved dest) ──
+        ; M-BOB-SHIFT T5: −2 für Extra-Word.
         move.w  #GFXIBPR,d3
         sub.w   d6,d3                   ; d3.w = GFXIBPR - rowbytes
+        subq.w  #2,d3                   ; M-BOB-SHIFT T5: −2 für Extra-Word
 
         ; ── Pixel byte offsets: two separate values for BG and screen ─────────
         asr.l   #3,d0                   ; d0 = x / 8  (signed; same for both)
@@ -467,6 +499,8 @@ _BltBobMaskedFrame:
         mulu.w  d6,d7                   ; d7.l = plane_size
 
         ; ── Bounds check — skip if any edge is outside the overscan buffer ──────
+        ; M-BOB-SHIFT T1: A-Shift verbreitert den Schreibbereich um 1 Word (16px)
+        ; nach rechts. Bounds entsprechend +16 verschärfen.
         ; d3 (pixel width from header) is still valid here — used as scratch
         ; for the frame-offset calculation AFTER this check.
         ; a2 is free at this point; use it as scratch for x+width / y+height.
@@ -476,8 +510,9 @@ _BltBobMaskedFrame:
         blt.w   .bob_done               ; y < -GFXBORDER
         move.l  d0,a2
         add.w   d3,a2                   ; a2 = x + pixel_width
+        add.w   #16,a2                  ; +16 für A-Shift Extra-Word
         cmpa.l  #(GFXWIDTH+GFXBORDER),a2
-        bgt.w   .bob_done               ; x + width > GFXWIDTH+GFXBORDER
+        bgt.w   .bob_done               ; x + width + 16 > GFXWIDTH+GFXBORDER
         move.l  d1,a2
         add.w   d4,a2                   ; a2 = y + height
         cmpa.l  #(GFXHEIGHT+GFXBORDER),a2
@@ -491,18 +526,52 @@ _BltBobMaskedFrame:
         mulu.w  d2,d3                   ; d3.l = frame × frame_size_bytes = frame_offset
         add.l   d3,a0                   ; a0 = bitplane-0 data start for frame d2
 
-        ; ── BLTSIZE = (height << 6) | (rowbytes / 2) ─────────────────────────
+        ; ── BLTSIZE = (height << 6) | (rowbytes/2 + 1) ───────────────────────
+        ; M-BOB-SHIFT T1: Width +1 Word für A-Shift Extra-Spalte.
         move.w  d4,d2
         lsl.w   #6,d2
         move.w  d6,d3
         lsr.w   #1,d3
+        addq.w  #1,d3                   ; +1 Word für A-Shift
         or.w    d3,d2                   ; d2.w = BLTSIZE
 
-        ; ── C/D modulo = GFXIBPR − rowbytes (interleaved: skip other planes' rows) ─
-        move.w  #GFXIBPR,d3
-        sub.w   d6,d3                   ; d3.w = screen modulo
+        ; ── M-BOB-SHIFT T1/T1.5: shift = x & 15, FWM/LWM, BLTCON0 ───────────
+        ; d4 (height) ab hier nicht mehr gebraucht — recyceln für shift/BLTCON0.
+        ; d6 (rowbytes) wird unten für Modulo gebraucht — NICHT trashen.
+        ; d3 ist hier frei (Frame-Offset-Scratch ist abgeschlossen).
+        ; MUSS vor asr.l #3,d0 berechnet werden (asr überschreibt die unteren 4 Bit).
+        ;
+        ; LWM=0 (BUG-FIX 2026-05-10): siehe Block-Kommentar im interleaved Pfad
+        ; unten (.iv_shift_done). Kurz: bei A-Shift produziert die alte LWM-
+        ; Polarität `$FFFF<<(16-shift)` einen `shift` Pixel breiten Müll-
+        ; Streifen rechts vom Bob, weil A_in[last]>>shift die unteren Bits
+        ; von A_out[last] mit den oberen Mask-Bits füllt. LWM=0 ist sowohl
+        ; für All-Ones- als auch für reguläre .imask die sichere Wahl.
+        ; FWM=$FFFF, LWM=0 (BUG-FIX 2026-05-11):
+        ;   FWM=$FFFF, weil A vor Shift maskiert wird — der Shifter zieht
+        ;   automatisch Nullen von links nach (Pre-Roll-Carry=0). Bei FWM!=$FFFF
+        ;   würden die ersten `shift` Pixel des Bobs ausmaskiert, BEVOR sie
+        ;   per Shift an die richtige Position rutschen → linke Bob-Kante fehlt.
+        ;   LWM=0, damit das Extra-Word außerhalb des Bobs sauber durch
+        ;   `A_in[last-1]<<(16-shift)` mit den geshifteten End-Pixeln gefüllt
+        ;   wird (obere `shift` Bits) und der Rest = 0 (Backbuffer durch).
+        move.w  d0,d4
+        and.w   #15,d4                  ; d4.w = shift (0..15)
+        move.w  #$FFFF,_bob_fwm_save
+        clr.w   _bob_lwm_save
 
-        ; ── Dest base: _back_planes_ptr + y*GFXBPR + x/8 ─────────────────────
+.shift_done:
+        lsl.w   #8,d4                   ; d4.w = shift << 8
+        lsl.w   #4,d4                   ; d4.w = shift << 12  (Shift-Nibble — gilt für BLTCON0 ASH UND BLTCON1 BSH)
+        move.w  d4,_bob_bcon1_save      ; M-BOB-SHIFT BUG-FIX 2026-05-11: BSH = ASH (B muss synchron mit A geshiftet werden)
+        or.w    #$0FCA,d4               ; d4.w = ASH | USEA|USEB|USEC|USED | $CA
+
+        ; ── C/D modulo = GFXIBPR − rowbytes − 2 (interleaved, A-Shift Extra-Word) ─
+        move.w  #GFXIBPR,d3
+        sub.w   d6,d3
+        subq.w  #2,d3                   ; M-BOB-SHIFT T1: −2 für A-Shift Extra-Word
+
+        ; ── Dest base: _back_planes_ptr + y*GFXIBPR + x/8 ─────────────────────
         move.l  _back_planes_ptr,a2
         muls.w  #GFXIBPR,d1            ; d1 = y * GFXIBPR (interleaved row stride)
         add.l   d1,a2
@@ -515,13 +584,13 @@ _BltBobMaskedFrame:
 .plane_loop:
         jsr     _WaitBlit               ; wait for previous blit (trashes d0)
 
-        move.w  #$0FCA,BLTCON0(a5)      ; USEA|USEB|USEC|USED, minterm $CA (D=A?B:C)
-        clr.w   BLTCON1(a5)
-        move.w  #$FFFF,BLTAFWM(a5)
-        move.w  #$FFFF,BLTALWM(a5)
-        clr.w   BLTAMOD(a5)             ; mask: packed rows, no gap
-        clr.w   BLTBMOD(a5)             ; bob:  packed rows, no gap
-        move.w  d3,BLTCMOD(a5)          ; screen: full-width rows
+        move.w  d4,BLTCON0(a5)          ; M-BOB-SHIFT T1: ASH | $0FCA (A-Shift + Cookie-Cut)
+        move.w  _bob_bcon1_save,BLTCON1(a5)  ; BSH-Nibble = ASH-Nibble (synchron-Shift)
+        move.w  _bob_fwm_save,BLTAFWM(a5) ; M-BOB-SHIFT T1.5: $FFFF >> shift
+        move.w  _bob_lwm_save,BLTALWM(a5) ; M-BOB-SHIFT T1.5: $FFFF << (16-shift)
+        move.w  #-2,BLTAMOD(a5)         ; M-BOB-SHIFT T1: −2 für A-Shift Extra-Spalte
+        move.w  #-2,BLTBMOD(a5)         ; M-BOB-SHIFT T1: −2 für A-Shift Extra-Spalte
+        move.w  d3,BLTCMOD(a5)          ; screen modulo: GFXIBPR − rowbytes − 2
         move.w  d3,BLTDMOD(a5)
 
         ; A = mask (same 1bpp mask for all planes; a1 does NOT advance)
@@ -585,12 +654,14 @@ _BltBobMaskedFrame:
         mulu.w  d6,d7                   ; d7.l = plane_size
 
         ; Bounds check (same conditions as non-interleaved path)
+        ; M-BOB-SHIFT T2: +16 rechts für A-Shift Extra-Word.
         cmp.l   #-GFXBORDER,d0
         blt.w   .bob_done
         cmp.l   #-GFXBORDER,d1
         blt.w   .bob_done
         move.l  d0,a2
         add.w   d3,a2                   ; a2 = x + pixel_width
+        add.w   #16,a2                  ; +16 für A-Shift Extra-Word
         cmpa.l  #(GFXWIDTH+GFXBORDER),a2
         bgt.w   .bob_done
         move.l  d1,a2
@@ -604,53 +675,64 @@ _BltBobMaskedFrame:
         mulu.w  d2,d3                   ; d3 = frame × frame_size = frame_offset
         add.l   d3,a0                   ; a0 = frame N interleaved data start
 
-        ; BLTSIZE = (height × depth) << 6 | (rowbytes / 2)
+        ; BLTSIZE = (height × depth) << 6 | (rowbytes/2 + 1)
+        ; M-BOB-SHIFT T2: Width +1 Word für A-Shift Extra-Spalte.
         move.w  d4,d2
         mulu.w  d5,d2                   ; d2.l = height × depth
         lsl.w   #6,d2                   ; d2 = (height × depth) << 6
         move.w  d6,d3
         lsr.w   #1,d3                   ; d3 = rowbytes / 2
+        addq.w  #1,d3                   ; +1 Word für A-Shift
         or.w    d3,d2                   ; d2.w = BLTSIZE
 
-        ; BLTCMOD = BLTDMOD = GFXBPR - rowbytes
-        ; Advances C and D pointers to the next plane-row in the interleaved screen.
+        ; FWM=$FFFF, LWM=0 (BUG-FIX 2026-05-11): siehe Block-Kommentar
+        ; im non-interleaved Pfad oben (.shift_done).
+        move.w  d0,d4
+        and.w   #15,d4                  ; d4.w = shift (0..15)
+        move.w  #$FFFF,d5               ; FWM = $FFFF (immer)
+        moveq   #0,d7                   ; LWM = 0 (immer)
+
+.iv_shift_done:
+        lsl.w   #8,d4                   ; d4.w = shift << 8
+        lsl.w   #4,d4                   ; d4.w = shift << 12  (Shift-Nibble — gilt für BLTCON0 ASH UND BLTCON1 BSH)
+        move.w  d4,_bob_bcon1_save      ; M-BOB-SHIFT BUG-FIX 2026-05-11: BSH = ASH (B muss synchron mit A geshiftet werden — Mask-Bits sonst nicht synchron mit Bob-Pixeln, Müll im Bob-Rand)
+        or.w    #$0FCA,d4               ; d4.w = ASH | USEA|USEB|USEC|USED | $CA
+
+        ; BLTCMOD = BLTDMOD = GFXBPR - rowbytes - 2
         move.w  #GFXBPR,d3
-        sub.w   d6,d3                   ; d3.w = screen modulo
+        sub.w   d6,d3
+        subq.w  #2,d3
 
-        ; Destination = _back_planes_ptr + y*GFXIBPR + x/8  (plane-0 of row y)
+        ; Destination = _back_planes_ptr + y*GFXIBPR + x/8
         move.l  _back_planes_ptr,a2
-        muls.w  #GFXIBPR,d1             ; d1 = y × GFXIBPR
+        muls.w  #GFXIBPR,d1
         add.l   d1,a2
-        asr.l   #3,d0                   ; d0 = x / 8
-        add.l   d0,a2                   ; a2 = screen plane-0 at (x, y)
+        asr.l   #3,d0
+        add.l   d0,a2
 
-        ; 1 single masked blit — all depth planes simultaneously
         jsr     _WaitBlit
 
-        move.w  #$0FCA,BLTCON0(a5)      ; USEA|USEB|USEC|USED, minterm $CA: D = A?B:C
-        clr.w   BLTCON1(a5)
-        move.w  #$FFFF,BLTAFWM(a5)
-        move.w  #$FFFF,BLTALWM(a5)
-        clr.w   BLTAMOD(a5)             ; mask interleaved: depth copies per row, packed
-        clr.w   BLTBMOD(a5)             ; bob interleaved: plane-rows packed
-        move.w  d3,BLTCMOD(a5)          ; GFXBPR - rowbytes
-        move.w  d3,BLTDMOD(a5)          ; GFXBPR - rowbytes
+        move.w  d4,BLTCON0(a5)
+        move.w  _bob_bcon1_save,BLTCON1(a5)  ; BSH-Nibble = ASH-Nibble
+        move.w  d5,BLTAFWM(a5)
+        move.w  d7,BLTALWM(a5)
+        move.w  #-2,BLTAMOD(a5)
+        move.w  #-2,BLTBMOD(a5)
+        move.w  d3,BLTCMOD(a5)
+        move.w  d3,BLTDMOD(a5)
 
-        ; A = mask  (interleaved .imask, same pointer for all planes — a1 unchanged)
         move.l  a1,d0
         swap    d0
         move.w  d0,BLTAPTH(a5)
         swap    d0
         move.w  d0,BLTAPTL(a5)
 
-        ; B = bob pixels  (interleaved, frame-adjusted — a0 = frame N start)
         move.l  a0,d0
         swap    d0
         move.w  d0,BLTBPTH(a5)
         swap    d0
         move.w  d0,BLTBPTL(a5)
 
-        ; C = D = screen destination plane-0 at (x, y)
         move.l  a2,d0
         swap    d0
         move.w  d0,BLTCPTH(a5)
@@ -659,8 +741,28 @@ _BltBobMaskedFrame:
         move.w  d0,BLTCPTL(a5)
         move.w  d0,BLTDPTL(a5)
 
-        move.w  d2,BLTSIZE(a5)          ; triggers the blit (all planes in one pass)
+        move.w  d2,BLTSIZE(a5)
 
 .bob_done:
         movem.l (sp)+,d0-d7/a0-a3
         rts
+
+
+; ── M-BOB-SHIFT T3: All-Ones-Maske (Chip-RAM, statisch) ─────────────────────
+;
+; Verwendet von _DrawImage / _DrawImageFrame, wenn x nicht 16-pixel-aligned ist
+; (siehe T4). Der Direct-Copy-Pfad braucht eine Cookie-Cut-Maske, damit das
+; A-Shift-Extra-Word rechts vom Bob keinen schwarzen Streifen hinterlässt.
+;
+; Größe: 2080 Bytes — deckt Bobs bis 128×128 Pixel.
+;   Bei rowbytes=16 und height=128 liest der Blitter pro Row 18 Bytes
+;   (rowbytes+2 für A-Shift Extra-Word), aber BLTAMOD=−2 führt zurück:
+;   N×rowbytes + 2 = 128×16 + 2 = 2050 Bytes effektiv, 30 Bytes Padding.
+;
+; Stock A500 Budget: 2080 Bytes = 0,4 % der 512 KB Chip-RAM.
+
+        SECTION bobs_mask_data,DATA_C
+
+        XDEF    _bob_allones_mask
+_bob_allones_mask:
+        dcb.b   2080,$FF

@@ -671,6 +671,10 @@ ipcMain.handle('bassm:list-examples', async () => {
   try { entries = fs.readdirSync(sourceDir, { withFileTypes: true }); }
   catch (_) { return []; }
 
+  // Dev-mode: examples ARE the working copy, never marked "cloned" so the
+  // welcome UI doesn't trigger the open-existing/copy-new prompt.
+  const devMode = _workspaceModule && _workspaceModule.isDevMode();
+
   const out = [];
   for (const e of entries) {
     if (!e.isDirectory()) continue;
@@ -679,7 +683,7 @@ ipcMain.handle('bassm:list-examples', async () => {
     const hasBassm  = fs.existsSync(path.join(dir, 'main.bassm'));
     const hasBnode  = fs.existsSync(path.join(dir, 'main.bnode'));
     if (!hasBassm && !hasBnode) continue;
-    const cloned = fs.existsSync(path.join(projectsDir, e.name));
+    const cloned = devMode ? false : fs.existsSync(path.join(projectsDir, e.name));
     out.push({ name: e.name, isVBE: hasBnode && !hasBassm, cloned });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));
@@ -694,6 +698,11 @@ ipcMain.handle('bassm:list-examples', async () => {
 //     project, no copy.
 //  3. Default-target exists, mode='copy-new' → SaveDialog defaulting to
 //     <exampleName>-copy lets the user choose a unique destination.
+//
+// Dev-mode shortcut: in `npm start` runs (isDevMode()=true) the example
+// folder under <repo>/examples/ IS the working copy — bootstrap-sync is
+// skipped in dev (workspace-bootstrap.js:60), so edits are not overwritten.
+// Skip the clone and open the source directory directly.
 //
 // Returns the same shape as bassm:open-project — { projectDir,
 // projectName, source, isVBE } — so the renderer can route it through
@@ -713,6 +722,21 @@ ipcMain.handle('bassm:clone-example', async (_event, { exampleName, mode }) => {
   const sourceDir  = path.join(sourceRoot, exampleName);
   if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
     throw new Error(`clone-example: example "${exampleName}" not found`);
+  }
+
+  // Dev-mode: open source directly, no clone.
+  if (_workspaceModule && _workspaceModule.isDevMode()) {
+    const projectName = exampleName;
+    let source = '';
+    let isVBE  = false;
+    if (fs.existsSync(path.join(sourceDir, 'main.bnode'))) {
+      source = fs.readFileSync(path.join(sourceDir, 'main.bnode'), 'utf8');
+      isVBE  = true;
+    } else {
+      try { source = fs.readFileSync(path.join(sourceDir, 'main.bassm'), 'utf8'); } catch (_) {}
+    }
+    startProjectWatcher(sourceDir);
+    return { projectDir: sourceDir, projectName, source, isVBE };
   }
 
   const projectsDir   = _cloneTargetDir();

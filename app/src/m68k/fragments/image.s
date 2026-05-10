@@ -44,23 +44,23 @@
 ;
 ; HOW IT WORKS
 ;   _DrawImage reads the 4-word header, then runs one Blitter A→D operation per
-;   bitplane.  Minterm $F0 (D = A) copies the source bits directly to the
-;   destination, overwriting whatever was there.  First/last word masks are
-;   $FFFF (full words) and BLTCON1 shift is 0, so x must be WORD-aligned
-;   (x % 16 == 0).  The OCS blitter clears bit 0 of BLTDPT (forces word
-;   alignment), so byte-aligned-but-not-word-aligned x values (x%16==8) would
-;   draw at (x & -16) — shifted 8px left — causing erase-position mismatch.
+;   bitplane (word-aligned X) or routes to _BltBobMaskedFrame with the all-ones
+;   mask (sub-pixel X, M-BOB-SHIFT T4).
 ;
-;   Blitter per plane:
-;     BLTCON0  = $09F0  (USEA | USED | minterm $F0: D = A)
-;     BLTCON1  = $0000
-;     BLTAFWM  = $FFFF  (no first-word masking)
-;     BLTALWM  = $FFFF  (no last-word masking)
-;     BLTAPT   = current source plane pointer
-;     BLTDPT   = back buffer + plane_offset + y*GFXBPR + x/8
-;     BLTAMOD  = 0      (source rows are packed, no gap)
-;     BLTDMOD  = GFXBPR - rowbytes  (skip to same x-position in next dest row)
-;     BLTSIZE  = (height << 6) | (rowbytes / 2)
+;   WORD-ALIGNED PATH  (x % 16 == 0)
+;     Minterm $F0 (D = A) copies source bits directly to the destination.
+;     First/last word masks are $FFFF, no shift.
+;       BLTCON0  = $09F0  (USEA | USED | minterm $F0: D = A)
+;       BLTCON1  = $0000
+;       BLTAFWM  = BLTALWM = $FFFF
+;       BLTAMOD  = 0
+;       BLTDMOD  = GFXBPR - rowbytes
+;       BLTSIZE  = (height << 6) | (rowbytes / 2)
+;
+;   SUB-PIXEL PATH  (x & 15 != 0, bob ≤ 128×128)
+;     Tail-jump to _BltBobMaskedFrame with a1 = _bob_allones_mask.
+;     Cookie-Cut blit ($CA + A-Shift) handles pixel-precise X — see bobs.s.
+;     Bobs > 128×128 fall back to the word-aligned path (X rounded down).
 ;
 ; CLIPPING
 ;   Full bounds check: silently discarded if any edge is outside screen.
@@ -97,7 +97,7 @@
 ; _DrawImage      — draws frame 0, backward-compatible (ignores d2)
 ; _DrawImageFrame — draws frame d2 (0 = first frame, same result as _DrawImage)
 ;
-; Args:   d0.l = x  (pixel position, must be WORD-aligned: x%16 == 0)
+; Args:   d0.l = x  (any pixel position; sub-word X via M-BOB-SHIFT cookie-cut)
 ;         d1.l = y
 ;         a0   = pointer to image data (8-byte header + palette + bitplane data)
 ;         d2.l = frame index  (_DrawImageFrame only; _DrawImage sets d2=0)
@@ -112,6 +112,27 @@ _DrawImage:
 _DrawImageFrame:
         movem.l d0-d7/a0-a3,-(sp)
 
+        ; ── M-BOB-SHIFT T4: Sub-Pixel-X via Cookie-Cut + All-Ones-Maske ─────
+        ; Bei (x & 15) != 0 würde der Direct-Copy mit BLTCON0=$09F0 + A-Shift
+        ; im Extra-Word einen schwarzen Streifen rechts vom Bob hinterlassen.
+        ; Lösung: zu _BltBobMaskedFrame springen mit a1 = _bob_allones_mask.
+        ; Größenlimit: (rowbytes+2) × height ≤ 2080 (siehe T3).
+        move.w  d0,d3
+        and.w   #15,d3
+        beq.s   .draw_word_aligned  ; x % 16 == 0 → schneller Direct-Copy-Pfad
+
+        ; Sub-Pixel — Header peek: rowbytes (offset 6.w), height (offset 2.w).
+        move.w  6(a0),d3
+        addq.w  #2,d3               ; d3.w = rowbytes + 2
+        muls.w  2(a0),d3            ; d3.l = (rowbytes+2) × height
+        cmp.l   #2080,d3
+        bgt.s   .draw_word_aligned  ; Bob > 128×128: fallback auf 16px-aligned
+
+        movem.l (sp)+,d0-d7/a0-a3   ; restore vor Tail-Call (eigener movem in _BltBobMaskedFrame)
+        lea     _bob_allones_mask,a1
+        jmp     _BltBobMaskedFrame  ; tail-call: macht movem/rts selbst
+
+.draw_word_aligned:
         ; ── Read 8-byte header ────────────────────────────────────────────────
         ;   d3 = width  (scratch — will be reused for frame-offset computation)
         ;   d4 = height
